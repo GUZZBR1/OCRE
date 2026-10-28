@@ -10,14 +10,17 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import Enum
 from hashlib import sha256
+from typing import Callable
 
 from ocre_core.jobs import (
     CancellationEvidence,
     CancellationEvidenceKind,
+    ConcurrentJobUpdate,
     JobState,
     transition_job,
 )
 from ocre_core.persistence.jobs import JobPersistencePort, JobSnapshot, OutboxMessage
+from ocre_core.persistence.sqlite import PersistenceConflict
 
 
 SIMULATION_LABEL = "FAKE SIMULATION — NOT A REAL EXECUTION OR APPROVAL"
@@ -41,48 +44,121 @@ class SyntheticReport:
 class SyntheticWorker:
     """Deterministically exercise lifecycle persistence with static fake data."""
 
-    def __init__(self, store: JobPersistencePort, clock):
+    def __init__(
+        self,
+        store: JobPersistencePort,
+        clock,
+        *,
+        before_transition: Callable[[object], None] | None = None,
+        after_transition: Callable[[object], None] | None = None,
+    ):
         self._store = store
         self._clock = clock
+        self._before_transition = before_transition
+        self._after_transition = after_transition
 
     def run(self, *, tenant_id: str, job_id: str, outcome: SyntheticOutcome) -> SyntheticReport:
         if not isinstance(outcome, SyntheticOutcome):
             raise ValueError(f"unsupported synthetic outcome: {outcome}")
-        snapshot = self._store.get_snapshot(job_id, tenant_id=tenant_id)
-        if snapshot is None:
-            raise LookupError("job not found in tenant scope")
-        if snapshot.state is not JobState.QUEUED:
-            raise ValueError("synthetic worker requires a queued job")
+        conflicts = 0
+        while True:
+            snapshot = self._store.get_snapshot(job_id, tenant_id=tenant_id)
+            if snapshot is None:
+                raise LookupError("job not found in tenant scope")
 
-        if outcome is SyntheticOutcome.CANCELLED:
-            snapshot = self._advance(snapshot, tenant_id, JobState.CANCEL_REQUESTED)
-            evidence = CancellationEvidence(
-                aggregate_id=job_id,
-                requested_from_state=JobState.QUEUED,
-                kind=CancellationEvidenceKind.WORKER_START_PREVENTED,
-                observed_at=self._clock(),
-            )
-            self._advance(
-                snapshot,
-                tenant_id,
-                JobState.CANCELLED,
-                cancellation_evidence=evidence,
-                cancellation_origin=JobState.QUEUED,
-            )
-            result = "synthetic cancellation observed before start"
-        else:
-            snapshot = self._advance(snapshot, tenant_id, JobState.PREPARING)
-            snapshot = self._advance(snapshot, tenant_id, JobState.RUNNING)
-            if outcome is SyntheticOutcome.FAILED:
-                self._advance(snapshot, tenant_id, JobState.FAILED)
-                result = "synthetic execution failure"
-            elif outcome is SyntheticOutcome.SUCCEEDED:
-                snapshot = self._advance(snapshot, tenant_id, JobState.COLLECTING)
-                self._advance(snapshot, tenant_id, JobState.SUCCEEDED)
-                result = "synthetic static result"
-            else:
-                raise ValueError(f"unsupported synthetic outcome: {outcome}")
+            if snapshot.state is JobState.SUCCEEDED:
+                return self._report(job_id, SyntheticOutcome.SUCCEEDED, "synthetic static result")
+            if snapshot.state is JobState.FAILED:
+                return self._report(job_id, SyntheticOutcome.FAILED, "synthetic execution failure")
+            if snapshot.state is JobState.CANCELLED:
+                return self._report(
+                    job_id,
+                    SyntheticOutcome.CANCELLED,
+                    "synthetic cancellation observed before start",
+                )
+            if outcome is SyntheticOutcome.CANCELLED and snapshot.state in {
+                JobState.PREPARING,
+                JobState.RUNNING,
+                JobState.COLLECTING,
+            }:
+                raise ValueError("synthetic cancellation requires a persisted cancel request")
 
+            try:
+                if snapshot.state is JobState.QUEUED:
+                    target = (
+                        JobState.CANCEL_REQUESTED
+                        if outcome is SyntheticOutcome.CANCELLED
+                        else JobState.PREPARING
+                    )
+                    self._advance(snapshot, tenant_id, target)
+                elif snapshot.state is JobState.PREPARING:
+                    self._advance(snapshot, tenant_id, JobState.RUNNING)
+                elif snapshot.state is JobState.RUNNING:
+                    target = (
+                        JobState.FAILED
+                        if outcome is SyntheticOutcome.FAILED
+                        else JobState.COLLECTING
+                    )
+                    self._advance(snapshot, tenant_id, target)
+                elif snapshot.state is JobState.CANCEL_REQUESTED:
+                    origin = snapshot.cancellation_origin
+                    if origin not in {JobState.QUEUED, JobState.RUNNING}:
+                        raise ValueError("synthetic cancellation request has no valid origin")
+                    if origin is JobState.QUEUED:
+                        evidence = CancellationEvidence(
+                            aggregate_id=job_id,
+                            requested_from_state=origin,
+                            kind=CancellationEvidenceKind.WORKER_START_PREVENTED,
+                            observed_at=self._clock(),
+                        )
+                        self._advance(
+                            snapshot,
+                            tenant_id,
+                            JobState.CANCELLED,
+                            cancellation_evidence=evidence,
+                            cancellation_origin=origin,
+                        )
+                    elif outcome is SyntheticOutcome.FAILED:
+                        self._advance(
+                            snapshot,
+                            tenant_id,
+                            JobState.FAILED,
+                            cancellation_origin=origin,
+                        )
+                    elif outcome is SyntheticOutcome.CANCELLED:
+                        evidence = CancellationEvidence(
+                            aggregate_id=job_id,
+                            requested_from_state=origin,
+                            kind=CancellationEvidenceKind.PROCESS_TERMINATED_BY_CANCELLATION,
+                            observed_at=self._clock(),
+                        )
+                        self._advance(
+                            snapshot,
+                            tenant_id,
+                            JobState.CANCELLED,
+                            cancellation_evidence=evidence,
+                            cancellation_origin=origin,
+                        )
+                    else:
+                        self._advance(
+                            snapshot,
+                            tenant_id,
+                            JobState.COLLECTING,
+                            cancellation_origin=origin,
+                        )
+                elif snapshot.state is JobState.COLLECTING:
+                    self._advance(snapshot, tenant_id, JobState.SUCCEEDED)
+                else:
+                    raise ValueError(
+                        f"synthetic worker cannot resume job in {snapshot.state.value}"
+                    )
+            except (ConcurrentJobUpdate, PersistenceConflict):
+                conflicts += 1
+                if conflicts > 8:
+                    raise
+
+    @staticmethod
+    def _report(job_id: str, outcome: SyntheticOutcome, result: str) -> SyntheticReport:
         return SyntheticReport(True, SIMULATION_LABEL, job_id, outcome, result)
 
     def _advance(
@@ -115,6 +191,8 @@ class SyntheticWorker:
             snapshot.payload,
             tenant_id=tenant_id,
         )
+        if self._before_transition is not None:
+            self._before_transition(event)
         self._store.commit_transition(
             expected_sequence=snapshot.sequence,
             snapshot=next_snapshot,
@@ -128,4 +206,6 @@ class SyntheticWorker:
                 b"",
             ),
         )
+        if self._after_transition is not None:
+            self._after_transition(event)
         return next_snapshot

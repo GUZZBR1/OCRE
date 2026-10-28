@@ -72,9 +72,9 @@ def test_synthetic_worker_is_tenant_scoped_and_requires_queued_job(tmp_path):
     with pytest.raises(LookupError):
         worker.run(tenant_id="tenant-b", job_id="job-1", outcome=SyntheticOutcome.SUCCEEDED)
 
-    worker.run(tenant_id="tenant-a", job_id="job-1", outcome=SyntheticOutcome.FAILED)
-    with pytest.raises(ValueError, match="requires a queued job"):
-        worker.run(tenant_id="tenant-a", job_id="job-1", outcome=SyntheticOutcome.SUCCEEDED)
+    first = worker.run(tenant_id="tenant-a", job_id="job-1", outcome=SyntheticOutcome.FAILED)
+    replay = worker.run(tenant_id="tenant-a", job_id="job-1", outcome=SyntheticOutcome.SUCCEEDED)
+    assert first == replay
 
 
 def test_same_job_id_in_two_tenants_has_distinct_fake_event_and_outbox_ids(tmp_path):
@@ -110,3 +110,21 @@ def test_unsupported_outcome_is_rejected_without_persisting_partial_lifecycle(tm
     assert store.get_snapshot("job-1", tenant_id="tenant-a").state is JobState.QUEUED
     assert store.read_events(tenant_id="tenant-a", job_id="job-1") == ()
     assert store.pending_outbox() == ()
+
+
+def test_cancelled_outcome_cannot_turn_running_job_into_success(tmp_path):
+    store = SQLiteJobStore(tmp_path / "jobs.db")
+    queued_job(store, "job-1")
+    running = JobSnapshot("job-1", JobState.RUNNING, 3, NOW, tenant_id="tenant-a")
+    with store._connect() as db:
+        db.execute(
+            "UPDATE snapshots SET seq=?, body=? WHERE tenant=? AND kind='job' AND id=?",
+            (running.sequence, store._dump(running), "tenant-a", "job-1"),
+        )
+
+    with pytest.raises(ValueError, match="requires a persisted cancel request"):
+        SyntheticWorker(store, lambda: NOW).run(
+            tenant_id="tenant-a", job_id="job-1", outcome=SyntheticOutcome.CANCELLED
+        )
+
+    assert store.get_snapshot("job-1", tenant_id="tenant-a") == running
