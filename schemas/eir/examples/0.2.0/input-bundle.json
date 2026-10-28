@@ -1,0 +1,11 @@
+{
+  "bundle_schema_version": "0.2.0",
+  "bundle_id": "bundle_bar_001",
+  "eir_artifact_id": "eir_input",
+  "artifacts": [
+    {"artifact_id": "eir_input", "uri": "eir/eir.json", "media_type": "application/json", "format": "ocre.eir", "format_version": "0.2.0", "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "usage": "required"},
+    {"artifact_id": "step_source", "uri": "geometry/bar.step", "media_type": "application/step", "format": "STEP", "format_version": "AP242", "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "usage": "required"},
+    {"artifact_id": "mesh_output", "uri": "mesh/bar.inp", "media_type": "text/plain", "format": "CalculiX-INP", "format_version": "1", "sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc", "usage": "required"},
+    {"artifact_id": "groups_axial_bar", "uri": "mesh/groups.json", "media_type": "application/json", "format": "ocre.mesh-group-manifest", "format_version": "0.2.0", "sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd", "usage": "required"}
+  ]
+}

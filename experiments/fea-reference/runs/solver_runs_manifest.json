@@ -1,0 +1,289 @@
+{
+  "status": "solver_runs_completed",
+  "toolchain": {
+    "calculix_ccx": {
+      "available": true,
+      "path": "/home/gusta/projetos/OCRE/experiments/fea-reference/.local-tools/ccx-2.23/CalculiX/ccx_2.23/src/ccx_2.23",
+      "version": "CalculiX Version 2.23, Copyright(C) 1998-2025 Guido Dhondt",
+      "probe_exit_code": 201,
+      "probe_cwd": "runs/ccx-probes/ccx-version-yvz2ja3x (temporary; removed after probe)",
+      "probe_note": "CCX has no --version option; banner captured in isolated cwd; exit 201 is expected.",
+      "sha256": "31be21fc2f0902bd9a05acc2651dbac6dc2a2573dabbf235e39a38cb6f458862"
+    }
+  },
+  "runs": [
+    {
+      "deck": "axial_bar_gmsh_deck_h1.25mm.inp",
+      "run_directory": "solver_runs/axial_bar_gmsh_deck_h1.25mm/attempt_002",
+      "cwd": "/home/gusta/projetos/OCRE/experiments/fea-reference/runs/solver_runs/axial_bar_gmsh_deck_h1.25mm/attempt_002",
+      "command": [
+        "/home/gusta/projetos/OCRE/experiments/fea-reference/.local-tools/ccx-2.23/CalculiX/ccx_2.23/src/ccx_2.23",
+        "-i",
+        "axial_bar_gmsh_deck_h1.25mm"
+      ],
+      "exit_code": 0,
+      "status": "solver_completed_and_extracted",
+      "metrics": {
+        "status": "extracted",
+        "method": {
+          "field_source": "CalculiX .dat integration-point S/E/COORD",
+          "weighting": "corner tetra volume / 4; verified affine C3D10 midside nodes",
+          "central_region_mm": [
+            33.333333333333336,
+            66.66666666666667
+          ],
+          "sample_count": 32916,
+          "volume_weight_mm3": 3333.456645697629,
+          "element_count": 24960,
+          "integration_points_per_element": 4
+        },
+        "reactions": {
+          "X_FIXED_Fx_N": -2100.0,
+          "X_DISPLACED_Fx_N": 2100.0,
+          "equilibrium_relative_to_reference": 0.0
+        },
+        "reference": {
+          "reaction_N": 2100.0,
+          "S11_MPa": 21.0,
+          "E11": 0.0001,
+          "E22": -3e-05,
+          "E33": -3e-05
+        },
+        "observed": {
+          "reaction_N": 2100.0,
+          "S11_MPa": 21.0,
+          "E11": 0.00010000000000000002,
+          "E22": -3e-05,
+          "E33": -3e-05
+        },
+        "relative_error_percent": {
+          "reaction_N": 0.0,
+          "S11_MPa": 0.0,
+          "E11": 1.3552527156068805e-14,
+          "E22": 0.0,
+          "E33": 0.0
+        },
+        "acceptance": {
+          "reaction_le_1_percent": true,
+          "central_stress_le_1_percent": true,
+          "lateral_strain_y_le_5_percent": true,
+          "lateral_strain_z_le_5_percent": true
+        }
+      },
+      "extraction_error": null,
+      "source_artifacts": {
+        "analysis_deck_sha256": "f230d525144bbed5f664e989689d088770bd5d74e6e437fb340728e0bd1fc34d",
+        "mesh_input": "axial_bar_gmsh_mesh_h1.25mm.inp",
+        "mesh_input_sha256": "f1a10c599b51c5716559bf28937ead7d48993af44d30a3f027c30b4d0f285a4f",
+        "geometry": "axial_bar_h1.25mm.geo",
+        "geometry_sha256": "c0bed64410cfeb0141fab6a26c323ac1b7edb0b20558d00dd338a444c6fa4cbd",
+        "run_input_sha256": "f230d525144bbed5f664e989689d088770bd5d74e6e437fb340728e0bd1fc34d"
+      },
+      "artifacts": {
+        "axial_bar_gmsh_deck_h1.25mm.12d": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "axial_bar_gmsh_deck_h1.25mm.cvg": "65086dedb4572132b815ace04b294909c7f6f337111f9704fc310b02320f67f7",
+        "axial_bar_gmsh_deck_h1.25mm.dat": "1cdb44036316bb9189dec914bd06c6ec66c8c7acb23d21540ccebb819779da92",
+        "axial_bar_gmsh_deck_h1.25mm.frd": "fd04d9d436406765b4b2d7f7b42ea607f4d87050fa612e5c0f4b116762de5fc7",
+        "axial_bar_gmsh_deck_h1.25mm.sta": "01e324ec0ea28f4d1fd7f5e2da1277af53812b873e218be1604c17a4c8e4990d",
+        "metrics.json": "0dcb94ead92f9510e0d2bfde16e92791a81de849ea4cc422d66fabc33f748d12",
+        "solver.stderr.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "solver.stdout.log": "42889d88f4215f5c725b1043b2b0caf715a2b12fd343f68c4643df877ffa1ae7",
+        "spooles.out": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      }
+    },
+    {
+      "deck": "axial_bar_gmsh_deck_h2.5mm.inp",
+      "run_directory": "solver_runs/axial_bar_gmsh_deck_h2.5mm/attempt_002",
+      "cwd": "/home/gusta/projetos/OCRE/experiments/fea-reference/runs/solver_runs/axial_bar_gmsh_deck_h2.5mm/attempt_002",
+      "command": [
+        "/home/gusta/projetos/OCRE/experiments/fea-reference/.local-tools/ccx-2.23/CalculiX/ccx_2.23/src/ccx_2.23",
+        "-i",
+        "axial_bar_gmsh_deck_h2.5mm"
+      ],
+      "exit_code": 0,
+      "status": "solver_completed_and_extracted",
+      "metrics": {
+        "status": "extracted",
+        "method": {
+          "field_source": "CalculiX .dat integration-point S/E/COORD",
+          "weighting": "corner tetra volume / 4; verified affine C3D10 midside nodes",
+          "central_region_mm": [
+            33.333333333333336,
+            66.66666666666667
+          ],
+          "sample_count": 4675,
+          "volume_weight_mm3": 3332.37916246672,
+          "element_count": 3594,
+          "integration_points_per_element": 4
+        },
+        "reactions": {
+          "X_FIXED_Fx_N": -2100.0,
+          "X_DISPLACED_Fx_N": 2100.0,
+          "equilibrium_relative_to_reference": 0.0
+        },
+        "reference": {
+          "reaction_N": 2100.0,
+          "S11_MPa": 21.0,
+          "E11": 0.0001,
+          "E22": -3e-05,
+          "E33": -3e-05
+        },
+        "observed": {
+          "reaction_N": 2100.0,
+          "S11_MPa": 21.0,
+          "E11": 0.0001,
+          "E22": -3e-05,
+          "E33": -3e-05
+        },
+        "relative_error_percent": {
+          "reaction_N": 0.0,
+          "S11_MPa": 0.0,
+          "E11": 0.0,
+          "E22": 0.0,
+          "E33": 0.0
+        },
+        "acceptance": {
+          "reaction_le_1_percent": true,
+          "central_stress_le_1_percent": true,
+          "lateral_strain_y_le_5_percent": true,
+          "lateral_strain_z_le_5_percent": true
+        }
+      },
+      "extraction_error": null,
+      "source_artifacts": {
+        "analysis_deck_sha256": "0c6db772208e97bdbae43a213b23490a7ebe224f059b865f466dfd9c32b08af9",
+        "mesh_input": "axial_bar_gmsh_mesh_h2.5mm.inp",
+        "mesh_input_sha256": "c7a91da130f1fe3c29ae408234e8da7fc6d3e71b38811d2edfae102ff39a60dc",
+        "geometry": "axial_bar_h2.5mm.geo",
+        "geometry_sha256": "19a5de5e0e9b600ccb17430ba4336553a1311c65d5c51d9e27e420e38a2f3ef5",
+        "run_input_sha256": "0c6db772208e97bdbae43a213b23490a7ebe224f059b865f466dfd9c32b08af9"
+      },
+      "artifacts": {
+        "axial_bar_gmsh_deck_h2.5mm.12d": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "axial_bar_gmsh_deck_h2.5mm.cvg": "65086dedb4572132b815ace04b294909c7f6f337111f9704fc310b02320f67f7",
+        "axial_bar_gmsh_deck_h2.5mm.dat": "d821aeb114d9e9d7d1525ccf6ad35e947e22b1dc3740ee43868343f131aaa2f0",
+        "axial_bar_gmsh_deck_h2.5mm.frd": "1cb7aa9d79b82f77a1d8c4a87c2ea3e8d3b1fe0a2c6ed9177496137c49adb591",
+        "axial_bar_gmsh_deck_h2.5mm.sta": "01e324ec0ea28f4d1fd7f5e2da1277af53812b873e218be1604c17a4c8e4990d",
+        "metrics.json": "1b97d7e37854629adef4d50e3a8154f87624664a4a50c6f8bef445bd1af039ff",
+        "solver.stderr.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "solver.stdout.log": "8806dda2e8a1311c8c00fe34e78f867a0153cd7db64eb919b606b0866e3b2a12",
+        "spooles.out": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      }
+    },
+    {
+      "deck": "axial_bar_gmsh_deck_h5mm.inp",
+      "run_directory": "solver_runs/axial_bar_gmsh_deck_h5mm/attempt_004",
+      "cwd": "/home/gusta/projetos/OCRE/experiments/fea-reference/runs/solver_runs/axial_bar_gmsh_deck_h5mm/attempt_004",
+      "command": [
+        "/home/gusta/projetos/OCRE/experiments/fea-reference/.local-tools/ccx-2.23/CalculiX/ccx_2.23/src/ccx_2.23",
+        "-i",
+        "axial_bar_gmsh_deck_h5mm"
+      ],
+      "exit_code": 0,
+      "status": "solver_completed_and_extracted",
+      "metrics": {
+        "status": "extracted",
+        "method": {
+          "field_source": "CalculiX .dat integration-point S/E/COORD",
+          "weighting": "corner tetra volume / 4; verified affine C3D10 midside nodes",
+          "central_region_mm": [
+            33.333333333333336,
+            66.66666666666667
+          ],
+          "sample_count": 484,
+          "volume_weight_mm3": 3333.3333333333335,
+          "element_count": 433,
+          "integration_points_per_element": 4
+        },
+        "reactions": {
+          "X_FIXED_Fx_N": -2100.0,
+          "X_DISPLACED_Fx_N": 2100.0,
+          "equilibrium_relative_to_reference": 0.0
+        },
+        "reference": {
+          "reaction_N": 2100.0,
+          "S11_MPa": 21.0,
+          "E11": 0.0001,
+          "E22": -3e-05,
+          "E33": -3e-05
+        },
+        "observed": {
+          "reaction_N": 2100.0,
+          "S11_MPa": 21.0,
+          "E11": 0.0001,
+          "E22": -3e-05,
+          "E33": -3e-05
+        },
+        "relative_error_percent": {
+          "reaction_N": 0.0,
+          "S11_MPa": 0.0,
+          "E11": 0.0,
+          "E22": 0.0,
+          "E33": 0.0
+        },
+        "acceptance": {
+          "reaction_le_1_percent": true,
+          "central_stress_le_1_percent": true,
+          "lateral_strain_y_le_5_percent": true,
+          "lateral_strain_z_le_5_percent": true
+        }
+      },
+      "extraction_error": null,
+      "source_artifacts": {
+        "analysis_deck_sha256": "b5aaaaba3c01d23f764296541c9ee883610e2be1a7597e30cb850e968947c1ce",
+        "mesh_input": "axial_bar_gmsh_mesh_h5mm.inp",
+        "mesh_input_sha256": "ae4dda6f0b1be3ecc103c32743361d928c6d8476df2af5f0a619dc6bca8a9f57",
+        "geometry": "axial_bar_h5mm.geo",
+        "geometry_sha256": "e8020e84d29bb298d764bf4dc0a6e7cf36f2510f699ee9065ae7c8bf9aa91dfd",
+        "run_input_sha256": "b5aaaaba3c01d23f764296541c9ee883610e2be1a7597e30cb850e968947c1ce"
+      },
+      "artifacts": {
+        "axial_bar_gmsh_deck_h5mm.12d": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "axial_bar_gmsh_deck_h5mm.cvg": "65086dedb4572132b815ace04b294909c7f6f337111f9704fc310b02320f67f7",
+        "axial_bar_gmsh_deck_h5mm.dat": "a9a8e56678e9ff9c703e4e99340dfb7b260095b7f252a0cf4616e6b2e421faed",
+        "axial_bar_gmsh_deck_h5mm.frd": "7ea9b9995ab5c05c367162637d09486cdbec58112595a4d44582447b942a7229",
+        "axial_bar_gmsh_deck_h5mm.sta": "01e324ec0ea28f4d1fd7f5e2da1277af53812b873e218be1604c17a4c8e4990d",
+        "metrics.json": "65504a72df15e5ae05e54f82264fedf05d8084b043b5cdd581a6c99d9f1509de",
+        "solver.stderr.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "solver.stdout.log": "fe1833d2d020aaf9e0a3a1f3f47013fa00181d858eefe504ebc1a28bfdc6a916",
+        "spooles.out": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      }
+    }
+  ],
+  "gates": {
+    "A_input_case": {
+      "status": "not_assessed",
+      "note": "Case is hardcoded from the canonical reference; no external schema/revision input is validated."
+    },
+    "B_mesh_and_groups": {
+      "status": "warning",
+      "note": "Connectivity, semantic groups, volume, corner orientation, and affine midside/Jacobian checks passed; mean-ratio shape is recorded without an acceptance threshold."
+    },
+    "C_solver_deck": {
+      "status": "passed",
+      "note": "Separate analysis decks passed card checks and CalculiX accepted all executed decks."
+    },
+    "D_numerical_solution": {
+      "status": "passed",
+      "analytical_criteria": "passed",
+      "convergence": {
+        "status": "passed",
+        "compared_sizes_mm": [
+          1.25,
+          2.5
+        ],
+        "relative_change_percent": {
+          "reaction_N": 0.0,
+          "S11_MPa": 0.0
+        },
+        "limit_percent": 1
+      }
+    },
+    "E_provenance_and_failures": {
+      "status": "warning",
+      "note": "Input/output hashes, versions, logs and native outputs are recorded; fault-injection/replay and external validation are not assessed."
+    },
+    "solver_execution": "passed",
+    "result_extraction": "passed"
+  }
+}

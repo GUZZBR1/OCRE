@@ -1,0 +1,12 @@
+{
+  "manifest_schema_version": "0.2.0",
+  "manifest_id": "groups_axial_bar",
+  "revision_id": "rev_bar_001",
+  "case_id": "axial_bar",
+  "geometry_id": "geom_bar_region",
+  "source_artifact_id": "step_source",
+  "mesh_artifact_id": "mesh_output",
+  "mesher": {"adapter_id": "gmsh", "version": "4.15.2", "binary_sha256": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee", "settings": {"element_order": 2}},
+  "mesh": {"element_type": "C3D10", "element_order": 2, "node_count": 100, "element_count": 50},
+  "groups": [{"semantic_id": "X_FIXED", "source": {"selection_kind": "physical_group", "selector": {"physical_name": "X_FIXED", "dimension": 2}}, "target": {"set_type": "node_set", "name": "X_FIXED"}, "counts": {"expected": 1, "observed": 1}}]
+}

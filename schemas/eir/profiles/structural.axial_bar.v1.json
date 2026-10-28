@@ -1,0 +1,30 @@
+{
+  "profile_id": "structural.axial_bar.v1",
+  "version": "1",
+  "domain": "structural",
+  "analysis": "static_linear",
+  "geometry_policy": {
+    "regions_are_homogeneous_by_required_material_properties": true,
+    "regions_must_cover_analyzed_domain": true,
+    "overlapping_regions_allowed": false,
+    "partial_exclusions_allowed": false
+  },
+  "material_policy": {
+    "one_material_per_region": true,
+    "material_refs_equals_distinct_assigned_material_ids": true
+  },
+  "unit_profile_id": "ucum.structural_axial.v1",
+  "allowed_load_kinds": ["concentrated_force"],
+  "allowed_constraint_kinds": ["displacement"],
+  "field_dimensions": {
+    "geometry.length_unit": "length",
+    "geometry.bounding_box.unit": "length",
+    "frames.translation.unit": "length",
+    "materials.properties.young_modulus.unit": "stress",
+    "materials.properties.poisson_ratio.unit": "dimensionless",
+    "simulation_cases.loads[kind=concentrated_force].components[*].unit": "force",
+    "simulation_cases.constraints[kind=displacement].components[*].unit": "length"
+  },
+  "execution_parameters_projection": "complete_selected_simulation_case",
+  "execution_preflight_requires": ["complete_geometry_coverage", "resolved_frames", "verified_consumed_artifact_hashes", "adapter_capability_match"]
+}

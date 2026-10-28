@@ -1,0 +1,695 @@
+{
+  "schema_version": "1.0",
+  "runs": [
+    {
+      "run_directory": "solver_runs/axial_bar_gmsh_deck_h1.25mm",
+      "cwd": "/home/gusta/projetos/OCRE/experiments/fea-reference/runs/solver_runs/axial_bar_gmsh_deck_h1.25mm",
+      "deck": "axial_bar_gmsh_deck_h1.25mm.inp",
+      "input_sha256": "40074b078d6ccd8589b26665f8b77a86f5a962b9c83b30fdd4ebd53455875543",
+      "solver_completed": true,
+      "status_file": "axial_bar_gmsh_deck_h1.25mm.sta",
+      "metrics": {
+        "status": "extracted",
+        "method": {
+          "field_source": "CalculiX .dat integration-point S/E/COORD",
+          "weighting": "corner tetra volume / 4; verified affine C3D10 midside nodes",
+          "central_region_mm": [
+            33.333333333333336,
+            66.66666666666667
+          ],
+          "sample_count": 32916,
+          "volume_weight_mm3": 3333.456645697629,
+          "element_count": 24960,
+          "integration_points_per_element": 4
+        },
+        "reactions": {
+          "X_FIXED_Fx_N": -2100.0,
+          "X_DISPLACED_Fx_N": 2100.0,
+          "equilibrium_relative_to_reference": 0.0
+        },
+        "reference": {
+          "reaction_N": 2100.0,
+          "S11_MPa": 21.0,
+          "E11": 0.0001,
+          "E22": -3e-05,
+          "E33": -3e-05
+        },
+        "observed": {
+          "reaction_N": 2100.0,
+          "S11_MPa": 21.0,
+          "E11": 0.00010000000000000002,
+          "E22": -3e-05,
+          "E33": -3e-05
+        },
+        "relative_error_percent": {
+          "reaction_N": 0.0,
+          "S11_MPa": 0.0,
+          "E11": 1.3552527156068805e-14,
+          "E22": 0.0,
+          "E33": 0.0
+        },
+        "acceptance": {
+          "reaction_le_1_percent": true,
+          "central_stress_le_1_percent": true,
+          "lateral_strain_y_le_5_percent": true,
+          "lateral_strain_z_le_5_percent": true
+        }
+      },
+      "artifacts_sha256": {
+        "axial_bar_gmsh_deck_h1.25mm.12d": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "axial_bar_gmsh_deck_h1.25mm.cvg": "65086dedb4572132b815ace04b294909c7f6f337111f9704fc310b02320f67f7",
+        "axial_bar_gmsh_deck_h1.25mm.dat": "1cdb44036316bb9189dec914bd06c6ec66c8c7acb23d21540ccebb819779da92",
+        "axial_bar_gmsh_deck_h1.25mm.frd": "0d4181320943a57d44d30383a27793f168ed066776ff7421d924dfee9cbda00f",
+        "axial_bar_gmsh_deck_h1.25mm.inp": "40074b078d6ccd8589b26665f8b77a86f5a962b9c83b30fdd4ebd53455875543",
+        "axial_bar_gmsh_deck_h1.25mm.sta": "01e324ec0ea28f4d1fd7f5e2da1277af53812b873e218be1604c17a4c8e4990d",
+        "metrics.json": "0dcb94ead92f9510e0d2bfde16e92791a81de849ea4cc422d66fabc33f748d12",
+        "solver.stderr.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "solver.stdout.log": "a69cdae6837e4539f820eea18d85b22c0b6f02726cdc0abedf03bba341df133e",
+        "spooles.out": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      }
+    },
+    {
+      "run_directory": "solver_runs/axial_bar_gmsh_deck_h1.25mm/attempt_001",
+      "cwd": "/home/gusta/projetos/OCRE/experiments/fea-reference/runs/solver_runs/axial_bar_gmsh_deck_h1.25mm/attempt_001",
+      "deck": "axial_bar_gmsh_deck_h1.25mm.inp",
+      "input_sha256": "28dfce8957375185a097335f7200605d8f35b052bc6fbc8c0cf29e4ff4482245",
+      "solver_completed": true,
+      "status_file": "axial_bar_gmsh_deck_h1.25mm.sta",
+      "metrics": {
+        "status": "extracted",
+        "method": {
+          "field_source": "CalculiX .dat integration-point S/E/COORD",
+          "weighting": "corner tetra volume / 4; verified affine C3D10 midside nodes",
+          "central_region_mm": [
+            33.333333333333336,
+            66.66666666666667
+          ],
+          "sample_count": 32916,
+          "volume_weight_mm3": 3333.456645697629,
+          "element_count": 24960,
+          "integration_points_per_element": 4
+        },
+        "reactions": {
+          "X_FIXED_Fx_N": -2100.0,
+          "X_DISPLACED_Fx_N": 2100.0,
+          "equilibrium_relative_to_reference": 0.0
+        },
+        "reference": {
+          "reaction_N": 2100.0,
+          "S11_MPa": 21.0,
+          "E11": 0.0001,
+          "E22": -3e-05,
+          "E33": -3e-05
+        },
+        "observed": {
+          "reaction_N": 2100.0,
+          "S11_MPa": 21.0,
+          "E11": 0.00010000000000000002,
+          "E22": -3e-05,
+          "E33": -3e-05
+        },
+        "relative_error_percent": {
+          "reaction_N": 0.0,
+          "S11_MPa": 0.0,
+          "E11": 1.3552527156068805e-14,
+          "E22": 0.0,
+          "E33": 0.0
+        },
+        "acceptance": {
+          "reaction_le_1_percent": true,
+          "central_stress_le_1_percent": true,
+          "lateral_strain_y_le_5_percent": true,
+          "lateral_strain_z_le_5_percent": true
+        }
+      },
+      "artifacts_sha256": {
+        "axial_bar_gmsh_deck_h1.25mm.12d": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "axial_bar_gmsh_deck_h1.25mm.cvg": "65086dedb4572132b815ace04b294909c7f6f337111f9704fc310b02320f67f7",
+        "axial_bar_gmsh_deck_h1.25mm.dat": "1cdb44036316bb9189dec914bd06c6ec66c8c7acb23d21540ccebb819779da92",
+        "axial_bar_gmsh_deck_h1.25mm.frd": "9aa4efe4121fe3ec02580b916b6d64dcb17558f8bba295d4d7cb4847d1f45947",
+        "axial_bar_gmsh_deck_h1.25mm.inp": "28dfce8957375185a097335f7200605d8f35b052bc6fbc8c0cf29e4ff4482245",
+        "axial_bar_gmsh_deck_h1.25mm.sta": "01e324ec0ea28f4d1fd7f5e2da1277af53812b873e218be1604c17a4c8e4990d",
+        "metrics.json": "0dcb94ead92f9510e0d2bfde16e92791a81de849ea4cc422d66fabc33f748d12",
+        "solver.stderr.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "solver.stdout.log": "d9bb55c063fd81aee61eb185300705d591b543d7e51fdb0292e92785757e3c2c",
+        "spooles.out": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      }
+    },
+    {
+      "run_directory": "solver_runs/axial_bar_gmsh_deck_h1.25mm/attempt_002",
+      "cwd": "/home/gusta/projetos/OCRE/experiments/fea-reference/runs/solver_runs/axial_bar_gmsh_deck_h1.25mm/attempt_002",
+      "deck": "axial_bar_gmsh_deck_h1.25mm.inp",
+      "input_sha256": "f230d525144bbed5f664e989689d088770bd5d74e6e437fb340728e0bd1fc34d",
+      "solver_completed": true,
+      "status_file": "axial_bar_gmsh_deck_h1.25mm.sta",
+      "metrics": {
+        "status": "extracted",
+        "method": {
+          "field_source": "CalculiX .dat integration-point S/E/COORD",
+          "weighting": "corner tetra volume / 4; verified affine C3D10 midside nodes",
+          "central_region_mm": [
+            33.333333333333336,
+            66.66666666666667
+          ],
+          "sample_count": 32916,
+          "volume_weight_mm3": 3333.456645697629,
+          "element_count": 24960,
+          "integration_points_per_element": 4
+        },
+        "reactions": {
+          "X_FIXED_Fx_N": -2100.0,
+          "X_DISPLACED_Fx_N": 2100.0,
+          "equilibrium_relative_to_reference": 0.0
+        },
+        "reference": {
+          "reaction_N": 2100.0,
+          "S11_MPa": 21.0,
+          "E11": 0.0001,
+          "E22": -3e-05,
+          "E33": -3e-05
+        },
+        "observed": {
+          "reaction_N": 2100.0,
+          "S11_MPa": 21.0,
+          "E11": 0.00010000000000000002,
+          "E22": -3e-05,
+          "E33": -3e-05
+        },
+        "relative_error_percent": {
+          "reaction_N": 0.0,
+          "S11_MPa": 0.0,
+          "E11": 1.3552527156068805e-14,
+          "E22": 0.0,
+          "E33": 0.0
+        },
+        "acceptance": {
+          "reaction_le_1_percent": true,
+          "central_stress_le_1_percent": true,
+          "lateral_strain_y_le_5_percent": true,
+          "lateral_strain_z_le_5_percent": true
+        }
+      },
+      "artifacts_sha256": {
+        "axial_bar_gmsh_deck_h1.25mm.12d": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "axial_bar_gmsh_deck_h1.25mm.cvg": "65086dedb4572132b815ace04b294909c7f6f337111f9704fc310b02320f67f7",
+        "axial_bar_gmsh_deck_h1.25mm.dat": "1cdb44036316bb9189dec914bd06c6ec66c8c7acb23d21540ccebb819779da92",
+        "axial_bar_gmsh_deck_h1.25mm.frd": "fd04d9d436406765b4b2d7f7b42ea607f4d87050fa612e5c0f4b116762de5fc7",
+        "axial_bar_gmsh_deck_h1.25mm.inp": "f230d525144bbed5f664e989689d088770bd5d74e6e437fb340728e0bd1fc34d",
+        "axial_bar_gmsh_deck_h1.25mm.sta": "01e324ec0ea28f4d1fd7f5e2da1277af53812b873e218be1604c17a4c8e4990d",
+        "metrics.json": "0dcb94ead92f9510e0d2bfde16e92791a81de849ea4cc422d66fabc33f748d12",
+        "solver.stderr.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "solver.stdout.log": "42889d88f4215f5c725b1043b2b0caf715a2b12fd343f68c4643df877ffa1ae7",
+        "spooles.out": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      }
+    },
+    {
+      "run_directory": "solver_runs/axial_bar_gmsh_deck_h2.5mm",
+      "cwd": "/home/gusta/projetos/OCRE/experiments/fea-reference/runs/solver_runs/axial_bar_gmsh_deck_h2.5mm",
+      "deck": "axial_bar_gmsh_deck_h2.5mm.inp",
+      "input_sha256": "4b10d076c681db544310e9f4ad5a28677f20ee490d6a50d16786764aee94077c",
+      "solver_completed": true,
+      "status_file": "axial_bar_gmsh_deck_h2.5mm.sta",
+      "metrics": {
+        "status": "extracted",
+        "method": {
+          "field_source": "CalculiX .dat integration-point S/E/COORD",
+          "weighting": "corner tetra volume / 4; verified affine C3D10 midside nodes",
+          "central_region_mm": [
+            33.333333333333336,
+            66.66666666666667
+          ],
+          "sample_count": 4675,
+          "volume_weight_mm3": 3332.37916246672,
+          "element_count": 3594,
+          "integration_points_per_element": 4
+        },
+        "reactions": {
+          "X_FIXED_Fx_N": -2100.0,
+          "X_DISPLACED_Fx_N": 2100.0,
+          "equilibrium_relative_to_reference": 0.0
+        },
+        "reference": {
+          "reaction_N": 2100.0,
+          "S11_MPa": 21.0,
+          "E11": 0.0001,
+          "E22": -3e-05,
+          "E33": -3e-05
+        },
+        "observed": {
+          "reaction_N": 2100.0,
+          "S11_MPa": 21.0,
+          "E11": 0.0001,
+          "E22": -3e-05,
+          "E33": -3e-05
+        },
+        "relative_error_percent": {
+          "reaction_N": 0.0,
+          "S11_MPa": 0.0,
+          "E11": 0.0,
+          "E22": 0.0,
+          "E33": 0.0
+        },
+        "acceptance": {
+          "reaction_le_1_percent": true,
+          "central_stress_le_1_percent": true,
+          "lateral_strain_y_le_5_percent": true,
+          "lateral_strain_z_le_5_percent": true
+        }
+      },
+      "artifacts_sha256": {
+        "axial_bar_gmsh_deck_h2.5mm.12d": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "axial_bar_gmsh_deck_h2.5mm.cvg": "65086dedb4572132b815ace04b294909c7f6f337111f9704fc310b02320f67f7",
+        "axial_bar_gmsh_deck_h2.5mm.dat": "d821aeb114d9e9d7d1525ccf6ad35e947e22b1dc3740ee43868343f131aaa2f0",
+        "axial_bar_gmsh_deck_h2.5mm.frd": "8a91bfd55aa44e5a0736f80b08a7f14b0ab922a48f7c9c2693e62e00a138dcab",
+        "axial_bar_gmsh_deck_h2.5mm.inp": "4b10d076c681db544310e9f4ad5a28677f20ee490d6a50d16786764aee94077c",
+        "axial_bar_gmsh_deck_h2.5mm.sta": "01e324ec0ea28f4d1fd7f5e2da1277af53812b873e218be1604c17a4c8e4990d",
+        "metrics.json": "1b97d7e37854629adef4d50e3a8154f87624664a4a50c6f8bef445bd1af039ff",
+        "solver.stderr.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "solver.stdout.log": "bd503f6b2b2de929a6fa37c8f823008590076967e8782d512422f881a3be6cf9",
+        "spooles.out": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      }
+    },
+    {
+      "run_directory": "solver_runs/axial_bar_gmsh_deck_h2.5mm/attempt_001",
+      "cwd": "/home/gusta/projetos/OCRE/experiments/fea-reference/runs/solver_runs/axial_bar_gmsh_deck_h2.5mm/attempt_001",
+      "deck": "axial_bar_gmsh_deck_h2.5mm.inp",
+      "input_sha256": "b7d9680d90799e32c5b15435dc4a7b69e8d4096c60a14d1b53c2a2e5e2d0d672",
+      "solver_completed": true,
+      "status_file": "axial_bar_gmsh_deck_h2.5mm.sta",
+      "metrics": {
+        "status": "extracted",
+        "method": {
+          "field_source": "CalculiX .dat integration-point S/E/COORD",
+          "weighting": "corner tetra volume / 4; verified affine C3D10 midside nodes",
+          "central_region_mm": [
+            33.333333333333336,
+            66.66666666666667
+          ],
+          "sample_count": 4675,
+          "volume_weight_mm3": 3332.37916246672,
+          "element_count": 3594,
+          "integration_points_per_element": 4
+        },
+        "reactions": {
+          "X_FIXED_Fx_N": -2100.0,
+          "X_DISPLACED_Fx_N": 2100.0,
+          "equilibrium_relative_to_reference": 0.0
+        },
+        "reference": {
+          "reaction_N": 2100.0,
+          "S11_MPa": 21.0,
+          "E11": 0.0001,
+          "E22": -3e-05,
+          "E33": -3e-05
+        },
+        "observed": {
+          "reaction_N": 2100.0,
+          "S11_MPa": 21.0,
+          "E11": 0.0001,
+          "E22": -3e-05,
+          "E33": -3e-05
+        },
+        "relative_error_percent": {
+          "reaction_N": 0.0,
+          "S11_MPa": 0.0,
+          "E11": 0.0,
+          "E22": 0.0,
+          "E33": 0.0
+        },
+        "acceptance": {
+          "reaction_le_1_percent": true,
+          "central_stress_le_1_percent": true,
+          "lateral_strain_y_le_5_percent": true,
+          "lateral_strain_z_le_5_percent": true
+        }
+      },
+      "artifacts_sha256": {
+        "axial_bar_gmsh_deck_h2.5mm.12d": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "axial_bar_gmsh_deck_h2.5mm.cvg": "65086dedb4572132b815ace04b294909c7f6f337111f9704fc310b02320f67f7",
+        "axial_bar_gmsh_deck_h2.5mm.dat": "d821aeb114d9e9d7d1525ccf6ad35e947e22b1dc3740ee43868343f131aaa2f0",
+        "axial_bar_gmsh_deck_h2.5mm.frd": "ae3c900690b184eae756905ea9f95b6376db8d6ee173745be41dc4bbbabf2c08",
+        "axial_bar_gmsh_deck_h2.5mm.inp": "b7d9680d90799e32c5b15435dc4a7b69e8d4096c60a14d1b53c2a2e5e2d0d672",
+        "axial_bar_gmsh_deck_h2.5mm.sta": "01e324ec0ea28f4d1fd7f5e2da1277af53812b873e218be1604c17a4c8e4990d",
+        "metrics.json": "1b97d7e37854629adef4d50e3a8154f87624664a4a50c6f8bef445bd1af039ff",
+        "solver.stderr.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "solver.stdout.log": "37a784cdb8504d441ab3a53ea2aff21b4f3e5e45d6398e0c59eb0d293bbe7b82",
+        "spooles.out": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      }
+    },
+    {
+      "run_directory": "solver_runs/axial_bar_gmsh_deck_h2.5mm/attempt_002",
+      "cwd": "/home/gusta/projetos/OCRE/experiments/fea-reference/runs/solver_runs/axial_bar_gmsh_deck_h2.5mm/attempt_002",
+      "deck": "axial_bar_gmsh_deck_h2.5mm.inp",
+      "input_sha256": "0c6db772208e97bdbae43a213b23490a7ebe224f059b865f466dfd9c32b08af9",
+      "solver_completed": true,
+      "status_file": "axial_bar_gmsh_deck_h2.5mm.sta",
+      "metrics": {
+        "status": "extracted",
+        "method": {
+          "field_source": "CalculiX .dat integration-point S/E/COORD",
+          "weighting": "corner tetra volume / 4; verified affine C3D10 midside nodes",
+          "central_region_mm": [
+            33.333333333333336,
+            66.66666666666667
+          ],
+          "sample_count": 4675,
+          "volume_weight_mm3": 3332.37916246672,
+          "element_count": 3594,
+          "integration_points_per_element": 4
+        },
+        "reactions": {
+          "X_FIXED_Fx_N": -2100.0,
+          "X_DISPLACED_Fx_N": 2100.0,
+          "equilibrium_relative_to_reference": 0.0
+        },
+        "reference": {
+          "reaction_N": 2100.0,
+          "S11_MPa": 21.0,
+          "E11": 0.0001,
+          "E22": -3e-05,
+          "E33": -3e-05
+        },
+        "observed": {
+          "reaction_N": 2100.0,
+          "S11_MPa": 21.0,
+          "E11": 0.0001,
+          "E22": -3e-05,
+          "E33": -3e-05
+        },
+        "relative_error_percent": {
+          "reaction_N": 0.0,
+          "S11_MPa": 0.0,
+          "E11": 0.0,
+          "E22": 0.0,
+          "E33": 0.0
+        },
+        "acceptance": {
+          "reaction_le_1_percent": true,
+          "central_stress_le_1_percent": true,
+          "lateral_strain_y_le_5_percent": true,
+          "lateral_strain_z_le_5_percent": true
+        }
+      },
+      "artifacts_sha256": {
+        "axial_bar_gmsh_deck_h2.5mm.12d": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "axial_bar_gmsh_deck_h2.5mm.cvg": "65086dedb4572132b815ace04b294909c7f6f337111f9704fc310b02320f67f7",
+        "axial_bar_gmsh_deck_h2.5mm.dat": "d821aeb114d9e9d7d1525ccf6ad35e947e22b1dc3740ee43868343f131aaa2f0",
+        "axial_bar_gmsh_deck_h2.5mm.frd": "1cb7aa9d79b82f77a1d8c4a87c2ea3e8d3b1fe0a2c6ed9177496137c49adb591",
+        "axial_bar_gmsh_deck_h2.5mm.inp": "0c6db772208e97bdbae43a213b23490a7ebe224f059b865f466dfd9c32b08af9",
+        "axial_bar_gmsh_deck_h2.5mm.sta": "01e324ec0ea28f4d1fd7f5e2da1277af53812b873e218be1604c17a4c8e4990d",
+        "metrics.json": "1b97d7e37854629adef4d50e3a8154f87624664a4a50c6f8bef445bd1af039ff",
+        "solver.stderr.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "solver.stdout.log": "8806dda2e8a1311c8c00fe34e78f867a0153cd7db64eb919b606b0866e3b2a12",
+        "spooles.out": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      }
+    },
+    {
+      "run_directory": "solver_runs/axial_bar_gmsh_deck_h5mm",
+      "cwd": "/home/gusta/projetos/OCRE/experiments/fea-reference/runs/solver_runs/axial_bar_gmsh_deck_h5mm",
+      "deck": "axial_bar_gmsh_deck_h5mm.inp",
+      "input_sha256": "342938394f29a374651b1c377161eda3ba8b4057b3a5d5ceca8f96ed4871c522",
+      "solver_completed": true,
+      "status_file": "axial_bar_gmsh_deck_h5mm.sta",
+      "metrics": null,
+      "artifacts_sha256": {
+        "axial_bar_gmsh_deck_h5mm.12d": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "axial_bar_gmsh_deck_h5mm.cvg": "65086dedb4572132b815ace04b294909c7f6f337111f9704fc310b02320f67f7",
+        "axial_bar_gmsh_deck_h5mm.dat": "cfe7a9f53e04b736511e8052551319da3cb1262107bbe795852a0e5de524e7fa",
+        "axial_bar_gmsh_deck_h5mm.frd": "12a7f748acfb0366f2283bec8ab649888e65671976a9330c70344ee1f37e0c4f",
+        "axial_bar_gmsh_deck_h5mm.inp": "342938394f29a374651b1c377161eda3ba8b4057b3a5d5ceca8f96ed4871c522",
+        "axial_bar_gmsh_deck_h5mm.sta": "01e324ec0ea28f4d1fd7f5e2da1277af53812b873e218be1604c17a4c8e4990d",
+        "solver.stderr.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "solver.stdout.log": "3c090e045aa0b6c8240d84e13dfbe17a2c3cf37c43646bad9864af0d89ae1c2a",
+        "spooles.out": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      }
+    },
+    {
+      "run_directory": "solver_runs/axial_bar_gmsh_deck_h5mm/attempt_001",
+      "cwd": "/home/gusta/projetos/OCRE/experiments/fea-reference/runs/solver_runs/axial_bar_gmsh_deck_h5mm/attempt_001",
+      "deck": "axial_bar_gmsh_deck_h5mm.inp",
+      "input_sha256": "3888d336e3013c989df3aca3d1df1d07f731be8592aa29f819daa50bf8e84923",
+      "solver_completed": true,
+      "status_file": "axial_bar_gmsh_deck_h5mm.sta",
+      "metrics": {
+        "status": "extracted",
+        "method": {
+          "field_source": "CalculiX .dat integration-point S/E/COORD",
+          "weighting": "corner tetra volume / 4; verified affine C3D10 midside nodes",
+          "central_region_mm": [
+            33.333333333333336,
+            66.66666666666667
+          ],
+          "sample_count": 484,
+          "volume_weight_mm3": 3333.3333333333335,
+          "element_count": 433,
+          "integration_points_per_element": 4
+        },
+        "reactions": {
+          "X_FIXED_Fx_N": -2100.0,
+          "X_DISPLACED_Fx_N": 2100.0,
+          "equilibrium_relative_to_reference": 0.0
+        },
+        "reference": {
+          "reaction_N": 2100.0,
+          "S11_MPa": 21.0,
+          "E11": 0.0001,
+          "E22": -3e-05,
+          "E33": -3e-05
+        },
+        "observed": {
+          "reaction_N": 2100.0,
+          "S11_MPa": 21.0,
+          "E11": 0.0001,
+          "E22": -3e-05,
+          "E33": -3e-05
+        },
+        "relative_error_percent": {
+          "reaction_N": 0.0,
+          "S11_MPa": 0.0,
+          "E11": 0.0,
+          "E22": 0.0,
+          "E33": 0.0
+        },
+        "acceptance": {
+          "reaction_le_1_percent": true,
+          "central_stress_le_1_percent": true,
+          "lateral_strain_y_le_5_percent": true,
+          "lateral_strain_z_le_5_percent": true
+        }
+      },
+      "artifacts_sha256": {
+        "axial_bar_gmsh_deck_h5mm.12d": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "axial_bar_gmsh_deck_h5mm.cvg": "65086dedb4572132b815ace04b294909c7f6f337111f9704fc310b02320f67f7",
+        "axial_bar_gmsh_deck_h5mm.dat": "a9a8e56678e9ff9c703e4e99340dfb7b260095b7f252a0cf4616e6b2e421faed",
+        "axial_bar_gmsh_deck_h5mm.frd": "f636531bb682102a21868c71b4f52b05fc8f797fe544a00474e1de7fe9e5691a",
+        "axial_bar_gmsh_deck_h5mm.inp": "3888d336e3013c989df3aca3d1df1d07f731be8592aa29f819daa50bf8e84923",
+        "axial_bar_gmsh_deck_h5mm.sta": "01e324ec0ea28f4d1fd7f5e2da1277af53812b873e218be1604c17a4c8e4990d",
+        "metrics.json": "65504a72df15e5ae05e54f82264fedf05d8084b043b5cdd581a6c99d9f1509de",
+        "solver.stderr.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "solver.stdout.log": "210d9b8b04944c3cea6df586b8ed39017921fc294c84ae0789c418ee1dd92ce6",
+        "spooles.out": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      }
+    },
+    {
+      "run_directory": "solver_runs/axial_bar_gmsh_deck_h5mm/attempt_002",
+      "cwd": "/home/gusta/projetos/OCRE/experiments/fea-reference/runs/solver_runs/axial_bar_gmsh_deck_h5mm/attempt_002",
+      "deck": "axial_bar_gmsh_deck_h5mm.inp",
+      "input_sha256": "3888d336e3013c989df3aca3d1df1d07f731be8592aa29f819daa50bf8e84923",
+      "solver_completed": true,
+      "status_file": "axial_bar_gmsh_deck_h5mm.sta",
+      "metrics": {
+        "status": "extracted",
+        "method": {
+          "field_source": "CalculiX .dat integration-point S/E/COORD",
+          "weighting": "corner tetra volume / 4; verified affine C3D10 midside nodes",
+          "central_region_mm": [
+            33.333333333333336,
+            66.66666666666667
+          ],
+          "sample_count": 484,
+          "volume_weight_mm3": 3333.3333333333335,
+          "element_count": 433,
+          "integration_points_per_element": 4
+        },
+        "reactions": {
+          "X_FIXED_Fx_N": -2100.0,
+          "X_DISPLACED_Fx_N": 2100.0,
+          "equilibrium_relative_to_reference": 0.0
+        },
+        "reference": {
+          "reaction_N": 2100.0,
+          "S11_MPa": 21.0,
+          "E11": 0.0001,
+          "E22": -3e-05,
+          "E33": -3e-05
+        },
+        "observed": {
+          "reaction_N": 2100.0,
+          "S11_MPa": 21.0,
+          "E11": 0.0001,
+          "E22": -3e-05,
+          "E33": -3e-05
+        },
+        "relative_error_percent": {
+          "reaction_N": 0.0,
+          "S11_MPa": 0.0,
+          "E11": 0.0,
+          "E22": 0.0,
+          "E33": 0.0
+        },
+        "acceptance": {
+          "reaction_le_1_percent": true,
+          "central_stress_le_1_percent": true,
+          "lateral_strain_y_le_5_percent": true,
+          "lateral_strain_z_le_5_percent": true
+        }
+      },
+      "artifacts_sha256": {
+        "axial_bar_gmsh_deck_h5mm.12d": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "axial_bar_gmsh_deck_h5mm.cvg": "65086dedb4572132b815ace04b294909c7f6f337111f9704fc310b02320f67f7",
+        "axial_bar_gmsh_deck_h5mm.dat": "a9a8e56678e9ff9c703e4e99340dfb7b260095b7f252a0cf4616e6b2e421faed",
+        "axial_bar_gmsh_deck_h5mm.frd": "99844ed1dacb3e3078ca0dde7be9ee4fa5627f0ab264f956a8173769a97ce3ea",
+        "axial_bar_gmsh_deck_h5mm.inp": "3888d336e3013c989df3aca3d1df1d07f731be8592aa29f819daa50bf8e84923",
+        "axial_bar_gmsh_deck_h5mm.sta": "01e324ec0ea28f4d1fd7f5e2da1277af53812b873e218be1604c17a4c8e4990d",
+        "metrics.json": "65504a72df15e5ae05e54f82264fedf05d8084b043b5cdd581a6c99d9f1509de",
+        "solver.stderr.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "solver.stdout.log": "b13d7c2ee0f9ec4549ed7caa755152139598d921c2ee65d028031183d1b0c7dd",
+        "spooles.out": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      }
+    },
+    {
+      "run_directory": "solver_runs/axial_bar_gmsh_deck_h5mm/attempt_003",
+      "cwd": "/home/gusta/projetos/OCRE/experiments/fea-reference/runs/solver_runs/axial_bar_gmsh_deck_h5mm/attempt_003",
+      "deck": "axial_bar_gmsh_deck_h5mm.inp",
+      "input_sha256": "975853e4f614af2a174966885409a8e448478c880ccab238803cd571779a69e8",
+      "solver_completed": true,
+      "status_file": "axial_bar_gmsh_deck_h5mm.sta",
+      "metrics": {
+        "status": "extracted",
+        "method": {
+          "field_source": "CalculiX .dat integration-point S/E/COORD",
+          "weighting": "corner tetra volume / 4; verified affine C3D10 midside nodes",
+          "central_region_mm": [
+            33.333333333333336,
+            66.66666666666667
+          ],
+          "sample_count": 484,
+          "volume_weight_mm3": 3333.3333333333335,
+          "element_count": 433,
+          "integration_points_per_element": 4
+        },
+        "reactions": {
+          "X_FIXED_Fx_N": -2100.0,
+          "X_DISPLACED_Fx_N": 2100.0,
+          "equilibrium_relative_to_reference": 0.0
+        },
+        "reference": {
+          "reaction_N": 2100.0,
+          "S11_MPa": 21.0,
+          "E11": 0.0001,
+          "E22": -3e-05,
+          "E33": -3e-05
+        },
+        "observed": {
+          "reaction_N": 2100.0,
+          "S11_MPa": 21.0,
+          "E11": 0.0001,
+          "E22": -3e-05,
+          "E33": -3e-05
+        },
+        "relative_error_percent": {
+          "reaction_N": 0.0,
+          "S11_MPa": 0.0,
+          "E11": 0.0,
+          "E22": 0.0,
+          "E33": 0.0
+        },
+        "acceptance": {
+          "reaction_le_1_percent": true,
+          "central_stress_le_1_percent": true,
+          "lateral_strain_y_le_5_percent": true,
+          "lateral_strain_z_le_5_percent": true
+        }
+      },
+      "artifacts_sha256": {
+        "axial_bar_gmsh_deck_h5mm.12d": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "axial_bar_gmsh_deck_h5mm.cvg": "65086dedb4572132b815ace04b294909c7f6f337111f9704fc310b02320f67f7",
+        "axial_bar_gmsh_deck_h5mm.dat": "a9a8e56678e9ff9c703e4e99340dfb7b260095b7f252a0cf4616e6b2e421faed",
+        "axial_bar_gmsh_deck_h5mm.frd": "5b5999ca7a8355a5039713ec0df30caa7a91e14e36c94a2944edc1ca8686139c",
+        "axial_bar_gmsh_deck_h5mm.inp": "975853e4f614af2a174966885409a8e448478c880ccab238803cd571779a69e8",
+        "axial_bar_gmsh_deck_h5mm.sta": "01e324ec0ea28f4d1fd7f5e2da1277af53812b873e218be1604c17a4c8e4990d",
+        "metrics.json": "65504a72df15e5ae05e54f82264fedf05d8084b043b5cdd581a6c99d9f1509de",
+        "solver.stderr.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "solver.stdout.log": "c2e0d13f8d4d9bd6c838ad06e8540ea04a9252a02bde8e472275387f3a73ee46",
+        "spooles.out": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      }
+    },
+    {
+      "run_directory": "solver_runs/axial_bar_gmsh_deck_h5mm/attempt_004",
+      "cwd": "/home/gusta/projetos/OCRE/experiments/fea-reference/runs/solver_runs/axial_bar_gmsh_deck_h5mm/attempt_004",
+      "deck": "axial_bar_gmsh_deck_h5mm.inp",
+      "input_sha256": "b5aaaaba3c01d23f764296541c9ee883610e2be1a7597e30cb850e968947c1ce",
+      "solver_completed": true,
+      "status_file": "axial_bar_gmsh_deck_h5mm.sta",
+      "metrics": {
+        "status": "extracted",
+        "method": {
+          "field_source": "CalculiX .dat integration-point S/E/COORD",
+          "weighting": "corner tetra volume / 4; verified affine C3D10 midside nodes",
+          "central_region_mm": [
+            33.333333333333336,
+            66.66666666666667
+          ],
+          "sample_count": 484,
+          "volume_weight_mm3": 3333.3333333333335,
+          "element_count": 433,
+          "integration_points_per_element": 4
+        },
+        "reactions": {
+          "X_FIXED_Fx_N": -2100.0,
+          "X_DISPLACED_Fx_N": 2100.0,
+          "equilibrium_relative_to_reference": 0.0
+        },
+        "reference": {
+          "reaction_N": 2100.0,
+          "S11_MPa": 21.0,
+          "E11": 0.0001,
+          "E22": -3e-05,
+          "E33": -3e-05
+        },
+        "observed": {
+          "reaction_N": 2100.0,
+          "S11_MPa": 21.0,
+          "E11": 0.0001,
+          "E22": -3e-05,
+          "E33": -3e-05
+        },
+        "relative_error_percent": {
+          "reaction_N": 0.0,
+          "S11_MPa": 0.0,
+          "E11": 0.0,
+          "E22": 0.0,
+          "E33": 0.0
+        },
+        "acceptance": {
+          "reaction_le_1_percent": true,
+          "central_stress_le_1_percent": true,
+          "lateral_strain_y_le_5_percent": true,
+          "lateral_strain_z_le_5_percent": true
+        }
+      },
+      "artifacts_sha256": {
+        "axial_bar_gmsh_deck_h5mm.12d": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "axial_bar_gmsh_deck_h5mm.cvg": "65086dedb4572132b815ace04b294909c7f6f337111f9704fc310b02320f67f7",
+        "axial_bar_gmsh_deck_h5mm.dat": "a9a8e56678e9ff9c703e4e99340dfb7b260095b7f252a0cf4616e6b2e421faed",
+        "axial_bar_gmsh_deck_h5mm.frd": "7ea9b9995ab5c05c367162637d09486cdbec58112595a4d44582447b942a7229",
+        "axial_bar_gmsh_deck_h5mm.inp": "b5aaaaba3c01d23f764296541c9ee883610e2be1a7597e30cb850e968947c1ce",
+        "axial_bar_gmsh_deck_h5mm.sta": "01e324ec0ea28f4d1fd7f5e2da1277af53812b873e218be1604c17a4c8e4990d",
+        "metrics.json": "65504a72df15e5ae05e54f82264fedf05d8084b043b5cdd581a6c99d9f1509de",
+        "solver.stderr.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "solver.stdout.log": "fe1833d2d020aaf9e0a3a1f3f47013fa00181d858eefe504ebc1a28bfdc6a916",
+        "spooles.out": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      }
+    }
+  ]
+}

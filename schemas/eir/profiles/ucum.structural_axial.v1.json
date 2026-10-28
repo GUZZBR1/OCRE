@@ -1,0 +1,27 @@
+{
+  "unit_profile_id": "ucum.structural_axial.v1",
+  "version": "1",
+  "quantities": {
+    "length": {
+      "accepted_ucum": ["m", "mm"],
+      "preparation_unit": "mm",
+      "conversion_to_preparation_unit": {"m": "1000", "mm": "1"}
+    },
+    "force": {
+      "accepted_ucum": ["N", "kN"],
+      "preparation_unit": "N",
+      "conversion_to_preparation_unit": {"N": "1", "kN": "1000"}
+    },
+    "stress": {
+      "accepted_ucum": ["GPa", "MPa", "N/mm2", "Pa", "kPa"],
+      "preparation_unit": "N/mm2",
+      "conversion_to_preparation_unit": {"N/mm2": "1", "Pa": "0.000001", "kPa": "0.001", "MPa": "1", "GPa": "1000"}
+    },
+    "dimensionless": {
+      "accepted_ucum": ["1"],
+      "preparation_unit": "1",
+      "conversion_to_preparation_unit": {"1": "1"}
+    }
+  },
+  "unsupported_dimensions": "reject"
+}

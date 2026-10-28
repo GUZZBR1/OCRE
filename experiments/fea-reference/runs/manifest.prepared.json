@@ -1,0 +1,267 @@
+{
+  "schema_version": "0.2.0",
+  "case_id": "case_tension_bar_v1",
+  "artifact_kind": "gmsh_c3d10_mesh_and_separate_ccx_analysis_decks",
+  "status": "prepared_solver_available_not_run",
+  "generated_at_utc": "2026-10-28T03:08:44.177776+00:00",
+  "geometry": {
+    "shape": "rectangular_prism",
+    "length_mm": 100.0,
+    "width_mm": 10.0,
+    "height_mm": 10.0,
+    "axis": "x",
+    "units": {
+      "length": "mm",
+      "force": "N",
+      "stress": "MPa"
+    }
+  },
+  "material": {
+    "model": "linear_elastic_isotropic",
+    "young_modulus_MPa": 210000.0,
+    "poisson_ratio": 0.3
+  },
+  "boundary_conditions": {
+    "x_fixed_ux_mm": 0,
+    "x_displaced_ux_mm": 0.01,
+    "transverse_pins": "two minimal pins; free Poisson contraction"
+  },
+  "analytical_reference_only": {
+    "axial_strain": 0.0001,
+    "axial_stress_MPa": 21.0,
+    "reaction_N": 2100.0,
+    "lateral_strain": -3e-05
+  },
+  "mesh_artifacts": [
+    {
+      "characteristic_size_mm": 5.0,
+      "node_count": 998,
+      "element_count": 433,
+      "element_type": "C3D10",
+      "orientation": {
+        "minimum_corner_volume_mm3": 4.703583808808935,
+        "negative_elements": 0,
+        "max_midside_edge_deviation_mm": 4.973799150320701e-13,
+        "jacobian": "positive and constant for verified affine C3D10 mapping"
+      },
+      "shape_quality": {
+        "metric": "corner tetrahedron mean ratio (1 is equilateral)",
+        "minimum": 0.42846277650264725,
+        "mean": 0.8104071759792724,
+        "acceptance_threshold": null,
+        "status": "measured_threshold_not_defined"
+      },
+      "volume_mm3": 10000.0,
+      "groups": {
+        "VOLUME": 433,
+        "X_FIXED": 37,
+        "X_DISPLACED": 37,
+        "PIN_A": {
+          "node": 2,
+          "xyz_mm": [
+            0,
+            -5.0,
+            -5.0
+          ],
+          "selection": "unique coordinate match"
+        },
+        "PIN_B": {
+          "node": 4,
+          "xyz_mm": [
+            0,
+            5.0,
+            -5.0
+          ],
+          "selection": "unique coordinate match"
+        }
+      },
+      "group_mapping": {
+        "VOLUME": "ELSET=VOLUME exactly equals all C3D10 IDs",
+        "X_FIXED": "NSET exactly equals nodes at x=0",
+        "X_DISPLACED": "NSET exactly equals nodes at x=100",
+        "PIN_A": "derived from unique expected coordinates; not a Gmsh physical group",
+        "PIN_B": "derived from unique expected coordinates; not a Gmsh physical group"
+      },
+      "geometry": "axial_bar_h5mm.geo",
+      "geometry_sha256": "e8020e84d29bb298d764bf4dc0a6e7cf36f2510f699ee9065ae7c8bf9aa91dfd",
+      "artifact_kind": "mesh_and_separate_analysis_deck",
+      "mesh_input": "axial_bar_gmsh_mesh_h5mm.inp",
+      "mesh_sha256": "ae4dda6f0b1be3ecc103c32743361d928c6d8476df2af5f0a619dc6bca8a9f57",
+      "analysis_input": "axial_bar_gmsh_deck_h5mm.inp",
+      "analysis_sha256": "b5aaaaba3c01d23f764296541c9ee883610e2be1a7597e30cb850e968947c1ce",
+      "export_command": [
+        "/home/gusta/projetos/OCRE/experiments/fea-reference/.local-tools/gmsh-4.15.2/gmsh-4.15.2-Linux64/bin/gmsh",
+        "/home/gusta/projetos/OCRE/experiments/fea-reference/runs/axial_bar_h5mm.geo",
+        "-3",
+        "-order",
+        "2",
+        "-format",
+        "inp",
+        "-o",
+        "/home/gusta/projetos/OCRE/experiments/fea-reference/runs/gmsh-p8n7kkdc/axial_bar_gmsh_mesh_h5mm.inp"
+      ]
+    },
+    {
+      "characteristic_size_mm": 2.5,
+      "node_count": 6630,
+      "element_count": 3594,
+      "element_type": "C3D10",
+      "orientation": {
+        "minimum_corner_volume_mm3": 0.8044820408178178,
+        "negative_elements": 0,
+        "max_midside_edge_deviation_mm": 5.115907697472721e-13,
+        "jacobian": "positive and constant for verified affine C3D10 mapping"
+      },
+      "shape_quality": {
+        "metric": "corner tetrahedron mean ratio (1 is equilateral)",
+        "minimum": 0.3947615139350211,
+        "mean": 0.8061232532042574,
+        "acceptance_threshold": null,
+        "status": "measured_threshold_not_defined"
+      },
+      "volume_mm3": 10000.0,
+      "groups": {
+        "VOLUME": 3594,
+        "X_FIXED": 101,
+        "X_DISPLACED": 105,
+        "PIN_A": {
+          "node": 2,
+          "xyz_mm": [
+            0,
+            -5.0,
+            -5.0
+          ],
+          "selection": "unique coordinate match"
+        },
+        "PIN_B": {
+          "node": 4,
+          "xyz_mm": [
+            0,
+            5.0,
+            -5.0
+          ],
+          "selection": "unique coordinate match"
+        }
+      },
+      "group_mapping": {
+        "VOLUME": "ELSET=VOLUME exactly equals all C3D10 IDs",
+        "X_FIXED": "NSET exactly equals nodes at x=0",
+        "X_DISPLACED": "NSET exactly equals nodes at x=100",
+        "PIN_A": "derived from unique expected coordinates; not a Gmsh physical group",
+        "PIN_B": "derived from unique expected coordinates; not a Gmsh physical group"
+      },
+      "geometry": "axial_bar_h2.5mm.geo",
+      "geometry_sha256": "19a5de5e0e9b600ccb17430ba4336553a1311c65d5c51d9e27e420e38a2f3ef5",
+      "artifact_kind": "mesh_and_separate_analysis_deck",
+      "mesh_input": "axial_bar_gmsh_mesh_h2.5mm.inp",
+      "mesh_sha256": "c7a91da130f1fe3c29ae408234e8da7fc6d3e71b38811d2edfae102ff39a60dc",
+      "analysis_input": "axial_bar_gmsh_deck_h2.5mm.inp",
+      "analysis_sha256": "0c6db772208e97bdbae43a213b23490a7ebe224f059b865f466dfd9c32b08af9",
+      "export_command": [
+        "/home/gusta/projetos/OCRE/experiments/fea-reference/.local-tools/gmsh-4.15.2/gmsh-4.15.2-Linux64/bin/gmsh",
+        "/home/gusta/projetos/OCRE/experiments/fea-reference/runs/axial_bar_h2.5mm.geo",
+        "-3",
+        "-order",
+        "2",
+        "-format",
+        "inp",
+        "-o",
+        "/home/gusta/projetos/OCRE/experiments/fea-reference/runs/gmsh-0y3t7e9i/axial_bar_gmsh_mesh_h2.5mm.inp"
+      ]
+    },
+    {
+      "characteristic_size_mm": 1.25,
+      "node_count": 39598,
+      "element_count": 24960,
+      "element_type": "C3D10",
+      "orientation": {
+        "minimum_corner_volume_mm3": 0.09711312073426466,
+        "negative_elements": 0,
+        "max_midside_edge_deviation_mm": 7.496225862269057e-13,
+        "jacobian": "positive and constant for verified affine C3D10 mapping"
+      },
+      "shape_quality": {
+        "metric": "corner tetrahedron mean ratio (1 is equilateral)",
+        "minimum": 0.39063839892363855,
+        "mean": 0.8230546723964889,
+        "acceptance_threshold": null,
+        "status": "measured_threshold_not_defined"
+      },
+      "volume_mm3": 10000.0,
+      "groups": {
+        "VOLUME": 24960,
+        "X_FIXED": 357,
+        "X_DISPLACED": 357,
+        "PIN_A": {
+          "node": 2,
+          "xyz_mm": [
+            0,
+            -5.0,
+            -5.0
+          ],
+          "selection": "unique coordinate match"
+        },
+        "PIN_B": {
+          "node": 4,
+          "xyz_mm": [
+            0,
+            5.0,
+            -5.0
+          ],
+          "selection": "unique coordinate match"
+        }
+      },
+      "group_mapping": {
+        "VOLUME": "ELSET=VOLUME exactly equals all C3D10 IDs",
+        "X_FIXED": "NSET exactly equals nodes at x=0",
+        "X_DISPLACED": "NSET exactly equals nodes at x=100",
+        "PIN_A": "derived from unique expected coordinates; not a Gmsh physical group",
+        "PIN_B": "derived from unique expected coordinates; not a Gmsh physical group"
+      },
+      "geometry": "axial_bar_h1.25mm.geo",
+      "geometry_sha256": "c0bed64410cfeb0141fab6a26c323ac1b7edb0b20558d00dd338a444c6fa4cbd",
+      "artifact_kind": "mesh_and_separate_analysis_deck",
+      "mesh_input": "axial_bar_gmsh_mesh_h1.25mm.inp",
+      "mesh_sha256": "f1a10c599b51c5716559bf28937ead7d48993af44d30a3f027c30b4d0f285a4f",
+      "analysis_input": "axial_bar_gmsh_deck_h1.25mm.inp",
+      "analysis_sha256": "f230d525144bbed5f664e989689d088770bd5d74e6e437fb340728e0bd1fc34d",
+      "export_command": [
+        "/home/gusta/projetos/OCRE/experiments/fea-reference/.local-tools/gmsh-4.15.2/gmsh-4.15.2-Linux64/bin/gmsh",
+        "/home/gusta/projetos/OCRE/experiments/fea-reference/runs/axial_bar_h1.25mm.geo",
+        "-3",
+        "-order",
+        "2",
+        "-format",
+        "inp",
+        "-o",
+        "/home/gusta/projetos/OCRE/experiments/fea-reference/runs/gmsh-j2qr3_jc/axial_bar_gmsh_mesh_h1.25mm.inp"
+      ]
+    }
+  ],
+  "toolchain": {
+    "python": "3.12.3",
+    "gmsh": {
+      "available": true,
+      "path": "/home/gusta/projetos/OCRE/experiments/fea-reference/.local-tools/gmsh-4.15.2/gmsh-4.15.2-Linux64/bin/gmsh",
+      "version": "4.15.2",
+      "probe_exit_code": 0,
+      "probe_cwd": null,
+      "probe_note": null,
+      "sha256": "9dccade5dd1374b28c18af9085d7ce63216cf7ac39d3cefbc0adbfabafba2c7f"
+    },
+    "calculix_ccx": {
+      "available": true,
+      "path": "/home/gusta/projetos/OCRE/experiments/fea-reference/.local-tools/ccx-2.23/CalculiX/ccx_2.23/src/ccx_2.23",
+      "version": "CalculiX Version 2.23, Copyright(C) 1998-2025 Guido Dhondt",
+      "probe_exit_code": 201,
+      "probe_cwd": "runs/ccx-probes/ccx-version-tcc6sqyc (temporary; removed after probe)",
+      "probe_note": "CCX has no --version option; banner captured in isolated cwd; exit 201 is expected.",
+      "sha256": "31be21fc2f0902bd9a05acc2651dbac6dc2a2573dabbf235e39a38cb6f458862"
+    }
+  },
+  "execution": {
+    "solver_executed": false,
+    "limitation": "Solver has not been run; no FE result is claimed.",
+    "resource_limits": "Gmsh timeout 120 s per export; CalculiX timeout 600 s per deck; no explicit memory cap."
+  }
+}
