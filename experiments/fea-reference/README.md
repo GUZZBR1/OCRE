@@ -24,11 +24,27 @@ python3 experiments/fea-reference/audit_evidence.py \
   --evidence-root experiments/fea-reference/runs
 ```
 
-O auditor aceita apenas os formatos de manifesto de execução do solver e de
-preparação da malha que o harness produz. Todos os artefatos referenciados
-devem estar dentro da raiz indicada; referências ausentes, alteradas ou fora
-dela retornam erro. Caminhos absolutos de comandos e ferramentas nos
-manifestos são ignorados e nunca executados.
+O auditor aceita os formatos de execução do solver e de preparação da malha
+que o harness produz, além do sidecar experimental de proveniência descrito
+abaixo. Todos os artefatos referenciados devem estar dentro da raiz indicada;
+referências ausentes, alteradas ou fora dela retornam erro ou estado
+incompleto. Caminhos absolutos de comandos e ferramentas nos manifestos são
+ignorados e nunca executados.
+
+O sidecar experimental de proveniência está em
+`runs/cad_mesh_provenance.json`. Para auditá-lo separadamente:
+
+```sh
+python3 experiments/fea-reference/audit_evidence.py \
+  experiments/fea-reference/runs/cad_mesh_provenance.json \
+  --evidence-root experiments/fea-reference/runs
+```
+
+Ele identifica a origem atual como `synthetic_geo`: primitivas `.geo` não são
+CAD importado. O sidecar só referencia artefatos já versionados e métricas já
+registradas; não executa Gmsh ou CalculiX. A métrica de mean ratio é específica
+do benchmark e não define limiar geral. A proveniência de STEP/OCCT permanece
+pendente; veja [CAD_MESH_PROVENANCE_LOCAL.md](../../docs/architecture/CAD_MESH_PROVENANCE_LOCAL.md).
 
 `preflight` procura, nesta ordem, `--gmsh`/`--ccx`, `GMSH_BIN`/`CCX_BIN`, os
 binários em `.local-tools/` e por fim `PATH`. `CCX_LIB_DIR` ou

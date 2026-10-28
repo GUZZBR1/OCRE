@@ -1,6 +1,6 @@
 # Arquitetura do validador determinístico do EIR
 
-**Estado:** arquitetura implementada parcialmente no Core local. Há validação estrutural e semântica EIR v0.2, mas a execução permanece bloqueada: `OCRE-AF/1` ainda não está implementado no contexto do pré-flight. Isto não declara disponibilidade no Core Cloud.
+**Estado:** arquitetura implementada parcialmente no Core local. Há validação estrutural/semântica EIR v0.2, codificador puro local para OCRE-AF/1 e migrador explícito v0.1→draft v0.2. O codificador ainda não está ligado ao conjunto completo de insumos do pré-flight; execução continua bloqueada com `approval_fingerprint_unavailable`. Drafts de migração nunca liberam aprovação ou execução. Isto não declara disponibilidade no Core Cloud.
 
 ## Objetivo e limite
 
@@ -10,9 +10,9 @@ Os JSON Schemas Draft 2020-12 em [`schemas/eir`](../../schemas/eir/README.md) fo
 
 ## Situação atual do contrato
 
-O Core Python local já contém o validador em `backend/ocre_core/validation/validator.py`, com parsing JSON estrito, validação Draft 2020-12, referências, regras do perfil axial, manifesto de grupos e confinamento/hash de artefatos. A API FastAPI local está implementada e testada: passaram 73 testes backend e 16 subtests. Sua operação no Core Cloud continua pendente, sem IAM real, broker ou worker real. A rota de pré-flight de execução verifica capacidades fornecidas, mas reporta `approval_fingerprint_unavailable`; o serviço força `execution_readiness: blocked` e não cria job enquanto OCRE-AF/1 não estiver disponível. A integração é implementação local, não serviço cloud implantado. O código científico continua isolado no harness experimental em `experiments/fea-reference/run_reference.py`.
+O Core Python local já contém o validador em `backend/ocre_core/validation/validator.py`, com parsing JSON estrito, validação Draft 2020-12, referências, regras do perfil axial, manifesto de grupos e confinamento/hash de artefatos. A API FastAPI local está implementada e coberta por testes locais. Sua operação no Core Cloud continua pendente, sem IAM real, broker ou worker real. A rota de pré-flight de execução verifica capacidades fornecidas, mas reporta `approval_fingerprint_unavailable`; o serviço força `execution_readiness: blocked` e não cria job enquanto o conjunto completo de entradas verificadas de OCRE-AF/1 não estiver integrado. A integração é implementação local, não serviço cloud implantado. O código científico continua isolado no harness experimental em `experiments/fea-reference/run_reference.py`.
 
-O EIR v0.1 legado não representa algumas relações necessárias a uma verificação completa; essas lacunas de representação foram tratadas pelo contrato v0.2 congelado. A implementação v0.2 local verifica parte dessas relações, enquanto o fingerprint e os gates completos de capacidade e validação física seguem pendentes:
+O EIR v0.1 legado não representa algumas relações necessárias a uma verificação completa; essas lacunas de representação foram tratadas pelo contrato v0.2 congelado. A implementação v0.2 local verifica parte dessas relações; o codificador normativo de OCRE-AF/1 existe localmente, mas sua integração e os insumos verificados no pré-flight, além dos gates completos de capacidade e validação física, seguem pendentes:
 
 - `group_manifest_ref` é uma string, sem inventário de artefatos interno que permita resolver o ID;
 - `frame_id` aparece sem entidade ou catálogo de referenciais;
@@ -22,7 +22,7 @@ O EIR v0.1 legado não representa algumas relações necessárias a uma verifica
 
 O validador não deve inferir vínculos que o contrato não define. No pré-flight de execução, as relações exigidas pelo perfil precisam estar resolvidas; lacunas bloqueiam a prontidão em vez de serem preenchidas por heurística.
 
-O contrato aprovado e congelado está em [EIR_V02_CONTRACT.md](EIR_V02_CONTRACT.md). Ele fixa quaternion, política UCUM, fingerprint `OCRE-AF/1`, migração explícita e fronteira de versão; os três schemas v0.2 estão travados por digest em [`schemas/eir`](../../schemas/eir/README.md). A implementação local valida estrutura e semântica sem alterar contrato ou schemas. O fingerprint normativo OCRE-AF/1 ainda não é calculado pelo validador/serviço; por isso o pré-flight não libera execução. No produto, a autoridade prevista é o Core Cloud antes do despacho aos Scientific Workers; não há alegação de implantação cloud.
+O contrato aprovado e congelado está em [EIR_V02_CONTRACT.md](EIR_V02_CONTRACT.md). Ele fixa quaternion, política UCUM, fingerprint `OCRE-AF/1`, migração explícita e fronteira de versão; os três schemas v0.2 estão travados por digest em [`schemas/eir`](../../schemas/eir/README.md). A implementação local valida estrutura e semântica sem alterar contrato ou schemas. O módulo `approval_fingerprint.py` implementa o codificador/framing normativo e tem testes locais, mas o validador/serviço ainda não obtém/verifica o conjunto completo das entradas e reporta `approval_fingerprint_unavailable`; por isso o pré-flight não libera execução. O migrador explícito produz um artefato separado em `draft`, preserva os bytes originais e registra resoluções e pendências; não é uma via de aprovação. No produto, a autoridade prevista é o Core Cloud antes do despacho aos Scientific Workers; não há alegação de implantação cloud.
 
 ## Fluxo de validação
 
@@ -133,15 +133,15 @@ Os diagnósticos devem ter ordenação estável (etapa, JSON Pointer, código), 
 | Adapter | Capacidades compatíveis, sem criar execução | Solver/formato/elemento/versão fora das capacidades declaradas |
 | Determinismo | Mesmo input, schemas e perfil geram relatório igual e ordenado | Diagnósticos que dependem da ordem de map, caminho local ou variável de ambiente não registrada |
 
-Os testes locais cobrem parsing/schema/semântica, leitura limitada, bundle/hash, determinismo e a rejeição da submissão bloqueada sem gravação de job/evento/outbox. Ainda falta exercitar os gates junto a um adapter executável integrado e infraestrutura real; os testes atuais não demonstram despacho nem execução de solver.
+Os testes locais cobrem parsing/schema/semântica, leitura limitada, bundle/hash, determinismo e a rejeição da submissão bloqueada sem gravação de job/evento/outbox. Testes separados verificam codificação/framing OCRE-AF/1 e migração para draft com pendências. Ainda falta exercitar os gates junto a um adapter executável integrado e infraestrutura real; os testes atuais não demonstram despacho nem execução de solver.
 
 ## Estado e próxima sequência
 
-1. **Completar OCRE-AF/1** no contexto do pré-flight e validar compatibilidade com os golden vectors, sem reabrir o contrato v0.2.
-2. **Fechar lacunas de domínio e capacidade:** ampliar cobertura física para o uso pretendido e completar a verificação das capacidades exigidas pelo adapter.
-3. **Integrar e operar no Core Cloud:** autenticação/autorização reais e implantação; conectar banco, broker e workers reais, preservando a prova SQLite como evidência apenas local.
-4. **Implementar migração v0.1→v0.2** como módulo independente e cobrir seu relatório e fluxo ponta a ponta.
-5. **Ampliar validação física e de proveniência**, incluindo CAD importado e critérios gerais de qualidade de malha.
+1. **Integrar OCRE-AF/1 ao pré-flight** com obtenção e verificação de todas as entradas obrigatórias, golden vectors interoperáveis e bloqueio em qualquer ausência/divergência; o codificador local, por si só, não libera execução.
+2. **Completar a validação do draft migrado** com bundle/resoluções e verificar relatório/pendências de ponta a ponta. Migração permanece explícita e nunca aprova nem executa.
+3. **Fechar lacunas de domínio e capacidade:** ampliar cobertura física para o uso pretendido e completar a verificação das capacidades exigidas pelo adapter.
+4. **Integrar e operar no Core Cloud:** autenticação/autorização reais e implantação; conectar banco, fila/broker, serviços externos e workers reais, preservando SQLite/outbox como evidência apenas local.
+5. **Ampliar validação física e proveniência**, incluindo CAD importado e critérios de qualidade de malha adequados ao uso pretendido.
 
 ## Decisões ainda abertas
 
@@ -149,8 +149,8 @@ Os testes locais cobrem parsing/schema/semântica, leitura limitada, bundle/hash
 - expansão do catálogo/perfis UCUM além da allowlist axial atualmente implementada;
 - política de tamanho máximo de JSON, bundle e artefatos;
 - semântica do modo `authoring` em campos incompletos versus `execution_preflight`;
-- implementação independente do migrador v0.1→v0.2 e seus testes de ponta a ponta;
-- cálculo de `OCRE-AF/1` no fluxo de aplicação e golden vectors compartilhados entre linguagens;
+- cobertura ponta a ponta da migração v0.1→v0.2 com bundle, resoluções e verificação de pendências;
+- integração dos insumos verificados de `OCRE-AF/1` no fluxo de aplicação e golden vectors interoperáveis;
 - cobertura física mais ampla, capacidades completas de adapter e execução do fluxo no Core Cloud com autenticação real, banco, broker e worker reais;
 - regras físicas e limiares do perfil axial, sem extrapolar para validação geral.
 

@@ -1,9 +1,11 @@
 from datetime import datetime, timezone
 from dataclasses import replace
+from concurrent.futures import ThreadPoolExecutor
+from threading import Barrier
 
 import pytest
 
-from ocre_core.jobs import (AdapterExecutionState, CancellationEvidence, CancellationEvidenceKind, JobState, transition_job)
+from ocre_core.jobs import (AdapterExecutionState, CancellationEvidence, CancellationEvidenceKind, JobState, transition_adapter_execution, transition_job)
 from ocre_core.persistence.jobs import AdapterExecutionSnapshot, ExecutionSubmitted, IdempotencyConflict, IdempotencyRecord, JobSnapshot, OutboxMessage
 from ocre_core.persistence.sqlite import FakeMessageConsumer, FakeOutboxDispatcher, PersistenceConflict, SQLiteJobStore
 
@@ -67,6 +69,65 @@ def test_outbox_retry_after_failure_and_consumer_dedup(tmp_path):
     assert consumer.consume(calls[0]) is True
     assert FakeMessageConsumer(tmp_path/"consumer.db",lambda m:calls.append(m)).consume(calls[0]) is False
 
+
+def test_publish_before_ack_crash_redelivers_duplicate(tmp_path):
+    store, snap = setup_store(tmp_path)
+    event = transition_job(
+        job_id="j1", event_id="e1", current_state=snap.state,
+        current_sequence=1, expected_sequence=1,
+        target_state=JobState.PREPARING, occurred_at=NOW,
+    )
+    store.commit_transition(
+        expected_sequence=1,
+        snapshot=JobSnapshot("j1", event.to_state, 2, NOW), event=event,
+        idempotency=None,
+        outbox=OutboxMessage("m1", "j1", event.event_id, "jobs", b""),
+    )
+    published = []
+    original_ack = store.mark_delivered
+
+    def crash_before_ack(_message_id):
+        raise RuntimeError("dispatcher crashed after publish")
+
+    store.mark_delivered = crash_before_ack
+    with pytest.raises(RuntimeError, match="after publish"):
+        FakeOutboxDispatcher(store, published.append).dispatch()
+    store.mark_delivered = original_ack
+
+    assert FakeOutboxDispatcher(store, published.append).dispatch() == 1
+    assert [message.message_id for message in published] == ["m1", "m1"]
+    assert FakeOutboxDispatcher(store, published.append).dispatch() == 0
+
+
+def test_identical_job_ids_are_tenant_scoped_for_snapshots_and_event_replay(tmp_path):
+    store = SQLiteJobStore(tmp_path / "jobs.db")
+    for tenant in ("tenant-a", "tenant-b"):
+        snapshot = JobSnapshot("shared-job", JobState.QUEUED, 1, NOW, tenant_id=tenant)
+        with store._connect() as db:
+            db.execute(
+                "INSERT INTO snapshots VALUES(?,?,?,?,?,?)",
+                (tenant, "job", "shared-job", "shared-job", 1, store._dump(snapshot)),
+            )
+        event = transition_job(
+            job_id="shared-job", event_id=f"{tenant}-event",
+            current_state=JobState.QUEUED, current_sequence=1,
+            expected_sequence=1, target_state=JobState.PREPARING,
+            occurred_at=NOW,
+        )
+        store.commit_transition(
+            expected_sequence=1,
+            snapshot=JobSnapshot("shared-job", event.to_state, 2, NOW, tenant_id=tenant),
+            event=event, idempotency=None,
+            outbox=OutboxMessage(f"{tenant}-message", "shared-job", event.event_id, "jobs", b""),
+        )
+
+    assert store.get_snapshot("shared-job", tenant_id="tenant-a").state is JobState.PREPARING
+    assert store.get_snapshot("shared-job", tenant_id="tenant-b").state is JobState.PREPARING
+    tenant_a_events = store.read_events(tenant_id="tenant-a", job_id="shared-job")
+    tenant_b_events = store.read_events(tenant_id="tenant-b", job_id="shared-job")
+    assert [item.event.event_id for item in tenant_a_events] == ["tenant-a-event"]
+    assert [item.event.event_id for item in tenant_b_events] == ["tenant-b-event"]
+
 def test_consumer_failure_does_not_ack_and_can_resume(tmp_path):
     from ocre_core.persistence.jobs import OutboxMessage
     message=OutboxMessage("m-retry","j","e","t",b"")
@@ -98,3 +159,143 @@ def test_cancel_confirmation_must_match_persisted_origin_and_evidence(tmp_path):
     with pytest.raises(ValueError):
         store.commit_transition(expected_sequence=2,snapshot=JobSnapshot("j1",JobState.CANCELLED,3,NOW),event=invalid,idempotency=None,outbox=OutboxMessage("m2","j1",invalid.event_id,"t",b""))
     assert store.get_snapshot("j1", tenant_id="default").state is JobState.CANCEL_REQUESTED
+
+
+def test_cancel_confirmation_racing_completion_has_one_linearized_winner(tmp_path):
+    store, snap = setup_store(tmp_path)
+    request = transition_job(
+        job_id="j1", event_id="cancel-request", current_state=snap.state,
+        current_sequence=1, expected_sequence=1,
+        target_state=JobState.CANCEL_REQUESTED, occurred_at=NOW,
+    )
+    store.commit_transition(
+        expected_sequence=1,
+        snapshot=JobSnapshot("j1", request.to_state, 2, NOW), event=request,
+        idempotency=None,
+        outbox=OutboxMessage("m1", "j1", request.event_id, "jobs", b""),
+    )
+    barrier = Barrier(2)
+
+    def candidate(target, event_id, evidence=None):
+        event = transition_job(
+            job_id="j1", event_id=event_id,
+            current_state=JobState.CANCEL_REQUESTED, current_sequence=2,
+            expected_sequence=2, target_state=target, occurred_at=NOW,
+            cancellation_origin=JobState.QUEUED,
+            cancellation_evidence=evidence,
+        )
+        barrier.wait()
+        return store.commit_transition(
+            expected_sequence=2,
+            snapshot=JobSnapshot("j1", target, 3, NOW), event=event,
+            idempotency=None,
+            outbox=OutboxMessage(f"m-{event_id}", "j1", event_id, "jobs", b""),
+        )
+
+    cancelled = CancellationEvidence(
+        "j1", JobState.QUEUED, CancellationEvidenceKind.WORKER_START_PREVENTED, NOW
+    )
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        futures = [
+            pool.submit(candidate, JobState.CANCELLED, "cancelled", cancelled),
+            pool.submit(candidate, JobState.FAILED, "completed", None),
+        ]
+    results = []
+    for future in futures:
+        try:
+            results.append(future.result())
+        except PersistenceConflict:
+            results.append(None)
+
+    assert sum(result is not None for result in results) == 1
+    final = store.get_snapshot("j1", tenant_id="default")
+    assert final.state in {JobState.CANCELLED, JobState.FAILED}
+    events = store.read_events(tenant_id="default", job_id="j1", after_cursor=0, limit=10)
+    assert [item.sequence for item in events] == [2, 3]
+    assert len({item.event.event_id for item in events}) == 2
+
+
+def test_concurrent_same_key_cancel_commits_once_and_replays(tmp_path):
+    store, snap = setup_store(tmp_path)
+    event = transition_job(
+        job_id="j1", event_id="cancel-request", current_state=snap.state,
+        current_sequence=1, expected_sequence=1,
+        target_state=JobState.CANCEL_REQUESTED, occurred_at=NOW,
+    )
+    snapshot = JobSnapshot("j1", event.to_state, event.sequence, NOW)
+    idempotency = IdempotencyRecord("default", "cancel", "cancel-key", "same-request", "j1")
+    outbox = OutboxMessage("cancel-message", "j1", event.event_id, "jobs", b"")
+    barrier = Barrier(2)
+
+    def cancel():
+        barrier.wait()
+        return store.commit_transition(
+            expected_sequence=1, snapshot=snapshot, event=event,
+            idempotency=idempotency, outbox=outbox,
+        )
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = [future.result() for future in (pool.submit(cancel), pool.submit(cancel))]
+
+    assert sorted(result.replayed for result in results) == [False, True]
+    assert store.get_snapshot("j1", tenant_id="default").state is JobState.CANCEL_REQUESTED
+    assert [item.event.event_id for item in store.read_events(tenant_id="default", job_id="j1")] == [
+        "cancel-request"
+    ]
+
+
+def test_persistence_rejects_forged_transition_from_terminal_snapshot(tmp_path):
+    store, _ = setup_store(tmp_path)
+    terminal = JobSnapshot("j1", JobState.SUCCEEDED, 1, NOW)
+    with store._connect() as db:
+        db.execute(
+            "UPDATE snapshots SET body=? WHERE tenant='default' AND kind='job' AND id='j1'",
+            (store._dump(terminal),),
+        )
+    forged = transition_job(
+        job_id="j1", event_id="forged-terminal-rewrite",
+        current_state=JobState.RUNNING, current_sequence=1, expected_sequence=1,
+        target_state=JobState.FAILED, occurred_at=NOW,
+    )
+    forged = replace(forged, from_state=JobState.SUCCEEDED)
+
+    with pytest.raises(ValueError, match="terminal snapshot is immutable"):
+        store.commit_transition(
+            expected_sequence=1,
+            snapshot=JobSnapshot("j1", JobState.FAILED, 2, NOW),
+            event=forged, idempotency=None,
+            outbox=OutboxMessage("forged-message", "j1", forged.event_id, "jobs", b""),
+        )
+
+    assert store.get_snapshot("j1", tenant_id="default").state is JobState.SUCCEEDED
+    assert store.read_events(tenant_id="default", job_id="j1") == ()
+
+
+def test_persistence_rejects_forged_transition_from_terminal_adapter_snapshot(tmp_path):
+    store = SQLiteJobStore(tmp_path / "jobs.db")
+    terminal = AdapterExecutionSnapshot("x1", "j1", AdapterExecutionState.EXECUTION_FAILED, 1, NOW)
+    with store._connect() as db:
+        db.execute(
+            "INSERT INTO snapshots VALUES(?,?,?,?,?,?)",
+            ("default", "execution", "x1", "j1", 1, store._dump(terminal)),
+        )
+    forged = transition_adapter_execution(
+        execution_id="x1", event_id="forged-adapter-terminal-rewrite",
+        current_state=AdapterExecutionState.RUNNING, current_sequence=1,
+        expected_sequence=1, target_state=AdapterExecutionState.EXECUTION_FAILED,
+        occurred_at=NOW,
+    )
+    forged = replace(forged, from_state=AdapterExecutionState.EXECUTION_FAILED)
+
+    with pytest.raises(ValueError, match="terminal snapshot is immutable"):
+        store.commit_transition(
+            expected_sequence=1,
+            snapshot=AdapterExecutionSnapshot(
+                "x1", "j1", AdapterExecutionState.COLLECTION_FAILED, 2, NOW
+            ),
+            event=forged, idempotency=None,
+            outbox=OutboxMessage("forged-adapter-message", "x1", forged.event_id, "jobs", b""),
+        )
+
+    assert store.get_execution_snapshot("x1", tenant_id="default").state is AdapterExecutionState.EXECUTION_FAILED
+    assert store.read_events(tenant_id="default", job_id="j1") == ()

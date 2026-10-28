@@ -10,6 +10,7 @@ from .jobs import (AdapterExecutionSnapshot, CommitReceipt, ExecutionSubmitted,
                   IdempotencyConflict, IdempotencyRecord, JobSnapshot,
                   JobPersistencePort, OutboxMessage)
 from . import codec
+from ocre_core.jobs import ADAPTER_TERMINAL_STATES, TERMINAL_STATES
 
 
 class PersistenceConflict(RuntimeError):
@@ -77,6 +78,8 @@ class SQLiteJobStore(JobPersistencePort):
                 if row is None or row[0] != expected_sequence: raise PersistenceConflict("stale or missing snapshot")
                 old = self._load(row[1])
                 if getattr(event, "from_state") != old.state: raise ValueError("event from_state differs from persisted snapshot")
+                terminal_states = ADAPTER_TERMINAL_STATES if isinstance(old, AdapterExecutionSnapshot) else TERMINAL_STATES
+                if old.state in terminal_states: raise ValueError("terminal snapshot is immutable")
                 if snapshot.state != event.to_state: raise ValueError("snapshot state differs from event destination")
                 origin = old.cancellation_origin
                 if getattr(event, "to_state").value == "cancel_requested":

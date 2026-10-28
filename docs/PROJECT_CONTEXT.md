@@ -1,7 +1,7 @@
 # Contexto do projeto OCRE
 
 **Data de referência:** 28/10/2026
-**Estado:** arquitetura conceitual consolidada e primeira prova local implementada. O backend Python inclui validador EIR, pré-flight que bloqueia prontidão por falta de OCRE-AF/1, jobs, persistência/sync SQLite, outbox fake e API FastAPI. A suíte passou com 73 testes e 16 subtests. Cloud, IAM real, broker, workers, CAD importado e validação física geral continuam pendentes.
+**Estado (28/10/2026):** há provas locais em andamento para validação estrutural/semântica EIR v0.2, codificador puro de OCRE-AF/1, migrador explícito v0.1→draft v0.2, jobs/SQLite/outbox fake, worker sintético e API FastAPI local. O codificador de fingerprint ainda não está integrado ao contexto de aprovação: o pré-flight mantém readiness bloqueada. A migração gera drafts e registra pendências/resoluções; nunca aprova nem libera execução. Há também sidecar experimental para proveniência de `.geo`/malha e medição de qualidade sem limiar de gate, além de visualizador local TypeScript/Three.js que usa fixture fictícia embutida. Cloud, IAM, filas/serviços externos, workers e motores reais, STEP/OCCT e validação física geral continuam pendentes.
 
 Este documento é a memória canônica para continuidade do projeto. Ele consolida os contextos fornecidos sem tratar tecnologias candidatas como decisões de implementação ou integrações concluídas.
 
@@ -10,9 +10,9 @@ Os gates da primeira prova estrutural estão em [docs/architecture/STRUCTURAL_VA
 
 O pacote inicial para as frentes de especificação e prova está em [docs/architecture/STARTING_PACKAGE.md](architecture/STARTING_PACKAGE.md), incluindo o caso de referência, EIR mínimo, contrato batch e decisões propostas.
 Os JSON Schemas experimentais v0.1 do EIR e do manifesto de grupos estão em [schemas/eir](../schemas/eir); eles validam apenas estrutura e tipos, não canonicalização, relações entre IDs, confinamento URI nem semântica UCUM.
-A arquitetura e o estado do validador determinístico estão em [EIR_VALIDATION_ARCHITECTURE.md](architecture/EIR_VALIDATION_ARCHITECTURE.md). Há implementação local estrutural/semântica; o pré-flight ainda bloqueia execução até OCRE-AF/1 e outros gates completos. O baseline inicial de linguagens por camada está em ADR-007; adoção na interface e validação de produção permanecem pendentes.
+A arquitetura e o estado do validador determinístico estão em [EIR_VALIDATION_ARCHITECTURE.md](architecture/EIR_VALIDATION_ARCHITECTURE.md). Há implementação local estrutural/semântica e codificador puro para OCRE-AF/1, mas o fingerprint não está ligado ao contexto de aprovação; o pré-flight permanece bloqueado. O migrador v0.1→draft v0.2 mantém origem e proveniência, solicita resoluções explícitas e reporta pendências, sem aprovar ou liberar execução. O baseline inicial de linguagens está em ADR-007; a prova da interface descrita abaixo não significa prontidão de produção.
 
-O contrato EIR v0.2, com quaternion, perfil UCUM, fingerprint `OCRE-AF/1` e migração explícita, foi congelado após revisão independente em [EIR_V02_CONTRACT.md](architecture/EIR_V02_CONTRACT.md). Os três schemas Draft 2020-12 têm hashes fixados em [`schemas/eir`](../schemas/eir/README.md). O validador local está implementado; cálculo completo de OCRE-AF/1 e pré-flight cloud continuam pendentes.
+O contrato EIR v0.2, com quaternion, perfil UCUM, fingerprint `OCRE-AF/1` e migração explícita, foi congelado após revisão independente em [EIR_V02_CONTRACT.md](architecture/EIR_V02_CONTRACT.md). Os três schemas Draft 2020-12 têm hashes fixados em [`schemas/eir`](../schemas/eir/README.md). Há codificador local de OCRE-AF/1, mas ainda faltam a coleta/validação de seus insumos no fluxo de aprovação e sua integração ao pré-flight; o pré-flight não libera execução.
 
 ## 1. Visão e princípios
 
@@ -154,7 +154,7 @@ Uma execução concluída não prova que a simulação está validada; um result
 
 ## 12. Baseline inicial de linguagens e tecnologias ainda abertas
 
-**Linguagens escolhidas como baseline inicial:** TypeScript no cliente para UI, Three.js e interação CAD leve, com HTML/CSS para marcação e estilo; Python no Core Cloud para API/controle, validação EIR/pré-flight, jobs e orquestração, e nos adaptadores de controle que atendam aos contratos; SQL para o modelo relacional quando PostgreSQL for implementado. TypeScript será entregue como JavaScript para o browser. A decisão está registrada em [ADR-007](architecture/ARCHITECTURE_DECISIONS.md#adr-007--baseline-inicial-de-linguagens-por-camada). Ela não significa que essas partes já estejam implementadas nem que Python esteja validado para produção.
+**Linguagens escolhidas como baseline inicial:** TypeScript no cliente para UI, Three.js e interação CAD leve, com HTML/CSS para marcação e estilo; Python no Core Cloud para API/controle, validação EIR/pré-flight, jobs e orquestração, e nos adaptadores de controle que atendam aos contratos; SQL para o modelo relacional quando PostgreSQL for implementado. TypeScript será entregue como JavaScript para o browser. A decisão está registrada em [ADR-007](architecture/ARCHITECTURE_DECISIONS.md#adr-007--baseline-inicial-de-linguagens-por-camada). No branch há uma prova local de visualizador TypeScript/Three.js com fixture fictícia embutida; ela não importa CAD, não consulta backend/solver e não demonstra visualização de resultados físicos. As demais camadas permanecem sem prontidão de produção.
 
 **Fora do baseline de código próprio inicial:** Go não será adotado em paralelo sem requisito operacional ou gargalo medido; C++ não será compromisso de implementação do OCRE antes de prova. OCCT continua sendo um motor nativo possível nos workers, mas a interface de importação STEP ainda requer uma prova de fidelidade geométrica, assemblies e proveniência. Se APIs ou wrappers existentes não satisfizerem os requisitos, avaliar um adaptador C++ isolado.
 
@@ -200,11 +200,12 @@ Uma execução concluída não prova que a simulação está validada; um result
 - Versões compatíveis dos motores e licenças.
 - Estratégia de co-simulação, benchmarks, tolerâncias e critérios de aceitação científicos.
 
-## 15. Próximas ações recomendadas
+## 15. Próximas ações e ordem de execução
 
-1. Especificar um recorte mínimo do Engineering Core e os limites entre seus componentes.
-2. Definir o primeiro esquema EIR versionado, incluindo unidades, coordenadas, proveniência e referências geométricas.
-3. Descrever contrato de adaptador com schemas de entrada/saída e ciclo de execução.
-4. Escolher o primeiro pipeline e um caso de referência com resultados esperados e tolerâncias.
-5. Verificar documentação oficial, versões, licenças, distribuição e requisitos de execução dos componentes escolhidos.
-6. Só então implementar um mini-MVP e reportar validação com evidências de execução.
+1. Integrar o codificador OCRE-AF/1 ao fluxo de aprovação usando os dez insumos normativos verificados, golden vectors e contrato v0.2 congelado. Até a integração e conclusão dos demais gates, manter `execution_readiness: blocked`.
+2. Ampliar as provas locais de falhas, redelivery/replay, cancelamento e recuperação sem tratá-las como broker ou workers externos.
+3. Evoluir e verificar a proveniência desde CAD importado (STEP/OCCT) até malha e grupos; definir limiares de qualidade apenas para um uso de engenharia explicitamente escopado. O sidecar atual cobre definições `.geo` sintéticas e registra métrica sem gate.
+4. Manter a migração v0.1→v0.2 como produção de draft com relatório, resoluções explícitas e pendências; nunca convertê-la em aprovação ou atalho de execução.
+5. Ligar dados reais do backend ao visualizador somente após existirem contratos e provas de mapeamento de nós/elementos e referencial. O visualizador atual é local e usa fixture fictícia.
+6. Planejar integração separada com Core Cloud, IAM, persistência/fila/serviços externos e motores/workers reais. Essas frentes seguem pendentes e não são pré-requisito para descrever a evidência offline atual.
+7. Planejar validação física experimental para um uso definido. Verificação numérica do benchmark sintético não substitui essa validação nem sustenta validade para outros modelos.

@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#0a111b" />
+    <title>OCRE | Prova local de resultados</title>
+  </head>
+  <body>
+    <div class="app-shell">
+      <header class="topbar">
+        <a class="brand" href="#inicio" aria-label="OCRE, início">
+          <span class="brand-mark">O</span><span>OCRE</span><span class="brand-divider"></span><span class="brand-section">LOCAL PROOF</span>
+        </a>
+        <div class="session-state"><span class="status-dot"></span> OFFLINE · FIXTURE LOCAL</div>
+      </header>
+
+      <main>
+        <section class="intro" aria-labelledby="page-title">
+          <div>
+            <p class="eyebrow">VISUALIZADOR DE RESULTADOS <span> / </span> DEMONSTRAÇÃO</p>
+            <h1 id="page-title">Um resultado, em perspectiva.</h1>
+            <p class="intro-copy">Explore uma malha e seus campos com uma fixture local, sem conexão ou execução científica.</p>
+          </div>
+          <div class="proof-badge"><span class="proof-icon">✳</span><span><strong>DADO FICTÍCIO</strong><small>Sem validação física</small></span></div>
+        </section>
+
+        <section class="workspace" aria-label="Visualizador de malha">
+          <div class="viewport-panel">
+            <div class="viewport-head">
+              <div class="model-heading"><span class="model-icon">◈</span><div><strong>Viga demonstrativa</strong><small>Geometria e malha · fixture sintética</small></div></div>
+              <div class="view-actions"><span class="view-tag">3D VIEW</span><button id="reset-view" class="icon-button" type="button" aria-label="Redefinir vista" title="Redefinir vista">↻</button></div>
+            </div>
+            <div id="viewport" class="viewport" aria-label="Cena 3D interativa">
+              <div class="viewport-corner">ISOMÉTRICA <span>·</span> mm</div>
+              <div id="renderer-error" class="renderer-error" hidden>Este navegador ou dispositivo não disponibiliza WebGL2.</div>
+              <div class="viewport-footer"><span><i class="hint-dot"></i> Arraste para orbitar</span><span>Scroll para aproximar</span></div>
+            </div>
+            <div class="scene-caption"><span><span class="caption-dot"></span> Malha de elementos finitos</span><span id="mesh-count">—</span></div>
+          </div>
+
+          <aside class="inspector" aria-label="Controles e consulta">
+            <div class="inspector-section result-section">
+              <div class="section-heading"><span>01</span><h2>Resultado</h2></div>
+              <label for="field-select" class="field-label">Campo escalar</label>
+              <select id="field-select" class="field-select"><option value="stress">Tensão equivalente</option></select>
+              <div class="legend-labels"><span id="legend-min">—</span><span id="legend-unit">MPa</span><span id="legend-max">—</span></div>
+              <div class="legend-bar" aria-label="Escala de tensão: azul baixo, vermelho alto"></div>
+              <div class="legend-range"><span>MENOR</span><span>MAIOR</span></div>
+              <label class="toggle-row" for="deformation-toggle">
+                <span class="toggle-copy"><strong>Deformação estática</strong><small>Escala visual <span id="scale-label">1,0×</span></small></span>
+                <input id="deformation-toggle" type="checkbox" role="switch" aria-label="Mostrar deformação estática" />
+              </label>
+              <p class="fine-print">Deslocamentos fictícios · exibição ampliada para visualização</p>
+              <div class="visibility-options" aria-label="Camadas de visualização">
+                <label><input id="mesh-toggle" type="checkbox" checked /> Malha</label>
+                <label><input id="result-toggle" type="checkbox" checked /> Resultado</label>
+              </div>
+            </div>
+
+            <div class="inspector-section selection-section">
+              <div class="section-heading"><span>02</span><h2>Inspecionar</h2></div>
+              <div class="segmented" role="group" aria-label="Tipo de seleção">
+                <button id="select-node" type="button" aria-pressed="true">Nó</button>
+                <button id="select-element" type="button" aria-pressed="false">Elemento</button>
+              </div>
+              <div id="selection-empty" class="selection-empty"><span class="target-icon">⌖</span><span>Selecione um ponto na malha para consultar seus valores.</span></div>
+              <div id="selection-detail" class="selection-detail" hidden></div>
+            </div>
+
+            <div class="data-note"><span class="note-icon">i</span><p><strong>Prova visual local</strong><br />Este resultado não representa uma execução aprovada, validação física ou compatibilidade com solver.</p></div>
+          </aside>
+        </section>
+        <footer class="page-footer"><span>OCRE <i>·</i> PROVA DE CONCEITO</span><span id="fixture-id">FIXTURE LOCAL</span><span>SEM BACKEND <i>·</i> SEM SOLVER</span></footer>
+      </main>
+    </div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

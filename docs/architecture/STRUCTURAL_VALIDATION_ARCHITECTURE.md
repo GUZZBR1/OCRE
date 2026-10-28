@@ -1,6 +1,6 @@
 # Arquitetura de verificação e validação estrutural
 
-**Estado:** arquitetura e gates propostos; benchmark sintético axial executado localmente em 28/10/2026. A configuração Gmsh/CalculiX passou os critérios numéricos registrados, mas os gates de entrada, qualidade geral, proveniência/falhas e validação física continuam parciais ou não avaliados.
+**Estado:** arquitetura e gates propostos; benchmark sintético axial executado localmente em 28/10/2026. A configuração Gmsh/CalculiX passou os critérios numéricos registrados para esta geometria `.geo`. Um sidecar experimental registra proveniência `.geo`→malha e mean ratio sem limiar/gate de qualidade; testes locais separados cobrem lifecycle sintético, falhas/replay e persistência. Esses artefatos não completam os gates do benchmark: entrada EIR, importação CAD, qualidade geral, falhas integradas e validação física seguem parciais ou não avaliadas.
 **Escopo:** barra sólida 3D em tração uniaxial, caso linear estático. Não define critérios para certificar projetos reais.
 
 Este plano acompanha o caso e as metas registrados em [STRUCTURAL_REFERENCE_CASE.md](STRUCTURAL_REFERENCE_CASE.md). O benchmark local atual também executa Gmsh 4.15.2→C3D10→deck CalculiX separado→CCX 2.23 em uma geometria `Box` definida por `.geo`. Isso não valida importação de CAD nem conversão CAD→malha. O baseline C3D8 continua sendo um caminho separado.
@@ -89,7 +89,7 @@ Cada gate retorna relatório estruturado com `status` (`passed`, `warning`, `fai
 
 O manifesto [solver_runs_manifest.json](../../experiments/fea-reference/runs/solver_runs_manifest.json) registra três malhas C3D10 (433, 3.594 e 24.960 elementos), decks aceitos pelo CCX 2.23, saídas nativas e extração das métricas nos pontos de integração. Em todas, `Rx=2100 N`, `S11=21 MPa`, `E11=0.0001` e `E22=E33=-0.00003`; a mudança entre as duas malhas mais finas foi 0% para reação e tensão. Os critérios numéricos D passaram para esta configuração.
 
-O status geral não é `passed`: A (pacote EIR/revisão usado para gerar a execução) permanece `not_assessed`. Os três schemas EIR v0.2 e fixtures passaram validação estrutural separada, mas o benchmark não foi submetido como `InputBundle` validado pelo Core Cloud. B tem `warning` porque a qualidade de forma foi medida sem limiar de aceitação e a geometria veio de uma primitiva `.geo`, não de CAD importado; C passou para os decks separados executados; D passou para as métricas deste benchmark; E tem `warning`, pois fault-injection/replay e validação externa não foram avaliados. A trilha não valida qualidade geral para outros modelos, importação CAD/OCCT, pré-flight integrado nem uso de engenharia real.
+O status geral não é `passed`: A (pacote EIR/revisão usado para gerar a execução) permanece `not_assessed`. Os três schemas EIR v0.2 e fixtures passaram validação estrutural separada, mas o benchmark não foi submetido como `InputBundle` validado pelo Core Cloud. B tem `warning` porque a qualidade de forma foi medida sem limiar de aceitação e a geometria veio de uma primitiva `.geo`, não de CAD importado; C passou para os decks separados executados; D passou para as métricas deste benchmark; E tem `warning`, pois falhas/replay do ciclo local não foram executados como parte integrada deste benchmark e validação física externa não foi avaliada. A trilha não valida qualidade geral para outros modelos, importação CAD/OCCT, pré-flight integrado nem uso de engenharia real.
 
 ## 4. Validação física posterior
 
@@ -112,12 +112,13 @@ Orientação de referência: [NASA-HDBK-5026 (2024)](https://standards.nasa.gov/
 
 O benchmark sintético já cobriu a especificação do caso, montagem dos decks, execução do solver, extração, comparação analítica e convergência de três malhas. A sequência restante é:
 
-1. Exercitar falhas, replay, timeout, cancelamento e recuperação, preservando os estados e artefatos diagnósticos.
-2. Definir e aplicar um gate quantitativo de qualidade de malha, além das verificações geométricas já medidas.
-3. Validar importação CAD→Gmsh, identidade/proveniência da geometria e rastreio até grupos e malha.
-4. Implementar no Core Cloud a validação semântica/pre-flight dos schemas EIR v0.2 e manifestos de entrada/resultado; os schemas estruturais e fixtures já têm verificação isolada. Manter fingerprint e URI dentro dos critérios de interoperabilidade.
-5. Ligar resultados e seleções à visualização, conferindo correspondência de nós/elementos e referencial.
-6. Planejar validação física representativa para um uso de engenharia definido.
+1. Completar OCRE-AF/1 no fluxo do pré-flight com todas as entradas verificadas e vetores interoperáveis; o executor deve permanecer bloqueado enquanto houver dado ausente ou divergente. Migrador v0.1→draft v0.2 e codificador local existem, mas não aprovam nem liberam execução.
+2. Integrar os testes locais de falha/replay/timeout/cancelamento ao fluxo de adapter quando houver worker executável; a evidência atual é de persistência e worker sintético, não de worker real.
+3. Definir e aplicar, para uso pretendido, gate quantitativo de qualidade de malha; sidecar atual mede mean ratio sem limiar de aceitação.
+4. Validar importação CAD→Gmsh, identidade/proveniência da geometria e rastreio até grupos e malha; `.geo` sintético não demonstra importação STEP/OCCT.
+5. Conectar o visualizador local TypeScript/Three.js a resultados de uma execução futura apenas após conferir correspondência de nós/elementos e referencial; a fixture existente é fictícia.
+6. Operar Core/API com IAM real, banco, fila/broker, serviços externos e workers reais; integração cloud continua pendente.
+7. Planejar validação física representativa para um uso de engenharia definido; os critérios numéricos do benchmark são verificação deste caso, não validação física nem validação geral do OCRE.
 
 Esses passos ampliam a evidência além do benchmark de barra. A execução numérica aprovada não valida o OCRE para outros modelos, CAD importado ou uso de engenharia real.
 

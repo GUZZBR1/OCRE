@@ -14,6 +14,12 @@ import sys
 from pathlib import Path, PurePosixPath
 from typing import Any
 
+BACKEND_ROOT = Path(__file__).resolve().parents[2] / "backend"
+if str(BACKEND_ROOT) not in sys.path:
+    sys.path.insert(0, str(BACKEND_ROOT))
+
+from ocre_core.provenance.sidecar import audit_sidecar  # noqa: E402
+
 SHA256_RE = re.compile(r"^[0-9a-fA-F]{64}$")
 
 
@@ -163,6 +169,16 @@ def audit_prepared_manifest(root: Path, manifest: dict[str, Any]) -> tuple[list[
 
 
 def audit_manifest(root: Path, manifest: dict[str, Any]) -> tuple[str, list[dict[str, Any]], list[str]]:
+    if "sidecar_version" in manifest:
+        report = audit_sidecar(root, manifest)
+        checks = report["checks"]
+        errors = [
+            f"{item['state'].upper()}: {item['code']}: {item['message']}"
+            for item in report["issues"]
+        ]
+        if report["status"] != "complete" and not errors:
+            errors.append(f"{report['status'].upper()}: sidecar evidence is not complete")
+        return "cad_mesh_provenance_sidecar", checks, errors
     runs = manifest.get("runs")
     if isinstance(runs, list) and runs and isinstance(runs[0], dict) and "run_directory" in runs[0]:
         checks, errors = audit_solver_runs(root, manifest)

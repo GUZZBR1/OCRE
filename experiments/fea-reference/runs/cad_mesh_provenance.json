@@ -1,0 +1,310 @@
+{
+  "sidecar_version": "cad-mesh-provenance/0.2",
+  "case_id": "case_tension_bar_v1",
+  "revision_id": "prepared-manifest-sha256-3767b6ad96d23139",
+  "manifest_id": "sha256:3767b6ad96d231395ff7bbcb67851dd745796f8ec3c0a3ec93b103a31d0e9d93",
+  "manifest_reference": {
+    "uri": "manifest.prepared.json",
+    "sha256": "3767b6ad96d231395ff7bbcb67851dd745796f8ec3c0a3ec93b103a31d0e9d93"
+  },
+  "source_artifacts": [
+    {
+      "artifact_id": "geo-sha256-e8020e84d29bb298",
+      "uri": "axial_bar_h5mm.geo",
+      "sha256": "e8020e84d29bb298d764bf4dc0a6e7cf36f2510f699ee9065ae7c8bf9aa91dfd",
+      "origin": "synthetic_geo",
+      "artifact_kind": "synthetic_geometry_definition",
+      "parameters": {
+        "characteristic_size_mm": 5.0
+      }
+    },
+    {
+      "artifact_id": "geo-sha256-19a5de5e0e9b600c",
+      "uri": "axial_bar_h2.5mm.geo",
+      "sha256": "19a5de5e0e9b600ccb17430ba4336553a1311c65d5c51d9e27e420e38a2f3ef5",
+      "origin": "synthetic_geo",
+      "artifact_kind": "synthetic_geometry_definition",
+      "parameters": {
+        "characteristic_size_mm": 2.5
+      }
+    },
+    {
+      "artifact_id": "geo-sha256-c0bed64410cfeb01",
+      "uri": "axial_bar_h1.25mm.geo",
+      "sha256": "c0bed64410cfeb0141fab6a26c323ac1b7edb0b20558d00dd338a444c6fa4cbd",
+      "origin": "synthetic_geo",
+      "artifact_kind": "synthetic_geometry_definition",
+      "parameters": {
+        "characteristic_size_mm": 1.25
+      }
+    }
+  ],
+  "transformation": {
+    "name": "synthetic_geo_to_gmsh_inp_mesh",
+    "tool": "Gmsh",
+    "command_options": [
+      "-3",
+      "-order",
+      "2",
+      "-format",
+      "inp"
+    ],
+    "mesh_settings": [
+      "Mesh.ElementOrder = 2",
+      "Mesh.SaveGroupsOfNodes = 1",
+      "Mesh.SaveGroupsOfElements = -1000"
+    ],
+    "evidence_basis": "existing prepared manifest and versioned .geo/.inp files; no transformation rerun"
+  },
+  "tools": {
+    "gmsh": {
+      "version": "4.15.2",
+      "sha256": "9dccade5dd1374b28c18af9085d7ce63216cf7ac39d3cefbc0adbfabafba2c7f"
+    }
+  },
+  "groups": [
+    {
+      "semantic_id": "VOLUME",
+      "mesh_artifact_id": "gmsh-c3d10-h5mm-sha256-ae4dda6f0b1be3ec",
+      "local_name": "VOLUME",
+      "mapping_kind": "element_set",
+      "observed_count": 433,
+      "reference_coordinate_mm": null,
+      "identity_scope": "stable_semantic_label; local IDs/topology are revision-specific"
+    },
+    {
+      "semantic_id": "X_FIXED",
+      "mesh_artifact_id": "gmsh-c3d10-h5mm-sha256-ae4dda6f0b1be3ec",
+      "local_name": "X_FIXED",
+      "mapping_kind": "node_set",
+      "observed_count": 37,
+      "reference_coordinate_mm": null,
+      "identity_scope": "stable_semantic_label; local IDs/topology are revision-specific"
+    },
+    {
+      "semantic_id": "X_DISPLACED",
+      "mesh_artifact_id": "gmsh-c3d10-h5mm-sha256-ae4dda6f0b1be3ec",
+      "local_name": "X_DISPLACED",
+      "mapping_kind": "node_set",
+      "observed_count": 37,
+      "reference_coordinate_mm": null,
+      "identity_scope": "stable_semantic_label; local IDs/topology are revision-specific"
+    },
+    {
+      "semantic_id": "PIN_A",
+      "mesh_artifact_id": "gmsh-c3d10-h5mm-sha256-ae4dda6f0b1be3ec",
+      "local_name": "PIN_A",
+      "mapping_kind": "coordinate_derived_node_set",
+      "observed_count": 1,
+      "reference_coordinate_mm": [
+        0,
+        -5.0,
+        -5.0
+      ],
+      "identity_scope": "stable_semantic_label; local IDs/topology are revision-specific"
+    },
+    {
+      "semantic_id": "PIN_B",
+      "mesh_artifact_id": "gmsh-c3d10-h5mm-sha256-ae4dda6f0b1be3ec",
+      "local_name": "PIN_B",
+      "mapping_kind": "coordinate_derived_node_set",
+      "observed_count": 1,
+      "reference_coordinate_mm": [
+        0,
+        5.0,
+        -5.0
+      ],
+      "identity_scope": "stable_semantic_label; local IDs/topology are revision-specific"
+    },
+    {
+      "semantic_id": "VOLUME",
+      "mesh_artifact_id": "gmsh-c3d10-h2.5mm-sha256-c7a91da130f1fe3c",
+      "local_name": "VOLUME",
+      "mapping_kind": "element_set",
+      "observed_count": 3594,
+      "reference_coordinate_mm": null,
+      "identity_scope": "stable_semantic_label; local IDs/topology are revision-specific"
+    },
+    {
+      "semantic_id": "X_FIXED",
+      "mesh_artifact_id": "gmsh-c3d10-h2.5mm-sha256-c7a91da130f1fe3c",
+      "local_name": "X_FIXED",
+      "mapping_kind": "node_set",
+      "observed_count": 101,
+      "reference_coordinate_mm": null,
+      "identity_scope": "stable_semantic_label; local IDs/topology are revision-specific"
+    },
+    {
+      "semantic_id": "X_DISPLACED",
+      "mesh_artifact_id": "gmsh-c3d10-h2.5mm-sha256-c7a91da130f1fe3c",
+      "local_name": "X_DISPLACED",
+      "mapping_kind": "node_set",
+      "observed_count": 105,
+      "reference_coordinate_mm": null,
+      "identity_scope": "stable_semantic_label; local IDs/topology are revision-specific"
+    },
+    {
+      "semantic_id": "PIN_A",
+      "mesh_artifact_id": "gmsh-c3d10-h2.5mm-sha256-c7a91da130f1fe3c",
+      "local_name": "PIN_A",
+      "mapping_kind": "coordinate_derived_node_set",
+      "observed_count": 1,
+      "reference_coordinate_mm": [
+        0,
+        -5.0,
+        -5.0
+      ],
+      "identity_scope": "stable_semantic_label; local IDs/topology are revision-specific"
+    },
+    {
+      "semantic_id": "PIN_B",
+      "mesh_artifact_id": "gmsh-c3d10-h2.5mm-sha256-c7a91da130f1fe3c",
+      "local_name": "PIN_B",
+      "mapping_kind": "coordinate_derived_node_set",
+      "observed_count": 1,
+      "reference_coordinate_mm": [
+        0,
+        5.0,
+        -5.0
+      ],
+      "identity_scope": "stable_semantic_label; local IDs/topology are revision-specific"
+    },
+    {
+      "semantic_id": "VOLUME",
+      "mesh_artifact_id": "gmsh-c3d10-h1.25mm-sha256-f1a10c599b51c571",
+      "local_name": "VOLUME",
+      "mapping_kind": "element_set",
+      "observed_count": 24960,
+      "reference_coordinate_mm": null,
+      "identity_scope": "stable_semantic_label; local IDs/topology are revision-specific"
+    },
+    {
+      "semantic_id": "X_FIXED",
+      "mesh_artifact_id": "gmsh-c3d10-h1.25mm-sha256-f1a10c599b51c571",
+      "local_name": "X_FIXED",
+      "mapping_kind": "node_set",
+      "observed_count": 357,
+      "reference_coordinate_mm": null,
+      "identity_scope": "stable_semantic_label; local IDs/topology are revision-specific"
+    },
+    {
+      "semantic_id": "X_DISPLACED",
+      "mesh_artifact_id": "gmsh-c3d10-h1.25mm-sha256-f1a10c599b51c571",
+      "local_name": "X_DISPLACED",
+      "mapping_kind": "node_set",
+      "observed_count": 357,
+      "reference_coordinate_mm": null,
+      "identity_scope": "stable_semantic_label; local IDs/topology are revision-specific"
+    },
+    {
+      "semantic_id": "PIN_A",
+      "mesh_artifact_id": "gmsh-c3d10-h1.25mm-sha256-f1a10c599b51c571",
+      "local_name": "PIN_A",
+      "mapping_kind": "coordinate_derived_node_set",
+      "observed_count": 1,
+      "reference_coordinate_mm": [
+        0,
+        -5.0,
+        -5.0
+      ],
+      "identity_scope": "stable_semantic_label; local IDs/topology are revision-specific"
+    },
+    {
+      "semantic_id": "PIN_B",
+      "mesh_artifact_id": "gmsh-c3d10-h1.25mm-sha256-f1a10c599b51c571",
+      "local_name": "PIN_B",
+      "mapping_kind": "coordinate_derived_node_set",
+      "observed_count": 1,
+      "reference_coordinate_mm": [
+        0,
+        5.0,
+        -5.0
+      ],
+      "identity_scope": "stable_semantic_label; local IDs/topology are revision-specific"
+    }
+  ],
+  "mesh_artifacts": [
+    {
+      "artifact_id": "gmsh-c3d10-h5mm-sha256-ae4dda6f0b1be3ec",
+      "uri": "axial_bar_gmsh_mesh_h5mm.inp",
+      "sha256": "ae4dda6f0b1be3ecc103c32743361d928c6d8476df2af5f0a619dc6bca8a9f57",
+      "source_artifact_id": "geo-sha256-e8020e84d29bb298",
+      "source_sha256": "e8020e84d29bb298d764bf4dc0a6e7cf36f2510f699ee9065ae7c8bf9aa91dfd",
+      "mesh_format": "CalculiX INP",
+      "element_type": "C3D10",
+      "node_count": 998,
+      "element_count": 433,
+      "geometry_volume": {
+        "value": 10000.0,
+        "unit": "mm^3"
+      },
+      "quality_metrics": {
+        "shape_quality": {
+          "method": "corner tetrahedron mean ratio (1 is equilateral)",
+          "definition": "12 * (3 * V_corner)^(2/3) / sum(squared lengths of the six corner edges)",
+          "minimum": 0.42846277650264725,
+          "mean": 0.8104071759792724,
+          "unit": "1",
+          "acceptance_threshold": null,
+          "status": "measured_threshold_not_defined",
+          "evidence_uri": "manifest.prepared.json"
+        }
+      }
+    },
+    {
+      "artifact_id": "gmsh-c3d10-h2.5mm-sha256-c7a91da130f1fe3c",
+      "uri": "axial_bar_gmsh_mesh_h2.5mm.inp",
+      "sha256": "c7a91da130f1fe3c29ae408234e8da7fc6d3e71b38811d2edfae102ff39a60dc",
+      "source_artifact_id": "geo-sha256-19a5de5e0e9b600c",
+      "source_sha256": "19a5de5e0e9b600ccb17430ba4336553a1311c65d5c51d9e27e420e38a2f3ef5",
+      "mesh_format": "CalculiX INP",
+      "element_type": "C3D10",
+      "node_count": 6630,
+      "element_count": 3594,
+      "geometry_volume": {
+        "value": 10000.0,
+        "unit": "mm^3"
+      },
+      "quality_metrics": {
+        "shape_quality": {
+          "method": "corner tetrahedron mean ratio (1 is equilateral)",
+          "definition": "12 * (3 * V_corner)^(2/3) / sum(squared lengths of the six corner edges)",
+          "minimum": 0.3947615139350211,
+          "mean": 0.8061232532042574,
+          "unit": "1",
+          "acceptance_threshold": null,
+          "status": "measured_threshold_not_defined",
+          "evidence_uri": "manifest.prepared.json"
+        }
+      }
+    },
+    {
+      "artifact_id": "gmsh-c3d10-h1.25mm-sha256-f1a10c599b51c571",
+      "uri": "axial_bar_gmsh_mesh_h1.25mm.inp",
+      "sha256": "f1a10c599b51c5716559bf28937ead7d48993af44d30a3f027c30b4d0f285a4f",
+      "source_artifact_id": "geo-sha256-c0bed64410cfeb01",
+      "source_sha256": "c0bed64410cfeb0141fab6a26c323ac1b7edb0b20558d00dd338a444c6fa4cbd",
+      "mesh_format": "CalculiX INP",
+      "element_type": "C3D10",
+      "node_count": 39598,
+      "element_count": 24960,
+      "geometry_volume": {
+        "value": 10000.0,
+        "unit": "mm^3"
+      },
+      "quality_metrics": {
+        "shape_quality": {
+          "method": "corner tetrahedron mean ratio (1 is equilateral)",
+          "definition": "12 * (3 * V_corner)^(2/3) / sum(squared lengths of the six corner edges)",
+          "minimum": 0.39063839892363855,
+          "mean": 0.8230546723964889,
+          "unit": "1",
+          "acceptance_threshold": null,
+          "status": "measured_threshold_not_defined",
+          "evidence_uri": "manifest.prepared.json"
+        }
+      }
+    }
+  ],
+  "identity_note": "semantic IDs name intended engineering meaning; mesh tags and topology are revision-local and are not assumed stable"
+}

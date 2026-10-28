@@ -38,9 +38,11 @@ Continuam como opções de tecnologia/integração: Three.js, OpenCascade.js/WAS
 
 ## Estado e próximos passos
 
-**Estado:** há implementação local em Python para validação EIR, pré-flight bloqueado, jobs, persistência/sync SQLite com outbox fake e API FastAPI; a suíte backend passou com 73 testes e 16 subtests. A prova Gmsh/CalculiX cobre uma geometria `.geo` primitiva. OCRE-AF/1 ainda bloqueia prontidão, e cloud, autenticação real, broker, workers, CAD importado e validação física geral permanecem pendentes.
+**Estado:** há provas locais em Python para validação EIR v0.2, codificação pura do fingerprint OCRE-AF/1, migração explícita v0.1→draft v0.2, jobs/SQLite/outbox fake e worker sintético; há também um sidecar experimental de proveniência `.geo`/malha e um visualizador local TypeScript/Three.js com fixture fictícia. O codificador do fingerprint ainda não está integrado ao pré-flight: a prontidão continua bloqueada, e drafts migrados nunca liberam aprovação ou execução. Os testes locais incluem falhas de persistência, entrega duplicada/replay e estados sintéticos; não demonstram operação externa.
 
-Próximos passos: completar OCRE-AF/1 e gates do EIR, ampliar testes de falha/replay, qualificar proveniência CAD e qualidade da malha, e evoluir a prova local para Core Cloud e Scientific Workers.
+**Pendências:** Core Cloud, IAM, banco/fila/serviços externos, workers e motores reais, importação STEP/OCCT, limiar geral de qualidade da malha e validação física geral. A prova estrutural segue restrita ao benchmark sintético documentado; medições de qualidade e resultados numéricos não são critérios gerais nem demonstram validade física fora daquele caso.
+
+Próxima ordem: integrar OCRE-AF/1 ao contexto de aprovação sem alterar o contrato congelado e mantendo o bloqueio até todos os insumos/gates existirem; ampliar e validar falhas/replay no harness local; qualificar proveniência CAD importado e critérios de qualidade para um uso definido; depois planejar infraestrutura cloud e engines reais. O visualizador continua isolado na fixture local.
 
 ## Documentação
 
