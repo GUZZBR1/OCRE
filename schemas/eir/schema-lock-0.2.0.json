@@ -1,0 +1,8 @@
+{
+  "lock_version": "0.2.0",
+  "schemas": [
+    {"document_kind": "eir", "schema_version": "0.2.0", "path": "0.2.0.schema.json", "sha256": "cad757974d43c59e8ff1f5215b8202c648f20f20fab24c5b263682714db1d7ff"},
+    {"document_kind": "input_bundle", "schema_version": "0.2.0", "path": "input-bundle-0.2.0.schema.json", "sha256": "c413d3aa30101d99e93d16a489213ff85a25fced44413a1ab9020c091a739c0c"},
+    {"document_kind": "mesh_group_manifest", "schema_version": "0.2.0", "path": "mesh-group-manifest-0.2.0.schema.json", "sha256": "2fb964e56569dbeda3bccfa5d85cc8753997cea96f54518065b43fc64c95dc5a"}
+  ]
+}

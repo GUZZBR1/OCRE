@@ -1,9 +1,18 @@
 # Contexto do projeto OCRE
 
-**Data de referência:** 27/10/2026
-**Estado:** concepção e definição arquitetural. Implementação e validação técnica ainda pendentes.
+**Data de referência:** 28/10/2026
+**Estado:** arquitetura conceitual consolidada e primeira prova local implementada. O backend Python inclui validador EIR, pré-flight que bloqueia prontidão por falta de OCRE-AF/1, jobs, persistência/sync SQLite, outbox fake e API FastAPI. A suíte passou com 73 testes e 16 subtests. Cloud, IAM real, broker, workers, CAD importado e validação física geral continuam pendentes.
 
 Este documento é a memória canônica para continuidade do projeto. Ele consolida os contextos fornecidos sem tratar tecnologias candidatas como decisões de implementação ou integrações concluídas.
+
+O detalhamento da arquitetura de integração está em [docs/architecture/INTEGRATION_ARCHITECTURE.md](architecture/INTEGRATION_ARCHITECTURE.md); ele especifica modalidades de adaptador, contratos e limites sem declarar as integrações como implementadas.
+Os gates da primeira prova estrutural estão em [docs/architecture/STRUCTURAL_VALIDATION_ARCHITECTURE.md](architecture/STRUCTURAL_VALIDATION_ARCHITECTURE.md), separando verificação da integração/solução de validação física futura.
+
+O pacote inicial para as frentes de especificação e prova está em [docs/architecture/STARTING_PACKAGE.md](architecture/STARTING_PACKAGE.md), incluindo o caso de referência, EIR mínimo, contrato batch e decisões propostas.
+Os JSON Schemas experimentais v0.1 do EIR e do manifesto de grupos estão em [schemas/eir](../schemas/eir); eles validam apenas estrutura e tipos, não canonicalização, relações entre IDs, confinamento URI nem semântica UCUM.
+A arquitetura e o estado do validador determinístico estão em [EIR_VALIDATION_ARCHITECTURE.md](architecture/EIR_VALIDATION_ARCHITECTURE.md). Há implementação local estrutural/semântica; o pré-flight ainda bloqueia execução até OCRE-AF/1 e outros gates completos. O baseline inicial de linguagens por camada está em ADR-007; adoção na interface e validação de produção permanecem pendentes.
+
+O contrato EIR v0.2, com quaternion, perfil UCUM, fingerprint `OCRE-AF/1` e migração explícita, foi congelado após revisão independente em [EIR_V02_CONTRACT.md](architecture/EIR_V02_CONTRACT.md). Os três schemas Draft 2020-12 têm hashes fixados em [`schemas/eir`](../schemas/eir/README.md). O validador local está implementado; cálculo completo de OCRE-AF/1 e pré-flight cloud continuam pendentes.
 
 ## 1. Visão e princípios
 
@@ -24,17 +33,17 @@ Princípios orientadores:
 
 ### Cliente local
 
-Interface, CAD interativo, visualização 3D, operações geométricas suportadas localmente, cache, histórico e edição offline parcial. Deve manter resposta imediata quando a operação puder ser local.
+Interface, CAD interativo leve, visualização 3D, previews, operações geométricas leves, cache, histórico e edição offline parcial. Não instala nem executa motores científicos pesados no fluxo padrão. Deve manter resposta imediata quando a operação puder ser local; esses resultados ficam como rascunho até confirmação cloud.
 
-### Cloud Core
+### Core Cloud
 
-Gerenciamento de projetos e versões, sincronização, armazenamento central, APIs, autenticação, integração de ferramentas, operações avançadas, IA opcional e orquestração de tarefas.
+Gerenciamento de projetos e revisões canônicas, sincronização, armazenamento central, APIs, autenticação, validação EIR/pré-flight autoritativos, integração de ferramentas, operações CAD avançadas, IA opcional e orquestração de tarefas.
 
-### Scientific Compute
+### Scientific Workers
 
-Workers isolados e escaláveis para FEM/FEA, CFD, robótica, dinâmica, térmica, eletrônica, controle, co-simulação e treinamento de políticas. A interface deve permanecer utilizável durante execuções remotas.
+Workers cloud isolados e escaláveis para OCCT complexo, Gmsh, CalculiX, FEM/FEA, CFD, robótica, dinâmica, térmica, eletrônica, controle, co-simulação e treinamento de políticas. Nenhum motor pesado é uma instalação obrigatória no computador do usuário. Execução local avançada pode ser adicionada futuramente como opção.
 
-Um gerenciador determinístico escolherá o ambiente de execução considerando complexidade, recursos, latência, conexão, custo, volume de dados e disponibilidade de motores. A distribuição local/cloud não é uma divisão fixa.
+O gerenciador determinístico escolhe worker cloud/capacidade compatível considerando complexidade, recursos, latência, custo, volume de dados, licença e disponibilidade de motores. O padrão do produto não encaminha motores pesados ao computador do usuário. A prova Gmsh/CalculiX local em `experiments/fea-reference/` é somente experimento de desenvolvimento.
 
 ## 3. Engineering Core e EIR
 
@@ -54,7 +63,7 @@ Cada execução deverá apontar para uma versão imutável do modelo e registrar
 
 ## 4. CAD e geometria
 
-**Direção proposta:** Open CASCADE Technology (OCCT), com OpenCascade.js/WebAssembly para operações locais e OCCT C++ para operações avançadas na cloud. A mesma família de kernel pode reduzir diferenças, mas compatibilidade de versões, tolerâncias e referências topológicas ainda requer validação.
+**Direção proposta:** Open CASCADE Technology (OCCT) como kernel geométrico. OpenCascade.js/WebAssembly é candidato para operações locais; o acesso a OCCT nos workers cloud ainda precisa de uma prova STEP. A linguagem do cliente é TypeScript; isso não aprova OpenCascade.js/WASM nem paridade local/cloud. A decisão inicial não compromete o OCRE com código próprio C++; um adaptador C++ isolado poderá ser escolhido se wrappers/APIs existentes não satisfizerem fidelidade, assemblies e proveniência. Compatibilidade de versões, tolerâncias e referências topológicas ainda requer validação.
 
 O histórico paramétrico interno armazenará operações, parâmetros e dependências. Formatos de intercâmbio como STEP e STL podem não preservar o histórico paramétrico original.
 
@@ -143,9 +152,13 @@ Uma integração deve ser avaliada por compatibilidade de formatos e versões, f
 
 Uma execução concluída não prova que a simulação está validada; um resultado numérico isolado também não comprova segurança estrutural.
 
-## 12. Stack proposta (não selecionada)
+## 12. Baseline inicial de linguagens e tecnologias ainda abertas
 
-Interface TypeScript; visualização Three.js; kernel local OpenCascade.js/WASM; kernel cloud OCCT C++; backend central Go ou Python (Go aparece como preferência na versão mais recente do contexto, ainda sem decisão final); adaptadores Python/C++; PostgreSQL; SQLite ou IndexedDB/OPFS; object storage; REST/WebSocket e gRPC quando necessário; containers e workers. Infraestrutura científica ficará isolada do backend central.
+**Linguagens escolhidas como baseline inicial:** TypeScript no cliente para UI, Three.js e interação CAD leve, com HTML/CSS para marcação e estilo; Python no Core Cloud para API/controle, validação EIR/pré-flight, jobs e orquestração, e nos adaptadores de controle que atendam aos contratos; SQL para o modelo relacional quando PostgreSQL for implementado. TypeScript será entregue como JavaScript para o browser. A decisão está registrada em [ADR-007](architecture/ARCHITECTURE_DECISIONS.md#adr-007--baseline-inicial-de-linguagens-por-camada). Ela não significa que essas partes já estejam implementadas nem que Python esteja validado para produção.
+
+**Fora do baseline de código próprio inicial:** Go não será adotado em paralelo sem requisito operacional ou gargalo medido; C++ não será compromisso de implementação do OCRE antes de prova. OCCT continua sendo um motor nativo possível nos workers, mas a interface de importação STEP ainda requer uma prova de fidelidade geométrica, assemblies e proveniência. Se APIs ou wrappers existentes não satisfizerem os requisitos, avaliar um adaptador C++ isolado.
+
+**Não decididos por esta escolha de linguagens:** framework de UI/API, OpenCascade.js/WASM, implementação do acesso a OCCT nos workers, PostgreSQL, SQLite/IndexedDB/OPFS, object storage, REST/WebSocket/gRPC, filas, containers e infraestrutura cloud. JSON, JSON Schema, OpenAPI e YAML são formatos de contrato/configuração. Motores científicos pesados permanecem isolados em Scientific Workers cloud; nenhum deles se torna instalação obrigatória para o usuário.
 
 ## 13. Roadmap de integração
 
@@ -168,12 +181,12 @@ Interface TypeScript; visualização Three.js; kernel local OpenCascade.js/WASM;
 - Sincronização/versionamento determinísticos e resultados vinculados a entradas imutáveis.
 - Validação científica independente da IA e reutilização de motores existentes.
 
-### Candidatos, ainda não validados
+### Candidatos e integrações ainda não validados
 
-- OCCT local via OpenCascade.js e cloud via C++.
+- OCCT local via OpenCascade.js e interface de importação STEP/OCCT nos workers cloud; não está decidido se exigirá código próprio C++.
 - Gmsh/CalculiX para primeiro pipeline estrutural.
 - Isaac Sim/Newton para robótica; Newton como backend depende de compatibilidade.
-- Stack de backend, armazenamento, comunicação, filas e execução listada na seção anterior.
+- Frameworks de backend, armazenamento, comunicação, filas e execução listados na seção anterior.
 - Demais motores listados neste documento.
 
 ### Decisões abertas
@@ -181,7 +194,7 @@ Interface TypeScript; visualização Three.js; kernel local OpenCascade.js/WASM;
 - Especificação EIR e modelo paramétrico; estabilidade de referências topológicas.
 - Contratos completos dos adaptadores e formato de resultados.
 - Prioridade exata do primeiro marco: CAD híbrido como fundação versus CAD → malha → análise estrutural como primeira demonstração científica.
-- Backend central: Go ou Python.
+- Framework e implantação do Core Cloud; baseline de linguagem já selecionado em ADR-007, ainda sem implementação/benchmark de produção.
 - Resolução de conflitos local/cloud e seleção de framework desktop.
 - Infraestrutura cloud, segurança/isolation dos workers, autenticação, custos e atualização/distribuição dos kernels.
 - Versões compatíveis dos motores e licenças.

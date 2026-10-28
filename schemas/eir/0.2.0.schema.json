@@ -1,0 +1,156 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ocre.invalid/schemas/eir/0.2.0.schema.json",
+  "title": "OCRE Engineering Intermediate Representation 0.2.0",
+  "description": "Structural schema only. Reference resolution, unit semantics, quaternion norm, material coverage, bundle integrity, and execution readiness are semantic checks.",
+  "type": "object",
+  "required": ["eir_schema_version", "document_state", "document_origin", "project", "revision", "geometry", "materials", "frames", "simulation_cases"],
+  "properties": {
+    "eir_schema_version": {"const": "0.2.0"},
+    "document_state": {"enum": ["draft", "complete"]},
+    "document_origin": {"enum": ["authored", "migration_v0.1"]},
+    "project": {"$ref": "#/$defs/project"},
+    "revision": {"$ref": "#/$defs/revision"},
+    "geometry": {"type": "array", "uniqueItems": true, "items": {"$ref": "#/$defs/geometry"}},
+    "materials": {"type": "array", "uniqueItems": true, "items": {"$ref": "#/$defs/material"}},
+    "frames": {"type": "array", "uniqueItems": true, "items": {"$ref": "#/$defs/frame"}},
+    "simulation_cases": {"type": "array", "uniqueItems": true, "items": {"$ref": "#/$defs/simulationCase"}},
+    "migration": {"$ref": "#/$defs/migrationProvenance"},
+    "extensions": {"type": "object", "additionalProperties": true}
+  },
+  "additionalProperties": false,
+  "allOf": [
+    {
+      "if": {"properties": {"document_origin": {"const": "migration_v0.1"}}, "required": ["document_origin"]},
+      "then": {"required": ["migration"]},
+      "else": {"not": {"required": ["migration"]}}
+    },
+    {
+      "if": {"properties": {"document_state": {"const": "complete"}}, "required": ["document_state"]},
+      "then": {
+        "properties": {
+          "geometry": {
+            "minItems": 1,
+            "items": {"properties": {"artifact_id": {"$ref": "#/$defs/id"}, "frame_id": {"$ref": "#/$defs/id"}}}
+          },
+          "materials": {"minItems": 1},
+          "frames": {"minItems": 1},
+          "simulation_cases": {
+            "minItems": 1,
+            "items": {
+              "properties": {
+                "frame_id": {"$ref": "#/$defs/id"},
+                "group_manifest_ref": {"$ref": "#/$defs/id"},
+                "material_assignments": {
+                  "minItems": 1,
+                  "items": {"properties": {"geometry_id": {"$ref": "#/$defs/id"}, "material_id": {"$ref": "#/$defs/id"}}}
+                },
+                "geometry_refs": {"minItems": 1},
+                "loads": {"items": {"properties": {"frame_id": {"$ref": "#/$defs/id"}}}},
+                "constraints": {"items": {"properties": {"frame_id": {"$ref": "#/$defs/id"}}}}
+              }
+            }
+          }
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "id": {"type": "string", "minLength": 1, "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"},
+    "sha256OrNull": {"oneOf": [{"type": "null"}, {"type": "string", "pattern": "^[a-f0-9]{64}$"}]},
+    "quantity": {
+      "type": "object", "required": ["value", "unit"],
+      "properties": {"value": {"type": "number"}, "unit": {"type": "string", "minLength": 1}},
+      "additionalProperties": false
+    },
+    "project": {
+      "type": "object", "required": ["project_id"],
+      "properties": {
+        "project_id": {"$ref": "#/$defs/id"}, "name": {"type": "string", "minLength": 1},
+        "default_units": {"type": "object", "additionalProperties": {"type": "string", "minLength": 1}},
+        "extensions": {"type": "object", "additionalProperties": true}
+      }, "additionalProperties": false
+    },
+    "revision": {
+      "type": "object", "required": ["revision_id", "project_id", "parent_revision_ids", "manifest_sha256"],
+      "properties": {
+        "revision_id": {"$ref": "#/$defs/id"}, "project_id": {"$ref": "#/$defs/id"},
+        "parent_revision_ids": {"type": "array", "uniqueItems": true, "items": {"$ref": "#/$defs/id"}},
+        "manifest_sha256": {"$ref": "#/$defs/sha256OrNull"},
+        "created_at": {"type": "string", "format": "date-time"},
+        "extensions": {"type": "object", "additionalProperties": true}
+      }, "additionalProperties": false
+    },
+    "geometry": {
+      "type": "object", "required": ["geometry_id", "artifact_id", "length_unit", "frame_id"],
+      "properties": {
+        "geometry_id": {"$ref": "#/$defs/id"}, "artifact_id": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/id"}]},
+        "length_unit": {"type": "string", "minLength": 1}, "frame_id": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/id"}]},
+        "bounding_box": {
+          "type": "object", "required": ["min", "max", "unit"],
+          "properties": {
+            "min": {"$ref": "#/$defs/vector3"}, "max": {"$ref": "#/$defs/vector3"},
+            "unit": {"type": "string", "minLength": 1}
+          }, "additionalProperties": false
+        }, "extensions": {"type": "object", "additionalProperties": true}
+      }, "additionalProperties": false
+    },
+    "vector3": {"type": "array", "prefixItems": [{"type": "number"}, {"type": "number"}, {"type": "number"}], "minItems": 3, "maxItems": 3},
+    "material": {
+      "type": "object", "required": ["material_id", "model", "properties"],
+      "properties": {
+        "material_id": {"$ref": "#/$defs/id"}, "model": {"type": "string", "minLength": 1},
+        "properties": {"type": "object", "minProperties": 1, "additionalProperties": {"$ref": "#/$defs/quantity"}},
+        "provenance": {"type": "object", "additionalProperties": true}, "extensions": {"type": "object", "additionalProperties": true}
+      }, "additionalProperties": false
+    },
+    "frame": {
+      "type": "object", "required": ["frame_id", "parent_frame_id", "translation", "rotation_xyzw"],
+      "properties": {
+        "frame_id": {"$ref": "#/$defs/id"}, "parent_frame_id": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/id"}]},
+        "translation": {"type": "object", "required": ["value", "unit"], "properties": {"value": {"$ref": "#/$defs/vector3"}, "unit": {"type": "string", "minLength": 1}}, "additionalProperties": false},
+        "rotation_xyzw": {"type": "array", "prefixItems": [{"type": "number"}, {"type": "number"}, {"type": "number"}, {"type": "number"}], "minItems": 4, "maxItems": 4},
+        "extensions": {"type": "object", "additionalProperties": true}
+      }, "additionalProperties": false
+    },
+    "componentQuantities": {
+      "type": "object", "minProperties": 1,
+      "properties": {"x": {"$ref": "#/$defs/quantity"}, "y": {"$ref": "#/$defs/quantity"}, "z": {"$ref": "#/$defs/quantity"}},
+      "additionalProperties": false
+    },
+    "condition": {
+      "type": "object", "required": ["kind", "components", "frame_id"],
+      "properties": {
+        "group": {"$ref": "#/$defs/id"}, "selection_ref": {"$ref": "#/$defs/id"},
+        "kind": {"type": "string", "minLength": 1}, "components": {"$ref": "#/$defs/componentQuantities"},
+        "frame_id": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/id"}]}, "extensions": {"type": "object", "additionalProperties": true}
+      },
+      "oneOf": [{"required": ["group"], "not": {"required": ["selection_ref"]}}, {"required": ["selection_ref"], "not": {"required": ["group"]}}],
+      "additionalProperties": false
+    },
+    "materialAssignment": {
+      "type": "object", "required": ["geometry_id", "material_id"],
+      "properties": {"geometry_id": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/id"}]}, "material_id": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/id"}]}},
+      "additionalProperties": false
+    },
+    "simulationCase": {
+      "type": "object", "required": ["case_id", "revision_id", "domain", "analysis", "frame_id", "geometry_refs", "material_refs", "material_assignments", "group_manifest_ref", "loads", "constraints", "solver"],
+      "properties": {
+        "case_id": {"$ref": "#/$defs/id"}, "revision_id": {"$ref": "#/$defs/id"},
+        "domain": {"type": "string", "minLength": 1}, "analysis": {"type": "string", "minLength": 1}, "frame_id": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/id"}]},
+        "geometry_refs": {"type": "array", "uniqueItems": true, "items": {"$ref": "#/$defs/id"}},
+        "material_refs": {"type": "array", "uniqueItems": true, "items": {"$ref": "#/$defs/id"}},
+        "material_assignments": {"type": "array", "items": {"$ref": "#/$defs/materialAssignment"}},
+        "group_manifest_ref": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/id"}]},
+        "loads": {"type": "array", "items": {"$ref": "#/$defs/condition"}}, "constraints": {"type": "array", "items": {"$ref": "#/$defs/condition"}},
+        "solver": {"type": "object", "required": ["adapter_id"], "properties": {"adapter_id": {"$ref": "#/$defs/id"}, "proposed_target_version": {"type": "string", "minLength": 1}, "extensions": {"type": "object", "additionalProperties": true}}, "additionalProperties": false},
+        "extensions": {"type": "object", "additionalProperties": true}
+      }, "additionalProperties": false
+    },
+    "migrationProvenance": {
+      "type": "object", "required": ["source_schema_version", "source_sha256", "tool_id", "tool_version", "report_artifact_id"],
+      "properties": {"source_schema_version": {"const": "0.1.0"}, "source_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"}, "tool_id": {"$ref": "#/$defs/id"}, "tool_version": {"type": "string", "minLength": 1}, "report_artifact_id": {"$ref": "#/$defs/id"}},
+      "additionalProperties": false
+    }
+  }
+}

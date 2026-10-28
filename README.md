@@ -1,17 +1,17 @@
 # OCRE
 
-**OCRE** é uma proposta de plataforma modular de engenharia para integrar CAD paramétrico, simulação científica, robótica, eletrônica e sistemas industriais em uma experiência híbrida local/cloud. O cliente no computador será leve; operações CAD complexas e motores científicos serão executados em infraestrutura cloud.
+**OCRE** é uma plataforma modular de engenharia em desenvolvimento para integrar CAD paramétrico, simulação científica, robótica, eletrônica e sistemas industriais em uma experiência híbrida local/cloud. O cliente será leve; operações CAD complexas e motores científicos serão executados em infraestrutura cloud.
 
-O projeto está na etapa de **concepção e definição arquitetural**. Este repositório ainda não declara implementação, integração ou validação científica concluída. Tecnologias citadas são candidatas até que compatibilidade, licença e comportamento sejam verificados.
+O repositório contém contratos de arquitetura, um Core local de prova e um benchmark estrutural Gmsh/CalculiX executado em geometria primitiva. Isso não equivale a produto cloud, integração CAD importado ou validação científica geral. Tecnologias seguem candidatas até que compatibilidade, licença e comportamento sejam verificados.
 
 ## Princípios
 
 - A plataforma básica deve funcionar sem inteligência artificial.
 - A IA será opcional e auxiliará criação, planejamento e automação; operações e validações serão executadas por componentes determinísticos.
 - O cliente local concentra interface, visualização 3D, edição CAD interativa leve, pré-visualizações, cache, histórico e sincronização. OpenCascade.js/WebAssembly poderá executar operações geométricas leves quando adequado.
-- O Core Cloud mantém projetos e revisões canônicas, valida EIR e pré-flight, armazena artefatos e orquestra execuções.
+- O Core Cloud mantém projetos e revisões canônicas, valida EIR/pré-flight, armazena artefatos e orquestra execuções.
 - Scientific Workers isolados provisionam OCCT completo para operações complexas e motores como Gmsh, CalculiX, OpenFOAM e Isaac Sim/Newton, conforme capacidade, versão e licença.
-- O usuário não precisa instalar nem abrir individualmente motores CAD ou científicos para usar o fluxo padrão. Execução local avançada poderá ser uma opção futura, nunca um requisito.
+- O usuário não precisa instalar nem abrir motores CAD ou científicos para usar o fluxo padrão. Execução local avançada poderá ser uma opção futura, nunca um requisito. O harness local atual é somente experimento de desenvolvimento.
 - O cliente mostra previews imediatamente e continua responsivo durante jobs remotos; resultados locais pendentes só se tornam parte da revisão canônica após confirmação cloud.
 - Motores existentes serão integrados por adaptadores com contratos explícitos, sem recriar seus solvers.
 - Projetos, entradas, versões de ferramentas e resultados precisam ser rastreáveis e reproduzíveis.
@@ -26,21 +26,29 @@ O Engineering Core coordena projetos, representação paramétrica, geometria, m
 
 Demonstrar um fluxo reproduzível de **CAD paramétrico leve no cliente → sincronização → validação EIR/pré-flight no Core Cloud → geração de malha com Gmsh e análise CalculiX em Scientific Workers → validação → visualização de resultados no cliente → edição e nova execução**. Gmsh e CalculiX são candidatos para esse primeiro pipeline; o fluxo de produto ainda não está implementado.
 
-O harness local de Gmsh/CalculiX, quando usado em desenvolvimento, é experimental e não define os requisitos de instalação do produto.
+A prova batch local documentada é experimental e não define a colocação de produção. No produto, a validação/pré-flight autoritativos rodam no Core Cloud e os motores pesados em Scientific Workers.
 
 Uma etapa multidisciplinar posterior poderá transferir cargas dinâmicas de robótica para análise estrutural: **CAD → Isaac Sim/Newton → cargas → CalculiX → tensões associadas ao modelo**. A compatibilidade entre versões e o papel de Newton no Isaac Sim precisam ser verificados antes de assumir essa integração.
 
 ## Tecnologias candidatas
 
-OCCT/OpenCascade.js, Three.js, Gmsh, CalculiX, Isaac Sim, Newton, MuJoCo, Gazebo/ROS 2, OpenFOAM, SU2, Elmer, OpenModelica, ngspice, FMI/FMU, PostgreSQL, SQLite/IndexedDB, REST/WebSocket/gRPC e infraestrutura baseada em containers aparecem como opções de integração. A stack definitiva ainda não foi selecionada.
+**Baseline inicial de linguagens decidido:** TypeScript (entregue como JavaScript no browser) para o cliente, com HTML/CSS para marcação e estilo; Python para o Core Cloud e adaptadores de controle/orquestração; SQL para persistência relacional quando PostgreSQL for implementado. Isso é uma decisão de arquitetura, não evidência de implementação ou prontidão para produção. Go não será adicionado sem requisito operacional ou gargalo medido; código C++ próprio fica fora do baseline inicial, sujeito a uma prova STEP/OCCT que pode justificar um adaptador isolado.
+
+Continuam como opções de tecnologia/integração: Three.js, OpenCascade.js/WASM, OCCT, Gmsh, CalculiX, Isaac Sim, Newton, MuJoCo, Gazebo/ROS 2, OpenFOAM, SU2, Elmer, OpenModelica, ngspice, FMI/FMU, PostgreSQL, SQLite/IndexedDB/OPFS, REST/WebSocket/gRPC e infraestrutura baseada em containers. Frameworks, protocolos, armazenamento e compatibilidade dos motores ainda não estão selecionados ou validados. JSON, JSON Schema, OpenAPI e YAML são formatos de contrato/configuração, não linguagens de aplicação. Ver [ADR-007](docs/architecture/ARCHITECTURE_DECISIONS.md#adr-007--baseline-inicial-de-linguagens-por-camada).
 
 ## Estado e próximos passos
 
-**Estado:** arquitetura conceitual híbrida definida; implementação e validação técnica do fluxo de produto pendentes. A seleção definitiva de tecnologias, compatibilidade de versões, provisionamento dos workers, licenciamento, custos, segurança e recuperação de falhas ainda precisam ser validados.
+**Estado:** há implementação local em Python para validação EIR, pré-flight bloqueado, jobs, persistência/sync SQLite com outbox fake e API FastAPI; a suíte backend passou com 73 testes e 16 subtests. A prova Gmsh/CalculiX cobre uma geometria `.geo` primitiva. OCRE-AF/1 ainda bloqueia prontidão, e cloud, autenticação real, broker, workers, CAD importado e validação física geral permanecem pendentes.
 
-Próximos artefatos recomendados: detalhar o Engineering Core e o EIR, definir os contratos de adaptadores e escolher um pipeline científico mínimo com critérios de aceitação e referências de validação.
+Próximos passos: completar OCRE-AF/1 e gates do EIR, ampliar testes de falha/replay, qualificar proveniência CAD e qualidade da malha, e evoluir a prova local para Core Cloud e Scientific Workers.
 
 ## Documentação
 
 - [Contexto e memória do projeto](docs/PROJECT_CONTEXT.md): arquitetura, integrações, roadmap, decisões e pendências.
+- [Arquitetura de integração](docs/architecture/INTEGRATION_ARCHITECTURE.md): viabilidade, tipos de adaptadores, contratos, limites e fases.
+- [Verificação e validação estrutural](docs/architecture/STRUCTURAL_VALIDATION_ARCHITECTURE.md): gates e evidências para a prova Gmsh/CalculiX.
+- [Pacote inicial das frentes 1–5](docs/architecture/STARTING_PACKAGE.md): caso de referência, EIR, contrato do adaptador, decisões e sequência de validação.
+- [Schemas EIR](schemas/eir/README.md): schemas v0.1 experimentais e v0.2 congelados; relações semânticas e prontidão dependem do validador da aplicação.
+- [Arquitetura de validação do EIR](docs/architecture/EIR_VALIDATION_ARCHITECTURE.md): pipeline determinístico, relatórios, segurança de bundle, readiness e decisões ainda abertas.
+- [Contrato EIR v0.2](docs/architecture/EIR_V02_CONTRACT.md): contrato congelado, fingerprint `OCRE-AF/1`, migração explícita e três schemas travados por digest; a validação semântica local existe, mas a prontidão permanece bloqueada enquanto OCRE-AF/1 não estiver ligado.
 - [Regras do repositório](AGENTS.md): instruções de trabalho específicas do projeto.

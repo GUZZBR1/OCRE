@@ -1,0 +1,47 @@
+{
+  "status": "extracted",
+  "method": {
+    "field_source": "CalculiX .dat integration-point S/E/COORD",
+    "weighting": "corner tetra volume / 4; verified affine C3D10 midside nodes",
+    "central_region_mm": [
+      33.333333333333336,
+      66.66666666666667
+    ],
+    "sample_count": 32916,
+    "volume_weight_mm3": 3333.456645697629,
+    "element_count": 24960,
+    "integration_points_per_element": 4
+  },
+  "reactions": {
+    "X_FIXED_Fx_N": -2100.0,
+    "X_DISPLACED_Fx_N": 2100.0,
+    "equilibrium_relative_to_reference": 0.0
+  },
+  "reference": {
+    "reaction_N": 2100.0,
+    "S11_MPa": 21.0,
+    "E11": 0.0001,
+    "E22": -3e-05,
+    "E33": -3e-05
+  },
+  "observed": {
+    "reaction_N": 2100.0,
+    "S11_MPa": 21.0,
+    "E11": 0.00010000000000000002,
+    "E22": -3e-05,
+    "E33": -3e-05
+  },
+  "relative_error_percent": {
+    "reaction_N": 0.0,
+    "S11_MPa": 0.0,
+    "E11": 1.3552527156068805e-14,
+    "E22": 0.0,
+    "E33": 0.0
+  },
+  "acceptance": {
+    "reaction_le_1_percent": true,
+    "central_stress_le_1_percent": true,
+    "lateral_strain_y_le_5_percent": true,
+    "lateral_strain_z_le_5_percent": true
+  }
+}

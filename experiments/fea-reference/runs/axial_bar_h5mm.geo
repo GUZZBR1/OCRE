@@ -1,0 +1,11 @@
+SetFactory("OpenCASCADE");
+Mesh.Algorithm3D = 1;
+Mesh.ElementOrder = 2;
+Mesh.SaveGroupsOfNodes = 1;
+Mesh.SaveGroupsOfElements = -1000;
+Mesh.CharacteristicLengthMin = 5.0;
+Mesh.CharacteristicLengthMax = 5.0;
+Box(1) = {0, -5.0, -5.0, 100.0, 10.0, 10.0};
+Physical Volume("VOLUME") = {1};
+Physical Surface("X_FIXED") = Surface In BoundingBox {-1e-7, -5.0000001, -5.0000001, 1e-7, 5.0000001, 5.0000001};
+Physical Surface("X_DISPLACED") = Surface In BoundingBox {99.9999999, -5.0000001, -5.0000001, 100.0000001, 5.0000001, 5.0000001};

@@ -1,0 +1,186 @@
+{
+  "schema_version": "0.2.0",
+  "case_id": "case_tension_bar_v1",
+  "artifact_kind": "structured_c3d8_baseline_decks",
+  "status": "prepared_solver_available_not_run",
+  "generated_at_utc": "2026-10-28T03:08:34.926622+00:00",
+  "geometry": {
+    "shape": "rectangular_prism",
+    "length_mm": 100.0,
+    "width_mm": 10.0,
+    "height_mm": 10.0,
+    "axis": "x",
+    "units": {
+      "length": "mm",
+      "force": "N",
+      "stress": "MPa"
+    }
+  },
+  "material": {
+    "model": "linear_elastic_isotropic",
+    "young_modulus_MPa": 210000.0,
+    "poisson_ratio": 0.3
+  },
+  "boundary_conditions": {
+    "x_fixed_ux_mm": 0,
+    "x_displaced_ux_mm": 0.01,
+    "transverse_pins": "two minimal pins; free Poisson contraction"
+  },
+  "analytical_reference_only": {
+    "axial_strain": 0.0001,
+    "axial_stress_MPa": 21.0,
+    "reaction_N": 2100.0,
+    "lateral_strain": -3e-05
+  },
+  "mesh_artifacts": [
+    {
+      "characteristic_size_mm": 5.0,
+      "divisions": {
+        "x": 20,
+        "y": 2,
+        "z": 2
+      },
+      "node_count": 189,
+      "element_count": 80,
+      "element_type": "C3D8",
+      "groups": {
+        "VOLUME": 80,
+        "X_FIXED": 9,
+        "X_DISPLACED": 9,
+        "PIN_A": {
+          "node": 1,
+          "xyz_mm": [
+            0,
+            -5.0,
+            -5.0
+          ],
+          "fixed_dofs": [
+            2,
+            3
+          ]
+        },
+        "PIN_B": {
+          "node": 43,
+          "xyz_mm": [
+            0,
+            5.0,
+            -5.0
+          ],
+          "fixed_dofs": [
+            3
+          ]
+        }
+      },
+      "input": "axial_bar_h5mm.inp",
+      "sha256": "14c1764124a4eaf6ad98a0e59d82fe1dccbc01922d4e084d08d3edd95d5cf833"
+    },
+    {
+      "characteristic_size_mm": 2.5,
+      "divisions": {
+        "x": 40,
+        "y": 4,
+        "z": 4
+      },
+      "node_count": 1025,
+      "element_count": 640,
+      "element_type": "C3D8",
+      "groups": {
+        "VOLUME": 640,
+        "X_FIXED": 25,
+        "X_DISPLACED": 25,
+        "PIN_A": {
+          "node": 1,
+          "xyz_mm": [
+            0,
+            -5.0,
+            -5.0
+          ],
+          "fixed_dofs": [
+            2,
+            3
+          ]
+        },
+        "PIN_B": {
+          "node": 165,
+          "xyz_mm": [
+            0,
+            5.0,
+            -5.0
+          ],
+          "fixed_dofs": [
+            3
+          ]
+        }
+      },
+      "input": "axial_bar_h2.5mm.inp",
+      "sha256": "b4142937c9c22ae58d640adab91f2f462daf375c4b449c55e3a1a81a88fc8691"
+    },
+    {
+      "characteristic_size_mm": 1.25,
+      "divisions": {
+        "x": 80,
+        "y": 8,
+        "z": 8
+      },
+      "node_count": 6561,
+      "element_count": 5120,
+      "element_type": "C3D8",
+      "groups": {
+        "VOLUME": 5120,
+        "X_FIXED": 81,
+        "X_DISPLACED": 81,
+        "PIN_A": {
+          "node": 1,
+          "xyz_mm": [
+            0,
+            -5.0,
+            -5.0
+          ],
+          "fixed_dofs": [
+            2,
+            3
+          ]
+        },
+        "PIN_B": {
+          "node": 649,
+          "xyz_mm": [
+            0,
+            5.0,
+            -5.0
+          ],
+          "fixed_dofs": [
+            3
+          ]
+        }
+      },
+      "input": "axial_bar_h1.25mm.inp",
+      "sha256": "6e4b047b9d4d06ee8a7a0d91a6f6cec5efec8ff8198aaaca9e34232f2028d229"
+    }
+  ],
+  "toolchain": {
+    "python": "3.12.3",
+    "gmsh": {
+      "available": true,
+      "path": "/home/gusta/projetos/OCRE/experiments/fea-reference/.local-tools/gmsh-4.15.2/gmsh-4.15.2-Linux64/bin/gmsh",
+      "version": "4.15.2",
+      "probe_exit_code": 0,
+      "probe_cwd": null,
+      "probe_note": null,
+      "sha256": "9dccade5dd1374b28c18af9085d7ce63216cf7ac39d3cefbc0adbfabafba2c7f"
+    },
+    "calculix_ccx": {
+      "available": true,
+      "path": "/home/gusta/projetos/OCRE/experiments/fea-reference/.local-tools/ccx-2.23/CalculiX/ccx_2.23/src/ccx_2.23",
+      "version": "CalculiX Version 2.23, Copyright(C) 1998-2025 Guido Dhondt",
+      "probe_exit_code": 201,
+      "probe_cwd": "runs/ccx-probes/ccx-version-e92s_y4t (temporary; removed after probe)",
+      "probe_note": "CCX has no --version option; banner captured in isolated cwd; exit 201 is expected.",
+      "sha256": "31be21fc2f0902bd9a05acc2651dbac6dc2a2573dabbf235e39a38cb6f458862"
+    }
+  },
+  "execution": {
+    "solver_executed": false,
+    "limitation": "Solver has not been run; no FE result is claimed.",
+    "resource_limits": "Gmsh timeout 120 s per export; CalculiX timeout 600 s per deck; no explicit memory cap."
+  }
+}
