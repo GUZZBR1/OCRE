@@ -1,0 +1,303 @@
+{
+  "$defs": {
+    "stroke": {
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "status": {
+                "const": "erased"
+              }
+            },
+            "required": [
+              "status"
+            ]
+          },
+          "then": {
+            "required": [
+              "erased_at_ms"
+            ]
+          }
+        }
+      ],
+      "properties": {
+        "closed": {
+          "type": "boolean"
+        },
+        "erased_at_ms": {
+          "description": "Required when status is erased.",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "erased_inferred": {
+          "description": "True only for a provisional tombstone inferred from a diff between revisions (no erase event in the app).",
+          "type": "boolean"
+        },
+        "erased_reason": {
+          "description": "Required when status is erased, unless erased_inferred is true.",
+          "enum": [
+            "hand-erase",
+            "page-turn",
+            "manual"
+          ]
+        },
+        "length_mm": {
+          "description": "Polyline length in mm (closing segment included when closed); must match points_mm within tolerance.",
+          "minimum": 0,
+          "type": "number"
+        },
+        "order": {
+          "description": "0-based, unique and contiguous across strokes.",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "order_kind": {
+          "description": "Optional per-stroke override; when present it must equal the document order_kind.",
+          "enum": [
+            "temporal-stamps",
+            "reading-centroid",
+            "unknown"
+          ]
+        },
+        "points_mm": {
+          "description": "Polyline points in mm, sheet_top_left_y_down. All points must lie on the sheet.",
+          "items": {
+            "items": false,
+            "maxItems": 2,
+            "minItems": 2,
+            "prefixItems": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "number"
+              }
+            ],
+            "type": "array"
+          },
+          "minItems": 1,
+          "type": "array"
+        },
+        "provenance": {
+          "additionalProperties": false,
+          "description": "Hashes of the source files this stroke was derived from.",
+          "properties": {
+            "source_files": {
+              "items": {
+                "additionalProperties": false,
+                "properties": {
+                  "sha256": {
+                    "pattern": "^[0-9a-f]{64}$",
+                    "type": "string"
+                  },
+                  "uri": {
+                    "description": "Relative path of the source artifact (e.g. captures/canvas_<epoch>.png).",
+                    "minLength": 1,
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "uri",
+                  "sha256"
+                ],
+                "type": "object"
+              },
+              "minItems": 1,
+              "type": "array"
+            }
+          },
+          "required": [
+            "source_files"
+          ],
+          "type": "object"
+        },
+        "shape": {
+          "description": "Optional primitive detected by the vectorizer.",
+          "enum": [
+            "line",
+            "circle",
+            "rectangle",
+            "polygon",
+            "polyline"
+          ]
+        },
+        "status": {
+          "description": "pending = provisional layer, stable = confirmed layer, erased = tombstone (never removed).",
+          "enum": [
+            "pending",
+            "stable",
+            "erased"
+          ]
+        },
+        "stroke_id": {
+          "description": "Stable id assigned by the OCRE adapter (s-0001, ...); unique in the document.",
+          "pattern": "^s-[0-9]{4,}$",
+          "type": "string"
+        },
+        "t_end_ms": {
+          "description": "Only with stamps (order_kind temporal-stamps); >= t_start_ms.",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "t_start_ms": {
+          "description": "Only with stamps (order_kind temporal-stamps).",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "stroke_id",
+        "order",
+        "status",
+        "points_mm",
+        "closed",
+        "length_mm"
+      ],
+      "type": "object"
+    }
+  },
+  "$id": "https://ocre.local/schemas/draw-paper/0.1.0.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Master document for one A4 sheet drawn in Draw, built OCRE-side. The document is the master; DXF, STEP and FMU are derived copies only. Status names pending|stable|erased follow the fork values (user decision D6 pending; see plan section 4).",
+  "properties": {
+    "coordinate_system": {
+      "const": "sheet_top_left_y_down"
+    },
+    "created_at": {
+      "description": "UTC, RFC 3339.",
+      "format": "date-time",
+      "type": "string"
+    },
+    "doc_id": {
+      "description": "UUID v4, immutable for the life of the document.",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+      "type": "string"
+    },
+    "order_kind": {
+      "description": "How stroke order was assigned for the whole document. Never claim temporal-stamps without stamps.",
+      "enum": [
+        "temporal-stamps",
+        "reading-centroid",
+        "unknown"
+      ]
+    },
+    "paper": {
+      "additionalProperties": false,
+      "properties": {
+        "canvas_height_px": {
+          "const": 1200
+        },
+        "canvas_width_px": {
+          "const": 850
+        },
+        "effective_height_mm": {
+          "const": 296.47,
+          "description": "Effective sheet height in mm (296.47); the canvas maps 1200 px to this height."
+        },
+        "effective_width_mm": {
+          "const": 210,
+          "description": "Effective sheet width in mm (210.00)."
+        },
+        "format": {
+          "const": "A4"
+        },
+        "height_mm": {
+          "const": 297
+        },
+        "scale_mm_per_px": {
+          "description": "mm per canvas pixel; must be consistent with the paper (210 mm / 850 px and 296.47 mm / 1200 px, checked by the validator within 0.01 mm).",
+          "exclusiveMinimum": 0,
+          "type": "number"
+        },
+        "width_mm": {
+          "const": 210
+        }
+      },
+      "required": [
+        "format",
+        "width_mm",
+        "height_mm",
+        "effective_width_mm",
+        "effective_height_mm",
+        "canvas_width_px",
+        "canvas_height_px",
+        "scale_mm_per_px"
+      ],
+      "type": "object"
+    },
+    "revision": {
+      "description": "Starts at 1; +1 per mutation.",
+      "minimum": 1,
+      "type": "integer"
+    },
+    "schema": {
+      "const": "draw.paper.v1"
+    },
+    "schema_sha256": {
+      "description": "SHA-256 of this schema file's bytes; must match schemas/draw-paper/schema-lock-0.1.0.json (schema-lock).",
+      "pattern": "^[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "source": {
+      "additionalProperties": false,
+      "properties": {
+        "commit": {
+          "description": "Pinned Draw revision (commit sha) the artifacts came from.",
+          "minLength": 1,
+          "type": "string"
+        },
+        "origin": {
+          "description": "Explicit origin, never a default.",
+          "enum": [
+            "fork-session-v2",
+            "upstream-vectorize",
+            "upstream-canvas-png"
+          ]
+        },
+        "repo": {
+          "description": "Draw repository the artifacts came from, e.g. santleme/draw.",
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "repo",
+        "commit",
+        "origin"
+      ],
+      "type": "object"
+    },
+    "strokes": {
+      "items": {
+        "$ref": "#/$defs/stroke"
+      },
+      "type": "array"
+    },
+    "units": {
+      "const": "mm"
+    },
+    "updated_at": {
+      "description": "UTC, RFC 3339; >= created_at.",
+      "format": "date-time",
+      "type": "string"
+    }
+  },
+  "required": [
+    "schema",
+    "schema_sha256",
+    "doc_id",
+    "revision",
+    "created_at",
+    "updated_at",
+    "source",
+    "paper",
+    "coordinate_system",
+    "units",
+    "order_kind",
+    "strokes"
+  ],
+  "title": "draw.paper.v1",
+  "type": "object"
+}
