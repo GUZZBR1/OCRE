@@ -2,9 +2,10 @@
 
 Uses the fake vectorize fixture (never the real Draw vectorize) and a
 minimal PNG placeholder (the fixture never reads it). The LibreCAD
-gate is not exercised as a pass here — there is no LibreCAD binary on
-this machine; the CLI's --librecad-check path is covered only for the
-"unavailable" outcome via the gate's own tests.
+gate is exercised for real when the ``librecad`` binary exists on the
+machine (it does since 2026-11-05; the gate converts the exported DXF
+with ``dxf2pdf``) and as "unavailable" when it does not — the CLI
+test below is environment-aware and requires exit 0 either way.
 """
 from __future__ import annotations
 
@@ -97,10 +98,16 @@ class CliExportTests(unittest.TestCase):
             self.assertIn(b"DRAW_STROKES", dxf_bytes)
 
     def test_export_with_librecad_check_reports_unavailable_without_failing(self):
+        # Ambiente-consciente: com o binário presente o gate roda de
+        # verdade (dxf2pdf) e deve passar; sem ele, "unavailable".
+        # Nos dois casos a exportação não pode falhar (exit 0).
+        from ocre_core.draw.librecad_gate import librecad_available
+
+        expected = "pass" if librecad_available() else "unavailable"
         with tempfile.TemporaryDirectory() as tmp:
             code, _out, summary = self._export(Path(tmp), ["--librecad-check"])
             self.assertEqual(code, 0, _out)
-            self.assertEqual(summary["librecad_gate"], "unavailable")
+            self.assertEqual(summary["librecad_gate"], expected)
 
     def test_export_rejects_wrong_vectorize_sha(self):
         with tempfile.TemporaryDirectory() as tmp:
