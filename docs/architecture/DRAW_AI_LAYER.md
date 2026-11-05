@@ -179,3 +179,28 @@ Fase 3, não Fase 0.
    `proposed|confirmed|rejected`, com quem/quando/origem no sidecar).
 5. Só então: implementação, em branch própria, com aprovação
    específica.
+
+## 10. Entorno implementado (2026-11-05) — adendo
+
+O cabeçalho deste documento dizia "NÃO implementar agora". Por ordem
+do usuário (2026-11-05 ~16:08 -03), o **entorno** da camada foi
+implementado na branch `integracao/draw-f0` — só a mecânica, sem
+modelo. O desenho acima continua valendo; o que mudou é que o lugar
+para o modelo existir já está pronto:
+
+- Pacote `backend/ocre_core/draw/ai/` (stdlib apenas): `interfaces.py`
+  (contratos `ModelAdapter` / `SemanticClassifier` /
+  `CoherenceChecker` / `MaterialAdvisor`), `registry.py` (registro por
+  nome, vazio por padrão, falha fechado), `context.py` (`AIContext`,
+  o contexto completo do projeto), `router.py` (determinístico
+  primeiro), `proposals.py` (`Proposal` + porta de confirmação
+  humana G3.2), `config.py` (tudo vazio por padrão).
+- Contratos em Markdown por papel de agente em `docs/architecture/ai/`
+  (classificador, coerência, material, roteador).
+- Testes em `backend/tests/draw/test_ai_scaffold.py`.
+
+O que continua faltando decidir (nada disso foi implementado): o
+modelo (próprio vs. LLM pronto), o domínio semântico (D4), a base de
+conhecimento e sua fonte, e o protocolo de correção automática
+(porta G3.2). Sem modelo registrado, nada de IA roda — o sistema
+segue só com o software determinístico.
