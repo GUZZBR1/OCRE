@@ -49,6 +49,25 @@ Evidência do spike (v2026.44, AppImage oficial, 2026-11-05):
   GUI (abre diálogo de arquivo; nada escrito headless). O STEP AP242
   da F4 continua sendo o worker build123d.
 
+Apagar (borracha, CAD-finish): a API **tem** delete — op de envelope
+``entities_delete`` (``{"handles": [...]}``, API-SPEC v1.1 §6.3,
+``docs/automation/README.md`` "entities_delete — erase entities";
+manifesto MCP ``ocs_commands`` / ``src/mcp_ops.rs`` ``ENTITIES_DELETE``;
+REST ``DELETE /entities?handles=`` §6.11). Tudo-ou-nada: todo handle
+tem de existir, senão nada é apagado e o servidor responde
+``entity_absent`` nomeando os ausentes; o sucesso devolve
+``result.erased`` (contagem) e produz um único passo de undo. O
+cliente apaga SEMPRE a partir do documento ``draw.paper.v1`` (o
+documento é o mestre; o CAD segue o documento): ``erase_strokes``
+resolve cada ``stroke_id`` para o handle via XDATA ``DRAW`` e só
+então deleta; ``sync_document`` lê as tumbstones (``status:
+"erased"``) do documento, deleta o que ainda está no CAD e PROVA a
+ausência com uma varredura completa de XDATA. Apagar um id
+desconhecido falha fechada antes de qualquer mutação — nunca
+silenciosa. Não há re-sincronização por DXF fresco aqui: o DXF da F0
+já exclui os apagados, mas reabrir um DXF trocaria o documento ativo
+e perderia o undo; o delete direto preserva o resto do desenho.
+
 O cliente NÃO exige o OCS rodando para importar o módulo: sem
 servidor, cada chamada falha fechada com ``OcsUnavailableError``
 (clara, com o motivo). Sem token, a construção falha fechada.
@@ -444,6 +463,165 @@ class OcsClient:
                 values = (item.get("xdata") or {}).get(APPID) or []
                 return str(values[0]) if values else None
         return None
+
+    # -- Apagar (borracha) ---------------------------------------------------
+
+    def scan_stroke_ids(self) -> dict[str, str]:
+        """Mapa ``stroke_id -> handle`` de TODOS os traços com XDATA ``DRAW``.
+
+        Varredura completa: cada handle ``DRAW_STROKES``/``*Model_Space``
+        tem seu XDATA lido de volta. É a leitura que prova ausência
+        (um id apagado não aparece aqui) e presença (os demais mantêm
+        seus ids). Handles sem XDATA ``DRAW`` não entram no mapa.
+        """
+        scanned: dict[str, str] = {}
+        for handle in self.stroke_handles():
+            stroke_id = self.get_stroke_id(handle)
+            if stroke_id is not None:
+                scanned[stroke_id] = handle
+        return scanned
+
+    def erase_strokes(
+        self, stroke_ids: list[str], *, request_id: str | None = None
+    ) -> dict:
+        """Apaga do documento OCS as entidades com estes ``stroke_ids``.
+
+        Via op de envelope ``entities_delete`` (API-SPEC v1.1 §6.3):
+        tudo-ou-nada no servidor (``entity_absent`` se um handle não
+        existir). O cliente ainda pré-confere, antes de qualquer
+        mutação: cada id é resolvido para o handle pelo XDATA ``DRAW``
+        e um id desconhecido falha fechada (``unknown_stroke_id``) sem
+        apagar nada. Depois do delete, prova a ausência com uma
+        varredura completa de XDATA e confere que os demais traços
+        mantêm seus ids. Devolve o relatório do apagar.
+        """
+        ordered = list(dict.fromkeys(stroke_ids))
+        if not ordered:
+            raise OcsError(
+                "erase_strokes sem stroke_ids: nada a apagar",
+                code="empty_erase",
+            )
+        current = self.scan_stroke_ids()
+        unknown = [sid for sid in ordered if sid not in current]
+        if unknown:
+            raise OcsError(
+                f"não é possível apagar stroke_id desconhecido no CAD: "
+                f"{unknown} (nada foi apagado)",
+                code="unknown_stroke_id",
+            )
+        handles = [current[sid] for sid in ordered]
+        result = self._envelope(
+            "entities_delete",
+            {"handles": handles},
+            request_id=request_id,
+        )
+        erased = result.get("erased")
+        if erased != len(handles):
+            raise OcsError(
+                f"entities_delete apagou {erased} de {len(handles)} "
+                f"entidades pedidas: {ordered}",
+                code="erase_mismatch",
+            )
+        after = self.scan_stroke_ids()
+        still_there = [sid for sid in ordered if sid in after]
+        if still_there:
+            raise OcsError(
+                f"apagar falhou: {still_there} continuam no CAD após "
+                f"entities_delete",
+                code="erase_failed",
+            )
+        return {
+            "erased": ordered,
+            "handles": handles,
+            "erased_count": erased,
+            "remaining": after,
+            "verified_absent": True,
+        }
+
+    def sync_document(
+        self,
+        document: dict,
+        *,
+        out_path: str | Path | None = None,
+    ) -> dict:
+        """Re-sincroniza o CAD a partir do documento ``draw.paper.v1``.
+
+        O documento é o mestre; o CAD segue o documento. Lê as
+        tumbstones (``status == "erased"``) e deleta do CAD o que ainda
+        está lá; prova a ausência dos apagados com uma varredura
+        completa de XDATA e confere que todos os traços vivos estão
+        presentes com seus ids. Falha fechada, sem apagar nada, quando
+        o CAD tem um traço vivo que o documento não tem
+        (``stroke_missing_in_cad``) ou um id que o documento desconhece
+        (``unknown_stroke_in_cad``) — divergência silenciosa não é
+        resolvida adivinhando. Com ``out_path``, roda ``audit`` +
+        ``save_verified`` ao fim (recusa se ``dropped_on_save > 0``).
+        """
+        if not isinstance(document, dict) or not isinstance(
+            document.get("strokes"), list
+        ):
+            raise ValueError(
+                "sync_document precisa de um documento draw.paper.v1 "
+                "(dict com lista 'strokes')"
+            )
+        doc_ids: dict[str, str] = {}
+        for stroke in document["strokes"]:
+            sid = stroke.get("stroke_id") if isinstance(stroke, dict) else None
+            status = stroke.get("status") if isinstance(stroke, dict) else None
+            if not isinstance(sid, str) or not sid:
+                raise ValueError(f"traço sem stroke_id válido: {stroke!r}")
+            if status not in ("pending", "stable", "erased"):
+                raise ValueError(
+                    f"traço {sid} com status desconhecido: {status!r}"
+                )
+            doc_ids[sid] = status
+        erased_ids = [sid for sid, st in doc_ids.items() if st == "erased"]
+        live_ids = [sid for sid, st in doc_ids.items() if st != "erased"]
+        current = self.scan_stroke_ids()
+        unknown_in_cad = [sid for sid in current if sid not in doc_ids]
+        if unknown_in_cad:
+            raise OcsError(
+                f"CAD tem stroke_ids que o documento desconhece: "
+                f"{unknown_in_cad} (nada foi apagado)",
+                code="unknown_stroke_in_cad",
+            )
+        missing_live = [sid for sid in live_ids if sid not in current]
+        if missing_live:
+            raise OcsError(
+                f"CAD não tem traços vivos do documento: {missing_live} "
+                f"(nada foi apagado; reabra o DXF com sync_strokes)",
+                code="stroke_missing_in_cad",
+            )
+        to_erase = [sid for sid in erased_ids if sid in current]
+        erased_now: list[str] = []
+        if to_erase:
+            report = self.erase_strokes(to_erase)
+            erased_now = report["erased"]
+        after = self.scan_stroke_ids()
+        still_there = [sid for sid in erased_ids if sid in after]
+        if still_there:
+            raise OcsError(
+                f"sync_document falhou: {still_there} continuam no CAD",
+                code="erase_failed",
+            )
+        saved = None
+        if out_path is not None:
+            audit_report = self.audit()
+            dropped = (audit_report.get("target") or {}).get("dropped_on_save")
+            if dropped:
+                raise OcsError(
+                    f"audit recusou o save: dropped_on_save={dropped}",
+                    code="audit_lossy",
+                )
+            saved = self.save_verified(out_path)
+        return {
+            "erased": erased_now,
+            "already_absent": [sid for sid in erased_ids if sid not in current],
+            "live": live_ids,
+            "remaining": after,
+            "verified_absent": True,
+            "save_verified": saved,
+        }
 
     # -- Auditoria e save verificado ----------------------------------------
 

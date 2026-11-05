@@ -64,6 +64,7 @@ class _FakeOcsHandler(BaseHTTPRequestHandler):
     points_created = 0
     lossy = False  # when True, audit/save_verified report dropped_on_save > 0
     always_stale = False
+    deleted: set[str] = set()  # handles erased via entities_delete
 
     def log_message(self, *args):  # silence the test server
         pass
@@ -106,7 +107,8 @@ class _FakeOcsHandler(BaseHTTPRequestHandler):
                 "save_verified": True, "entities_create": True}})
         elif parsed.path == "/api/v1/entities":
             query = parse_qs(parsed.query)
-            entities = list(ENTITIES)
+            entities = [e for e in ENTITIES
+                        if e["handle"] not in type(self).deleted]
             if "layer" in query:
                 entities = [e for e in entities if e["layer"] == query["layer"][0]]
             self._send(200, {"ok": True, "count": len(entities),
@@ -166,6 +168,25 @@ class _FakeOcsHandler(BaseHTTPRequestHandler):
                                    "layers_created": []}}
             type(self).idempotency[request_id] = response
             self._send(200, response)
+        elif parsed.path == "/api/v1/entities_delete":
+            # All-or-nothing, like the spec (§6.3): a missing handle
+            # aborts the whole delete and names the absent ones.
+            handles = [str(h).upper() for h in body.get("handles", [])]
+            existing = {e["handle"] for e in ENTITIES
+                        if e["handle"] not in type(self).deleted}
+            missing = [h for h in handles if h not in existing]
+            if missing:
+                self._send(404, {"ok": False, "code": "entity_absent",
+                                 "error": "entity absent: "
+                                 + ", ".join(missing),
+                                 "status": "failed"})
+                return
+            for handle in handles:
+                type(self).deleted.add(handle)
+                type(self).xdata.pop(handle, None)
+            self._send(200, {"ok": True, "status": "completed",
+                             "request_id": body.get("request_id"),
+                             "result": {"erased": len(handles)}})
         elif parsed.path == "/api/v1/batch":
             self._send(400, {"ok": False, "code": "unknown_operation",
                              "error": "Unknown operation", "status": "failed"})
@@ -204,6 +225,7 @@ class _FakeOcsServer:
         _FakeOcsHandler.points_created = 0
         _FakeOcsHandler.lossy = False
         _FakeOcsHandler.always_stale = False
+        _FakeOcsHandler.deleted = set()
         self.httpd = ThreadingHTTPServer(("127.0.0.1", 0), _FakeOcsHandler)
         self.port = self.httpd.server_address[1]
         self.thread = threading.Thread(target=self.httpd.serve_forever,
@@ -230,7 +252,17 @@ class OcsClientMockTests(unittest.TestCase):
         _FakeOcsHandler.points_created = 0
         _FakeOcsHandler.lossy = False
         _FakeOcsHandler.always_stale = False
+        _FakeOcsHandler.deleted = set()
         self.client = OcsClient(port=self.server.port, token=TOKEN)
+
+    def _synced_three(self):
+        """Syncs s-0001/2/3 onto the fake's 3 stroke handles."""
+        with tempfile.TemporaryDirectory() as tmp:
+            self.client.sync_strokes(
+                "/tmp/f0/document.dxf",
+                ["s-0001", "s-0002", "s-0003"],
+                out_path=Path(tmp) / "verified.dxf",
+            )
 
     def test_import_and_construction_need_no_server(self):
         # Construction only resolves the token; no HTTP happens.
@@ -330,6 +362,125 @@ class OcsClientMockTests(unittest.TestCase):
             self.client.sync_strokes("/tmp/f0/document.dxf",
                                      ["s-0001"], out_path="/tmp/o.dxf")
         self.assertEqual(ctx.exception.code, "stroke_count_mismatch")
+
+    # -- Borracha (erase_strokes / sync_document) ---------------------------
+
+    def test_erase_strokes_removes_only_addressed_ids(self):
+        self._synced_three()
+        report = self.client.erase_strokes(["s-0002"])
+        self.assertEqual(report["erased"], ["s-0002"])
+        self.assertEqual(report["handles"], ["8D"])
+        self.assertEqual(report["erased_count"], 1)
+        self.assertTrue(report["verified_absent"])
+        # The erased id is gone from the full XDATA scan; the others
+        # keep their ids and handles.
+        self.assertEqual(self.client.scan_stroke_ids(),
+                         {"s-0001": "8C", "s-0003": "8E"})
+        self.assertEqual(self.client.stroke_handles(), ["8C", "8E"])
+        self.assertIsNone(self.client.get_stroke_id("8D"))
+
+    def test_erase_strokes_removes_several_at_once(self):
+        self._synced_three()
+        report = self.client.erase_strokes(["s-0001", "s-0003"])
+        self.assertEqual(report["erased"], ["s-0001", "s-0003"])
+        self.assertEqual(self.client.scan_stroke_ids(), {"s-0002": "8D"})
+
+    def test_erase_unknown_stroke_id_fails_closed_and_erases_nothing(self):
+        self._synced_three()
+        with self.assertRaises(OcsError) as ctx:
+            self.client.erase_strokes(["s-9999"])
+        self.assertEqual(ctx.exception.code, "unknown_stroke_id")
+        # Mixed known + unknown: the known one must NOT be erased.
+        with self.assertRaises(OcsError) as ctx:
+            self.client.erase_strokes(["s-0001", "s-9999"])
+        self.assertEqual(ctx.exception.code, "unknown_stroke_id")
+        self.assertEqual(self.client.scan_stroke_ids(),
+                         {"s-0001": "8C", "s-0002": "8D", "s-0003": "8E"})
+
+    def test_erase_empty_list_fails_closed(self):
+        self._synced_three()
+        with self.assertRaises(OcsError) as ctx:
+            self.client.erase_strokes([])
+        self.assertEqual(ctx.exception.code, "empty_erase")
+        self.assertEqual(len(self.client.scan_stroke_ids()), 3)
+
+    def test_save_verified_still_passes_after_erase(self):
+        self._synced_three()
+        self.client.erase_strokes(["s-0002"])
+        saved = self.client.save_verified("/tmp/out/verified.dxf")
+        self.assertTrue(saved["verified"])
+        self.assertEqual(saved["dropped_on_save"], 0)
+
+    def test_sync_document_proves_erased_absent(self):
+        self._synced_three()
+        document = {"schema": "draw.paper.v1", "strokes": [
+            {"stroke_id": "s-0001", "status": "stable"},
+            {"stroke_id": "s-0002", "status": "erased"},
+            {"stroke_id": "s-0003", "status": "stable"},
+        ]}
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp) / "verified.dxf"
+            report = self.client.sync_document(document, out_path=out)
+        self.assertEqual(report["erased"], ["s-0002"])
+        self.assertEqual(report["already_absent"], [])
+        self.assertEqual(report["live"], ["s-0001", "s-0003"])
+        self.assertEqual(report["remaining"],
+                         {"s-0001": "8C", "s-0003": "8E"})
+        self.assertTrue(report["verified_absent"])
+        self.assertTrue(report["save_verified"]["verified"])
+        self.assertEqual(report["save_verified"]["dropped_on_save"], 0)
+
+    def test_sync_document_erased_already_absent_is_not_an_error(self):
+        self._synced_three()
+        self.client.erase_strokes(["s-0002"])
+        document = {"schema": "draw.paper.v1", "strokes": [
+            {"stroke_id": "s-0001", "status": "stable"},
+            {"stroke_id": "s-0002", "status": "erased"},
+            {"stroke_id": "s-0003", "status": "stable"},
+        ]}
+        report = self.client.sync_document(document)
+        self.assertEqual(report["erased"], [])
+        self.assertEqual(report["already_absent"], ["s-0002"])
+        self.assertIsNone(report["save_verified"])
+
+    def test_sync_document_fails_closed_on_cad_divergence(self):
+        self._synced_three()
+        # CAD has s-0003, the document does not know it.
+        with self.assertRaises(OcsError) as ctx:
+            self.client.sync_document({"schema": "draw.paper.v1",
+                                       "strokes": [
+                                           {"stroke_id": "s-0001",
+                                            "status": "stable"},
+                                           {"stroke_id": "s-0002",
+                                            "status": "erased"},
+                                       ]})
+        self.assertEqual(ctx.exception.code, "unknown_stroke_in_cad")
+        # The document has a live stroke the CAD does not have.
+        with self.assertRaises(OcsError) as ctx:
+            self.client.sync_document({"schema": "draw.paper.v1",
+                                       "strokes": [
+                                           {"stroke_id": "s-0001",
+                                            "status": "stable"},
+                                           {"stroke_id": "s-0002",
+                                            "status": "stable"},
+                                           {"stroke_id": "s-0003",
+                                            "status": "stable"},
+                                           {"stroke_id": "s-0004",
+                                            "status": "stable"},
+                                       ]})
+        self.assertEqual(ctx.exception.code, "stroke_missing_in_cad")
+        # Nothing was erased by either failed sync.
+        self.assertEqual(len(self.client.scan_stroke_ids()), 3)
+
+    def test_sync_document_rejects_malformed_document(self):
+        with self.assertRaises(ValueError):
+            self.client.sync_document({"schema": "draw.paper.v1"})
+        with self.assertRaises(ValueError):
+            self.client.sync_document({"schema": "draw.paper.v1",
+                                       "strokes": [
+                                           {"stroke_id": "s-0001",
+                                            "status": "weird"},
+                                       ]})
 
     def test_stale_state_retries_once_with_fresh_revision(self):
         # Same request_id, bogus revision first: 409, then retry succeeds.
@@ -431,6 +582,56 @@ class OcsRealBinaryTests(unittest.TestCase):
                      for e in saved.modelspace()
                      if e.get_xdata("DRAW")}
             self.assertEqual(found, {"s-0001", "s-0002"})
+
+    def test_real_server_erase_and_sync_document(self):
+        """Borracha REAL: apaga no CAD via entities_delete e prova a
+        ausência no arquivo salvo (ezdxf, fora do OCS)."""
+        from ocre_core.draw import document as doc_mod
+        from ocre_core.draw.dxf_export import export_dxf
+
+        binary = find_ocs_binary()
+        self.assertIsNotNone(binary)
+        doc = doc_mod.new_document(
+            {"repo": "GUZZBR1/ocre", "commit": "cad-finish-test",
+             "origin": "fork-session-v2"})
+        for points, closed in (
+            ([[10.0, 30.0], [90.0, 30.0], [90.0, 70.0], [10.0, 70.0]], True),
+            ([[120.0, 10.0], [150.0, 40.0], [180.0, 10.0]], False),
+            ([[10.0, 100.0], [100.0, 100.0]], False),
+        ):
+            stroke = doc_mod.add_stroke(doc, points, closed=closed)
+            doc_mod.stabilize_stroke(doc, stroke["stroke_id"])
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            dxf_path = tmp_path / "document.dxf"
+            export_dxf(doc, dxf_path)
+            out_path = tmp_path / "verified.dxf"
+            erased_path = tmp_path / "verified-after-erase.dxf"
+            process, client = launch_headless(
+                binary, token="ocs-test-token-real")
+            try:
+                client.sync_strokes(
+                    dxf_path, ["s-0001", "s-0002", "s-0003"],
+                    out_path=out_path)
+                # A borracha no documento: tombstone em s-0002.
+                doc_mod.erase_stroke(doc, "s-0002", reason="manual",
+                                     at_ms=1000)
+                report = client.sync_document(doc, out_path=erased_path)
+            finally:
+                stop_server(process)
+            self.assertEqual(report["erased"], ["s-0002"])
+            self.assertEqual(report["live"], ["s-0001", "s-0003"])
+            self.assertTrue(report["verified_absent"])
+            self.assertTrue(report["save_verified"]["verified"])
+            self.assertEqual(report["save_verified"]["dropped_on_save"], 0)
+            self.assertTrue(erased_path.is_file())
+            # O apagado não está no arquivo salvo; os vivos estão.
+            import ezdxf
+            saved = ezdxf.readfile(erased_path)
+            found = {e.get_xdata("DRAW")[0].value
+                     for e in saved.modelspace()
+                     if e.get_xdata("DRAW")}
+            self.assertEqual(found, {"s-0001", "s-0003"})
 
 
 if __name__ == "__main__":
