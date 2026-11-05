@@ -15,6 +15,9 @@ Subcommands:
   and does not fail the export.
 - ``validate``: validate a ``draw.paper.v1`` document file and print
   the validation report as JSON (exit 0 valid, 1 invalid).
+- ``fea-axial``: run the FEA axial reference case (gate G4.1) on a
+  STEP file -- Gmsh mesh + CalculiX solve + validated summary +
+  sidecar + fingerprint (exit 0 gate passed, 1 failed, 2 blocked).
 
 Fingerprint inputs (DRAW-AF/1, 10 fields) — no silent defaults:
 
@@ -176,6 +179,26 @@ def _build_parser() -> argparse.ArgumentParser:
 
     val = sub.add_parser("validate", help="validate a draw.paper.v1 document file")
     val.add_argument("--document", required=True, help="path to the document JSON file")
+
+    fea = sub.add_parser(
+        "fea-axial",
+        help="run the FEA axial reference case (gate G4.1) on a STEP file")
+    fea.add_argument("--step", required=True,
+                     help="input STEP file (reference bar for the gate; "
+                          "drawing STEP later, same path)")
+    fea.add_argument("--out-dir", required=True,
+                     help="isolated case workdir (mesh, deck, raw solver "
+                          "artifacts, summary)")
+    fea.add_argument("--doc-id", default=None,
+                     help="draw.paper.v1 doc id when the case belongs to a "
+                          "document (default: the axial case id)")
+    fea.add_argument("--document-sha256", default=None,
+                     help="sha256 of the draw.paper.v1 document when there "
+                          "is one (default: the STEP sha256, recorded as such)")
+    fea.add_argument("--mesh-size", type=float, default=None,
+                     help="Gmsh characteristic length in mm")
+    fea.add_argument("--timeout-s", type=float, default=300.0,
+                     help="per-subprocess timeout in seconds")
     return parser
 
 
@@ -425,6 +448,27 @@ def _cmd_export(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_fea_axial(args: argparse.Namespace) -> int:
+    from .fea import AxialCaseSpec, run_axial_case
+    spec = AxialCaseSpec(
+        step_path=args.step,
+        timeout_gmsh_s=args.timeout_s, timeout_ccx_s=args.timeout_s)
+    result = run_axial_case(
+        args.step, args.out_dir, spec=spec, doc_id=args.doc_id,
+        document_sha256=args.document_sha256,
+        mesh_size_mm=args.mesh_size)
+    out_path = Path(args.out_dir) / "fea-axial-result.json"
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    out_path.write_text(json.dumps(result, sort_keys=True, indent=2),
+                        encoding="utf-8")
+    print(json.dumps(result, sort_keys=True, indent=2))
+    if result["status"] == "passed":
+        return 0
+    if result["status"] == "blocked":
+        return 2
+    return 1
+
+
 def _cmd_validate(args: argparse.Namespace) -> int:
     path = Path(args.document)
     try:
@@ -450,6 +494,8 @@ def main(argv: list[str] | None = None) -> int:
         return _cmd_export(args)
     if args.command == "validate":
         return _cmd_validate(args)
+    if args.command == "fea-axial":
+        return _cmd_fea_axial(args)
     parser.error(f"unknown command: {args.command!r}")
     return 2
 
