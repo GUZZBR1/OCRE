@@ -1,0 +1,9 @@
+# Dependências do worker de física do beta v0.1 (venv próprio .venv-beta).
+# Pinos verificados por instalação real em 2026-11-05 (Python 3.12.3, Linux x86-64).
+# Newton está FORA do beta por decisão do usuário (2026-11-05) — NÃO instalar.
+# PyBullet 3.2.7 NÃO tem wheel para cp312 no PyPI: instala do sdist
+# (compilação local; baixar o sdist para ~/workspace/tmp, nunca /tmp).
+pybullet==3.2.7
+mujoco==3.17.0
+pin==4.1.0
+numpy==2.5.4
