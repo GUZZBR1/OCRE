@@ -22,21 +22,13 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any
 
+from .paper import DEFAULT_SPEC, PaperSpec, resolve_paper
 from .validator_draw import (
-    PAPER_EFFECTIVE_HEIGHT_MM,
-    PAPER_EFFECTIVE_WIDTH_MM,
-    PAPER_WIDTH_MM,
     SCHEMA_NAME,
     SCHEMA_VERSION,
     StrictJSONError,
     bundled_schema_sha256,
 )
-
-
-CANVAS_WIDTH_PX = 850
-CANVAS_HEIGHT_PX = 1200
-PAPER_HEIGHT_MM = 297.0
-SCALE_MM_PER_PX = PAPER_WIDTH_MM / CANVAS_WIDTH_PX
 
 ERASE_REASONS = ("hand-erase", "page-turn", "manual")
 ORDER_KINDS = ("temporal-stamps", "reading-centroid", "unknown")
@@ -118,13 +110,17 @@ def new_document(
     order_kind: str = "unknown",
     doc_id: str | None = None,
     created_at: str | None = None,
+    paper: str | PaperSpec | None = None,
 ) -> dict[str, Any]:
     """Create a new draw.paper.v1 document at revision 1.
 
     ``source`` must carry ``repo``, ``commit`` and an explicit ``origin``
     (``fork-session-v2`` | ``upstream-vectorize`` | ``upstream-canvas-png``);
     there is no default origin. ``order_kind`` describes how stroke order
-    is assigned — never ``temporal-stamps`` without stamps.
+    is assigned — never ``temporal-stamps`` without stamps. ``paper`` is
+    a format name from the paper registry, a ``PaperSpec``, or ``None``
+    for the default (today A4 — the paper policy lives in ``paper.py``,
+    decision D3, and is operator-configurable, not user-facing).
     """
     if order_kind not in ORDER_KINDS:
         raise ValueError(f"unknown order_kind: {order_kind!r}")
@@ -135,6 +131,7 @@ def new_document(
         raise ValueError(f"unknown source origin: {source['origin']!r}")
     now = created_at or _utc_now()
     _parse_rfc3339(now)
+    spec = resolve_paper(paper)
     return {
         "schema": SCHEMA_NAME,
         "schema_sha256": bundled_schema_sha256(),
@@ -147,16 +144,7 @@ def new_document(
             "commit": source["commit"],
             "origin": source["origin"],
         },
-        "paper": {
-            "format": "A4",
-            "width_mm": 210,
-            "height_mm": 297,
-            "effective_width_mm": 210,
-            "effective_height_mm": 296.47,
-            "canvas_width_px": CANVAS_WIDTH_PX,
-            "canvas_height_px": CANVAS_HEIGHT_PX,
-            "scale_mm_per_px": SCALE_MM_PER_PX,
-        },
+        "paper": spec.as_dict(),
         "coordinate_system": "sheet_top_left_y_down",
         "units": "mm",
         "order_kind": order_kind,
@@ -170,7 +158,29 @@ def _touch(doc: dict[str, Any]) -> None:
     doc["updated_at"] = _utc_now()
 
 
-def _check_points(points_mm: Any, closed: bool) -> list[list[float]]:
+def _paper_bounds(doc: dict[str, Any]) -> tuple[str, float, float]:
+    """(format, width_mm, effective_height_mm) of the document's sheet.
+
+    Read from the document's own paper block (D3); a missing or
+    malformed block falls back to the default spec — the validator
+    flags such a document as invalid anyway.
+    """
+    paper = doc.get("paper") if isinstance(doc, dict) else None
+    fmt = DEFAULT_SPEC.format
+    width = DEFAULT_SPEC.width_mm
+    eff_height = DEFAULT_SPEC.effective_height_mm
+    if isinstance(paper, dict):
+        if isinstance(paper.get("format"), str) and paper["format"]:
+            fmt = paper["format"]
+        if isinstance(paper.get("width_mm"), (int, float)) and not isinstance(paper.get("width_mm"), bool):
+            width = float(paper["width_mm"])
+        if isinstance(paper.get("effective_height_mm"), (int, float)) and not isinstance(paper.get("effective_height_mm"), bool):
+            eff_height = float(paper["effective_height_mm"])
+    return fmt, width, eff_height
+
+
+def _check_points(points_mm: Any, closed: bool, doc: dict[str, Any]) -> list[list[float]]:
+    fmt, width_mm, eff_height_mm = _paper_bounds(doc)
     if not isinstance(points_mm, list) or not points_mm:
         raise ValueError("points_mm must be a non-empty list of [x, y] points")
     clean: list[list[float]] = []
@@ -183,8 +193,8 @@ def _check_points(points_mm: Any, closed: bool) -> list[list[float]]:
         ):
             raise ValueError(f"invalid point (finite [x, y] numbers required): {point!r}")
         x, y = float(point[0]), float(point[1])
-        if not (0.0 <= x <= PAPER_WIDTH_MM and 0.0 <= y <= PAPER_EFFECTIVE_HEIGHT_MM):
-            raise ValueError(f"point ({x}, {y}) is outside the A4 sheet (210 x 296.47 mm)")
+        if not (0.0 <= x <= width_mm and 0.0 <= y <= eff_height_mm):
+            raise ValueError(f"point ({x}, {y}) is outside the {fmt} sheet ({width_mm} x {eff_height_mm} mm)")
         clean.append([x, y])
     if closed and len(clean) < 3:
         raise ValueError("closed stroke requires at least 3 points")
@@ -241,7 +251,7 @@ def add_stroke(
         raise ValueError("t_end_ms must not be earlier than t_start_ms")
     if order_kind is not None and order_kind != doc.get("order_kind"):
         raise ValueError("per-stroke order_kind must equal the document order_kind")
-    points = _check_points(points_mm, closed)
+    points = _check_points(points_mm, closed, doc)
     stroke: dict[str, Any] = {
         "stroke_id": next_stroke_id(doc),
         "order": len(doc["strokes"]),

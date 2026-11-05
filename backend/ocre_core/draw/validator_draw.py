@@ -6,10 +6,11 @@ this module is a separate profile for the ``draw-paper`` document family,
 not an extension of EIR v0.2.
 
 The validator never rewrites documents. It is fail-closed: any missing
-required field, non-mm unit, scale inconsistent with the A4 paper, point
-outside the sheet, duplicated/gapped ``order``, duplicated ``stroke_id``,
-closed stroke with fewer than 3 points, negative ``length_mm``, NaN/Inf,
-non-monotonic ``revision`` or unknown ``schema_sha256`` is an error.
+required field, non-mm unit, scale inconsistent with the document's own
+paper, point outside the sheet, duplicated/gapped ``order``, duplicated
+``stroke_id``, closed stroke with fewer than 3 points, negative
+``length_mm``, NaN/Inf, non-monotonic ``revision`` or unknown
+``schema_sha256`` is an error.
 """
 from __future__ import annotations
 
@@ -24,6 +25,8 @@ from typing import Any
 
 from jsonschema import Draft202012Validator, FormatChecker
 
+from .paper import DEFAULT_SPEC
+
 
 ROOT = Path(__file__).resolve().parents[3]
 SCHEMA_DIR = ROOT / "schemas" / "draw-paper"
@@ -37,11 +40,15 @@ UUID_V4_RE = re.compile(
     r"^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
 )
 
-PAPER_WIDTH_MM = 210.0
-PAPER_EFFECTIVE_WIDTH_MM = 210.0
-PAPER_EFFECTIVE_HEIGHT_MM = 296.47
-CANVAS_WIDTH_PX = 850
-CANVAS_HEIGHT_PX = 1200
+# Default paper (A4) — the paper policy lives in ``paper.py`` (D3); these
+# names stay as backward-compatible aliases for the default spec only.
+# The semantic checks below read the paper from the document itself, so
+# a document on another sheet is judged against ITS sheet, not A4.
+PAPER_WIDTH_MM = DEFAULT_SPEC.width_mm
+PAPER_EFFECTIVE_WIDTH_MM = DEFAULT_SPEC.effective_width_mm
+PAPER_EFFECTIVE_HEIGHT_MM = DEFAULT_SPEC.effective_height_mm
+CANVAS_WIDTH_PX = DEFAULT_SPEC.canvas_width_px
+CANVAS_HEIGHT_PX = DEFAULT_SPEC.canvas_height_px
 # A scale is consistent with the paper when it maps the canvas onto the
 # effective sheet within 0.01 mm on each axis.
 SCALE_TOLERANCE_MM = 0.01
@@ -308,17 +315,32 @@ def _semantic(
              "coordinate_system must be sheet_top_left_y_down")
 
     paper = doc.get("paper")
+    # The sheet the document declares (D3): scale and point bounds are
+    # judged against the document's own paper, never against a hardcoded
+    # A4. Missing fields fall back to the default spec — the schema
+    # already flags a missing paper block as a structural error.
+    paper_width = PAPER_WIDTH_MM
+    paper_eff_height = PAPER_EFFECTIVE_HEIGHT_MM
+    paper_format = DEFAULT_SPEC.format
     if isinstance(paper, dict):
+        if isinstance(paper.get("format"), str) and paper["format"]:
+            paper_format = paper["format"]
+        if _is_number(paper.get("width_mm")):
+            paper_width = float(paper["width_mm"])
+        if _is_number(paper.get("effective_height_mm")):
+            paper_eff_height = float(paper["effective_height_mm"])
         scale = paper.get("scale_mm_per_px")
-        if _is_number(scale):
-            if abs(float(scale) * CANVAS_WIDTH_PX - PAPER_WIDTH_MM) > SCALE_TOLERANCE_MM:
+        canvas_w = paper.get("canvas_width_px")
+        canvas_h = paper.get("canvas_height_px")
+        if _is_number(scale) and _is_number(canvas_w) and _is_number(canvas_h):
+            if abs(float(scale) * float(canvas_w) - paper_width) > SCALE_TOLERANCE_MM:
                 _add(diagnostics, "semantic", "/paper/scale_mm_per_px",
                      "scale_incompatible_with_paper",
-                     "scale_mm_per_px * canvas_width_px must equal the paper width (210 mm)")
-            if abs(float(scale) * CANVAS_HEIGHT_PX - PAPER_EFFECTIVE_HEIGHT_MM) > SCALE_TOLERANCE_MM:
+                     f"scale_mm_per_px * canvas_width_px must equal the paper width ({paper_width} mm)")
+            if abs(float(scale) * float(canvas_h) - paper_eff_height) > SCALE_TOLERANCE_MM:
                 _add(diagnostics, "semantic", "/paper/scale_mm_per_px",
                      "scale_incompatible_with_paper",
-                     "scale_mm_per_px * canvas_height_px must equal the effective paper height (296.47 mm)")
+                     f"scale_mm_per_px * canvas_height_px must equal the effective paper height ({paper_eff_height} mm)")
 
     created = _parse_datetime(doc.get("created_at"))
     updated = _parse_datetime(doc.get("updated_at"))
@@ -403,11 +425,11 @@ def _semantic(
                     continue
                 x, y = float(point[0]), float(point[1])
                 clean.append([x, y])
-                if not (0.0 <= x <= PAPER_WIDTH_MM
-                        and 0.0 <= y <= PAPER_EFFECTIVE_HEIGHT_MM):
+                if not (0.0 <= x <= paper_width
+                        and 0.0 <= y <= paper_eff_height):
                     _add(diagnostics, "semantic", f"{ptr}/points_mm/{j}",
                          "point_outside_sheet",
-                         f"point ({x}, {y}) is outside the A4 sheet (210 x 296.47 mm)")
+                         f"point ({x}, {y}) is outside the {paper_format} sheet ({paper_width} x {paper_eff_height} mm)")
             length = stroke.get("length_mm")
             if points_ok and _is_number(length) and len(clean) >= 1:
                 expected = _polyline_length_mm(clean, closed)

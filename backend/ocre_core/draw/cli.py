@@ -62,6 +62,7 @@ from .document import (
     stabilize_stroke,
 )
 from .fingerprint import compute_fingerprint
+from .paper import load_draw_config, resolve_paper
 from .sidecar import build_draw_sidecar
 from .validator_draw import (
     SCHEMA_NAME,
@@ -158,6 +159,13 @@ def _build_parser() -> argparse.ArgumentParser:
     exp.add_argument("--order-kind", default="unknown",
                      choices=("temporal-stamps", "reading-centroid", "unknown"),
                      help="how stroke order is assigned (default: unknown)")
+    exp.add_argument("--paper", default=None,
+                     help="paper format from the paper registry (operator flag; "
+                          "default: the current Draw paper, today A4)")
+    exp.add_argument("--draw-config", default=None,
+                     help="path to Draw's config.py; the paper is derived from "
+                          "its PAPER_W/PAPER_H (read as text/AST, never "
+                          "imported). Overrides --paper when given.")
     exp.add_argument("--doc-id", default=None, help="document UUID v4 (generated if omitted)")
     exp.add_argument("--timeout-s", type=float, default=300.0,
                      help="vectorize subprocess timeout in seconds")
@@ -191,6 +199,15 @@ def _cmd_export(args: argparse.Namespace) -> int:
     out_dir = Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
+    # Paper policy (D3): single source in paper.py. Resolve BEFORE the
+    # vectorize subprocess so an unknown format / unreadable config
+    # fails fast, with nothing written. --draw-config overrides --paper.
+    try:
+        spec = load_draw_config(args.draw_config) if args.draw_config else resolve_paper(args.paper)
+    except (ValueError, FileNotFoundError, OSError) as exc:
+        print(f"error: cannot resolve paper: {exc}", file=sys.stderr)
+        return 2
+
     png_sha256 = _sha256_file(png_path)
 
     try:
@@ -219,6 +236,7 @@ def _cmd_export(args: argparse.Namespace) -> int:
         {"repo": args.draw_repo, "commit": args.draw_commit, "origin": args.origin},
         order_kind=args.order_kind,
         doc_id=args.doc_id,
+        paper=spec,
     )
     try:
         for polyline in polylines:
@@ -252,8 +270,10 @@ def _cmd_export(args: argparse.Namespace) -> int:
         "order_kind": args.order_kind,
         "include_pending": False,
         "strokes_stabilized": True,
-        "paper": {"format": "A4", "width_mm": 210, "height_mm": 297,
-                  "effective_width_mm": 210, "effective_height_mm": 296.47},
+        "paper": {"format": spec.format, "width_mm": spec.width_mm,
+                  "height_mm": spec.height_mm,
+                  "effective_width_mm": spec.effective_width_mm,
+                  "effective_height_mm": spec.effective_height_mm},
         "vectorize": {
             "script_sha256": vectorized["script_sha256"],
             "primitives_total": vectorized["primitives_total"],

@@ -9,8 +9,8 @@ Regras do plano (``PLANO-INTEGRACAO-OCRE-DRAW.md`` §4), implementadas aqui:
 - Uma ``LWPOLYLINE`` por traço, na layer ``DRAW_STROKES``.
 - ``$INSUNITS = 4`` (milímetros).
 - Y invertido: o papel usa y-down (origem no canto superior esquerdo) e o
-  CAD usa y-up, logo ``y_cad = altura_papel_mm - y_papel``. A folha
-  efetiva A4 é 210,00 x 296,47 mm.
+  CAD usa y-up, logo ``y_cad = altura_papel_mm - y_papel``. A altura
+  usada é a EFETIVA da folha declarada no documento.
 - Traço fechado: flag 70 = 1 (``closed=True`` na LWPOLYLINE).
 - NUNCA CIRCLE: um círculo vetorizado continua sendo uma polilinha
   fechada; o campo ``shape`` do documento é ignorado na escrita.
@@ -37,6 +37,8 @@ from typing import Any
 
 import ezdxf
 
+from .paper import DEFAULT_SPEC
+
 __all__ = [
     "APPID",
     "LAYER",
@@ -51,8 +53,11 @@ __all__ = [
 APPID = "DRAW"
 LAYER = "DRAW_STROKES"
 DXF_VERSION = "R2000"
-DEFAULT_PAPER_WIDTH_MM = 210.0
-DEFAULT_PAPER_HEIGHT_MM = 296.47
+# Backward-compatible aliases for the default paper (A4) — the paper
+# policy itself lives in ``paper.py`` (D3); _paper_size reads the
+# document's own paper block, never these aliases.
+DEFAULT_PAPER_WIDTH_MM = DEFAULT_SPEC.width_mm
+DEFAULT_PAPER_HEIGHT_MM = DEFAULT_SPEC.effective_height_mm
 # ezdxf.units.MM == 4; $INSUNITS = 4 significa milímetros.
 INSUNITS_MM = 4
 
@@ -68,11 +73,11 @@ class DxfExportError(ValueError):
 def _paper_size(document: dict) -> tuple[float, float]:
     paper = document.get("paper") or {}
     width = float(paper.get("width_mm", DEFAULT_PAPER_WIDTH_MM))
-    # Altura EFETIVA da folha (296,47 mm): é ela que o documento
-    # draw.paper.v1 e o validador usam como limite dos pontos e como
-    # referência do flip y-down -> y-up. ``height_mm`` é a altura
-    # nominal A4 (297 mm) e só vale como fallback quando o documento
-    # não traz ``effective_height_mm`` (ex.: documentos sintéticos).
+    # Altura EFETIVA da folha: é ela que o documento draw.paper.v1 e o
+    # validador usam como limite dos pontos e como referência do flip
+    # y-down -> y-up. ``height_mm`` é a altura nominal e só vale como
+    # fallback quando o documento não traz ``effective_height_mm``
+    # (ex.: documentos sintéticos).
     height = float(
         paper.get(
             "effective_height_mm",

@@ -160,7 +160,7 @@
   "$id": "https://ocre.local/schemas/draw-paper/0.1.0.schema.json",
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "additionalProperties": false,
-  "description": "Master document for one A4 sheet drawn in Draw, built OCRE-side. The document is the master; DXF, STEP and FMU are derived copies only. Status names pending|stable|erased follow the fork values (user decision D6 pending; see plan section 4).",
+  "description": "Master document for one sheet drawn in Draw, built OCRE-side. The document is the master; DXF, STEP and FMU are derived copies only. Status names pending|stable|erased follow the fork values (user decision D6 pending; see plan section 4). The paper policy (decision D3) follows the current Draw — today A4 — and is configurable in ocre_core/draw/paper.py; the schema constrains the paper block to positive numbers and lets the validator check scale/bounds against the declared sheet, instead of hardcoding A4.",
   "properties": {
     "coordinate_system": {
       "const": "sheet_top_left_y_down"
@@ -185,34 +185,45 @@
     },
     "paper": {
       "additionalProperties": false,
+      "description": "Paper policy (D3): the format follows the current Draw (today A4). Dimensions are positive numbers; the validator checks scale consistency and point bounds against this declared sheet.",
       "properties": {
         "canvas_height_px": {
-          "const": 1200
+          "exclusiveMinimum": 0,
+          "type": "integer"
         },
         "canvas_width_px": {
-          "const": 850
+          "exclusiveMinimum": 0,
+          "type": "integer"
         },
         "effective_height_mm": {
-          "const": 296.47,
-          "description": "Effective sheet height in mm (296.47); the canvas maps 1200 px to this height."
+          "description": "Effective sheet height in mm (A4: 296.47); the canvas maps canvas_height_px to this height.",
+          "exclusiveMinimum": 0,
+          "type": "number"
         },
         "effective_width_mm": {
-          "const": 210,
-          "description": "Effective sheet width in mm (210.00)."
+          "description": "Effective sheet width in mm (A4: 210.00).",
+          "exclusiveMinimum": 0,
+          "type": "number"
         },
         "format": {
-          "const": "A4"
+          "description": "Paper format name from the paper registry (A4 today); unknown formats are refused by the builder.",
+          "minLength": 1,
+          "type": "string"
         },
         "height_mm": {
-          "const": 297
+          "description": "Nominal sheet height in mm (A4: 297).",
+          "exclusiveMinimum": 0,
+          "type": "number"
         },
         "scale_mm_per_px": {
-          "description": "mm per canvas pixel; must be consistent with the paper (210 mm / 850 px and 296.47 mm / 1200 px, checked by the validator within 0.01 mm).",
+          "description": "mm per canvas pixel; must be consistent with the paper (A4: 210 mm / 850 px and 296.47 mm / 1200 px, checked by the validator within 0.01 mm).",
           "exclusiveMinimum": 0,
           "type": "number"
         },
         "width_mm": {
-          "const": 210
+          "description": "Nominal sheet width in mm (A4: 210).",
+          "exclusiveMinimum": 0,
+          "type": "number"
         }
       },
       "required": [
