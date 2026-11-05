@@ -1,0 +1,23 @@
+# Versões pinadas do worker STEP (venv `.venv-beta`)
+
+Instalado 2026-11-05 no worktree `ocre-beta-wt-step`, branch `beta/step`.
+O venv é o ÚNICO lugar onde o build123d existe; nada foi instalado
+globalmente. **CadQuery NUNCA pode ser instalado neste venv**
+(conflito `OCP/` com o build123d — o Senado pinou build123d como
+worker 3D único, CadQuery é plano B em outro ambiente).
+
+```text
+build123d==0.13.0
+cadquery-ocp-novtk==8.0.1.1.0   # wheel OCP do build123d (OCCT 8.0.1.1)
+cadquery-ocp-proxy==8.0.1.1.0
+ocp_gordon==0.3.1
+ocpsvg==0.7.0
+```
+
+Verificação: `.venv-beta/bin/python -c "import build123d; print(build123d.__version__)"`
+-> `0.13.0`; `OCP.__version__` -> `8.0.1.1` (OCCT empacotado).
+
+O venv também carrega as dependências de teste do backend
+(`backend/requirements.txt` + `requirements-dev.txt`: ezdxf 1.4.5,
+fastapi 0.162.0, pytest 9.2.0 etc.) porque a suíte é rodada com
+`.venv-beta/bin/python -m pytest`, como manda o task do beta.
