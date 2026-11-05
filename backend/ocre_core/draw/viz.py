@@ -52,20 +52,25 @@ Spikes medidos nesta máquina (2026-11-05, venv ``.venv-beta``):
   caixa reaberta (100×10×10 mm → 0.1×0.01×0.01 m). Nada é afirmado
   sem medir: o fator aplicado e os bounds antes/depois ficam no
   resultado.
-- Blender 4.0.2 **foi instalado** (``/usr/bin/blender``, apt, 19:56)
-  mas **sumiu às ~20:03 junto com librecad/gmsh/ccx** num reset do
-  container (o ``/home`` sobreviveu; ``/usr`` não) — reinstalação via
-  apt tentada em seguida (``apt-get update`` lento; ver relatório).
-  O ``.glb``/``.png`` do beta não depende dele; só
-  ``blender_available()`` o reporta (``None`` enquanto ausente).
-  Inkscape **ausente** — o passo SVG→PDF devolve ``"unavailable"``
-  sem falhar o resto.
+- Blender 4.0.2 **instalado** (``/usr/bin/blender``, apt) — sumiu
+  às ~20:03 junto com librecad/gmsh/ccx num reset do container (o
+  ``/home`` sobreviveu; ``/usr`` não) e foi **reinstalado** depois
+  (``apt-get update`` + install, ~15 min, espelho cogentco falhou mas
+  o azure funcionou). O ``.glb``/``.png`` do beta não depende dele;
+  só ``blender_available()`` o reporta. gmsh/ccx continuam ausentes
+  após o reset (não fazem falta aqui: o ``.frd`` veio como fixture).
+- Inkscape 1.2.2 **reinstalado** junto. O passo SVG→PDF funciona
+  (exit 0, PDF válido), mas esta versão **não suporta
+  ``--export-pdf-version=1.7``** (aviso no stderr, cai para PDF 1.4)
+  — a flag do Senado é mantida e o fallback fica registrado aqui.
 - ``librecad dxf2svg`` TRAVA nesta build (exit 124, fato do
-  coordenador); ``dxf2pdf`` FUNCIONA (exit 0, fato do coordenador).
+  coordenador); ``dxf2pdf`` FUNCIONA (exit 0, fato do coordenador,
+  **re-verificado aqui**: retângulo 100×10 mm → PDF 1275 bytes).
+  Comportamento medido desta build: ``dxf2pdf`` **ignora ``-o``** e
+  escreve sempre ``<stem>.pdf`` ao lado da entrada — ``plot_pdf``
+  converte sobre uma cópia temporária e move o PDF depois.
   ``plot_pdf`` usa ``dxf2pdf`` como rota principal e **nunca**
-  ``dxf2svg``. Atenção: o binário sumiu no reset acima, por isso o
-  teste de ``dxf2pdf`` pula honestamente enquanto ele não voltar —
-  a rota ezdxf (fallback) foi a testada de verdade nesta sessão.
+  ``dxf2svg``.
 """
 
 from __future__ import annotations
@@ -744,6 +749,9 @@ def svg_to_pdf(
     """Fecha SVG→PDF com o Inkscape (subprocesso, GPL-3.0).
 
     Sem o binário, devolve ``status == "unavailable"`` (skip honesto).
+    Nota medida: o Inkscape 1.2.2 desta máquina não suporta
+    ``--export-pdf-version=1.7`` (aviso no stderr, cai para PDF 1.4)
+    mas sai com 0 e produz PDF válido — a flag é mantida.
     """
     svg_path = Path(svg_path)
     out_pdf = Path(out_pdf)
@@ -798,38 +806,34 @@ def _plot_pdf_librecad(
 
     Devolve o dict de resultado ou ``None`` se o binário não existe.
     Nunca usa ``dxf2svg`` (trava nesta build, exit 124).
+
+    Comportamento medido desta build: ``dxf2pdf`` sai com 0 mas
+    IGNORA ``-o`` — escreve sempre ``<stem>.pdf`` ao lado da entrada.
+    Por isso a conversão roda sobre uma cópia num diretório
+    temporário e o PDF é movido para ``out_pdf`` depois.
     """
     binary = librecad_available()
     if binary is None:
         return None
     out_pdf.parent.mkdir(parents=True, exist_ok=True)
-    # Forma 1: saída explícita, A4 paisagem, ajuste à página.
-    result = _run_subprocess(
-        [binary, "dxf2pdf", "-a", "-p", "297x210", "-o", str(out_pdf), str(dxf_path)],
-        timeout_s,
-    )
-    attempt = 1
-    if result["returncode"] != 0 or not out_pdf.is_file() or out_pdf.stat().st_size == 0:
-        # Forma 2: sem saída explícita, numa cópia em diretório temporário
-        # (o LibreCAD escreve ao lado da entrada).
-        with tempfile.TemporaryDirectory(prefix="ocre-viz-pdf-") as tmp:
-            copy_path = Path(tmp) / dxf_path.name
-            copy_path.write_bytes(dxf_path.read_bytes())
-            result = _run_subprocess(
-                [binary, "dxf2pdf", str(copy_path)], timeout_s
-            )
-            produced = Path(tmp) / (dxf_path.stem + ".pdf")
-            attempt = 2
-            if result["returncode"] == 0 and produced.is_file() and produced.stat().st_size:
-                shutil.copyfile(produced, out_pdf)
-    ok = (
-        result["returncode"] == 0
-        and out_pdf.is_file()
-        and out_pdf.stat().st_size > 0
-    )
+    with tempfile.TemporaryDirectory(prefix="ocre-viz-pdf-") as tmp:
+        copy_path = Path(tmp) / dxf_path.name
+        copy_path.write_bytes(dxf_path.read_bytes())
+        result = _run_subprocess(
+            [binary, "dxf2pdf", "-a", "-p", "297x210", str(copy_path)],
+            timeout_s,
+        )
+        produced = Path(tmp) / (dxf_path.stem + ".pdf")
+        ok = (
+            result["returncode"] == 0
+            and produced.is_file()
+            and produced.stat().st_size > 0
+        )
+        if ok:
+            shutil.copyfile(produced, out_pdf)
     return {
         "route": "librecad dxf2pdf",
-        "attempt": attempt,
+        "attempt": 1,
         "ok": ok,
         "returncode": result["returncode"],
         "stdout": result["stdout"],

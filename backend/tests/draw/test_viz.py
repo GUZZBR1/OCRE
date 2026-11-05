@@ -260,18 +260,24 @@ class TestSvgToPdfAndTools(unittest.TestCase):
     """Inkscape (fecha SVG→PDF) e disponibilidade de ferramentas."""
 
     def test_svg_to_pdf_sem_inkscape_e_unavailable(self):
-        if viz.inkscape_available() is not None:
-            self.skipTest("inkscape presente; este teste cobre a ausência")
         with tempfile.TemporaryDirectory() as tmp:
-            svg = Path(tmp) / "folha.svg"
+            tmp = Path(tmp)
+            svg = tmp / "folha.svg"
             svg.write_text(
                 '<svg xmlns="http://www.w3.org/2000/svg" width="100" '
                 'height="100"><rect width="100" height="100"/></svg>',
                 encoding="utf-8",
             )
-            result = viz.svg_to_pdf(svg, Path(tmp) / "folha.pdf")
-            self.assertEqual(result["status"], "unavailable")
-            self.assertFalse(result["available"])
+            result = viz.svg_to_pdf(svg, tmp / "folha.pdf")
+            if viz.inkscape_available() is None:
+                self.assertEqual(result["status"], "unavailable")
+                self.assertFalse(result["available"])
+            else:
+                self.assertEqual(result["status"], "pass")
+                pdf = tmp / "folha.pdf"
+                self.assertTrue(pdf.is_file())
+                self.assertGreater(result["pdf_bytes"], 0)
+                self.assertTrue(pdf.read_bytes().startswith(PDF_MAGIC))
 
     def test_versoes_pinadas(self):
         versions = viz.tool_versions()
