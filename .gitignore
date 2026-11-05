@@ -4,3 +4,8 @@ __pycache__/
 *.pyc
 .venv*/
 .tmp/
+# Oráculo FreeCAD (beta STEP): AppImage oficial 1.0.2 + extração
+# (3,7 GB em .external/) — binário pesado, NUNCA versionar. O código
+# (step_export._freecad_command) procura o freecadcmd extraído aqui;
+# como obter está em docs/step-worker.md ("Oráculo FreeCAD").
+.external/

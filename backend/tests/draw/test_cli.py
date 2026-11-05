@@ -97,8 +97,18 @@ class CliExportTests(unittest.TestCase):
             self.assertIn(b"DRAW_STROKES", dxf_bytes)
 
     def test_export_with_librecad_check_reports_unavailable_without_failing(self):
+        # O binário librecad existe nesta máquina desde 2026-11-05
+        # (trabalho do beta) e o `dxf2svg` dele trava no ambiente —
+        # este teste cobre só o caminho "unavailable", então força a
+        # ausência via mock (mesma correção já aplicada na main).
+        from unittest.mock import patch
+
         with tempfile.TemporaryDirectory() as tmp:
-            code, _out, summary = self._export(Path(tmp), ["--librecad-check"])
+            with patch(
+                "ocre_core.draw.librecad_gate.librecad_available",
+                return_value=None,
+            ):
+                code, _out, summary = self._export(Path(tmp), ["--librecad-check"])
             self.assertEqual(code, 0, _out)
             self.assertEqual(summary["librecad_gate"], "unavailable")
 
