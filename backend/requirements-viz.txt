@@ -1,0 +1,19 @@
+# Dependências de visualização + PDF do beta (venv .venv-beta).
+# Instaladas e pinadas em 2026-11-05; ver backend/ocre_core/draw/viz.py
+# (tool_versions()) para a lista em runtime.
+#
+# meshio 5.3.5 NÃO lê .frd (spike medido) — o .frd vai pelo parser
+# OCRE-side ocre_core.draw.viz.read_frd; meshio só lê/escreve .vtu
+# e os demais formatos que ele suporta.
+#
+# NUNCA instalar global; nunca importar PyMuPDF (AGPL) — o fallback
+# ezdxf drawing usa só SVGBackend/matplotlib.
+pyvista==0.49.2
+vtk==9.7.2
+meshio==5.3.5
+trimesh==5.2.0
+matplotlib==3.11.2
+numpy==2.5.4
+pillow==13.0.0
+pooch==1.9.0
+scooby==0.12.1
