@@ -1,0 +1,6 @@
+# Higiene ancilar (F0): não commitar bytecode, venvs locais nem inspeções
+# temporárias. Não faz parte do escopo estrito da F0.
+__pycache__/
+*.pyc
+.venv*/
+.tmp/
