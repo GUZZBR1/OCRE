@@ -104,9 +104,11 @@ FINGERPRINT_DOMAIN = "DRAW:PAPER-APPROVAL:FINGERPRINT"
 WATERMARK = "VISUALIZACAO — nao e analise | numeros: solver (ver sidecar)"
 
 # Tipos de elemento CalculiX .frd suportados pelo parser OCRE-side.
+# 3 = C3D4 (tetraedro linear, 4 nós — o que o caso axial FEA do beta
+# escreve: o deck próprio usa C3D4, e o .frd do ccx traz tipo 3);
 # 6 = C3D10 (tetraedro quadrático, 10 nós). Qualquer outro tipo falha
 # fechado — o parser não inventa conectividade.
-_FRD_ELEMENT_TYPES = {6: ("tetra10", 10)}
+_FRD_ELEMENT_TYPES = {3: ("tetra", 4), 6: ("tetra10", 10)}
 
 
 class VizError(RuntimeError):
@@ -173,7 +175,8 @@ def read_frd(frd_path: str | Path):
     derivado (ex.: von Mises) é calculado — o visual mostra o que o
     solver escreveu, e só isso.
 
-    Suporta só elemento tipo 6 (C3D10/tetra10); outro tipo levanta
+    Suporta só elementos tipo 3 (C3D4/tetra, 4 nós — o que o caso axial
+    FEA do beta escreve) e tipo 6 (C3D10/tetra10); outro tipo levanta
     ``VizError``. Arquivo sem bloco de resultado ainda é lido (malha
     nua, sem campo); ``render_field`` é quem falha fechado nesse caso.
     """

@@ -18,6 +18,17 @@ Subcommands:
 - ``fea-axial``: run the FEA axial reference case (gate G4.1) on a
   STEP file -- Gmsh mesh + CalculiX solve + validated summary +
   sidecar + fingerprint (exit 0 gate passed, 1 failed, 2 blocked).
+- ``beta-run``: the whole beta v0.1 chain in one command (PNG ->
+  draw.paper.v1 -> DXF -> live CAD (OCS) -> STEP 2D/3D -> axial FEA
+  gate G4.1 -> physics load profile -> viz + PDF -> FMPy gate).
+  Writes ``beta-report.json`` + ``beta-report.txt`` in ``--out-dir``.
+  Exit 0 ok, 1 failed, 2 blocked (fail-closed: a missing declared
+  datum -- thickness/material, a STEP without a closed stroke, an
+  incomplete case -- blocks the job, never estimated). Optional steps
+  report ``skipped-unavailable``/``not-triggered`` honestly and do
+  not fail the chain. The fingerprint domain cited by the report is
+  ``DRAW:PAPER-APPROVAL:FINGERPRINT`` (Senate errata, never the old
+  ``DRAW-AF/1`` label).
 
 Fingerprint inputs (DRAW-AF/1, 10 fields) — no silent defaults:
 
@@ -48,11 +59,16 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import io
 import json
 import os
 import re
+import shutil
+import subprocess
 import sys
 import tempfile
+import time
+from contextlib import redirect_stdout
 from pathlib import Path
 from typing import Any
 
@@ -61,6 +77,7 @@ from .document import (
     add_stroke,
     document_sha256,
     dumps as dumps_document,
+    loads as loads_document,
     new_document,
     stabilize_stroke,
 )
@@ -199,6 +216,50 @@ def _build_parser() -> argparse.ArgumentParser:
                      help="Gmsh characteristic length in mm")
     fea.add_argument("--timeout-s", type=float, default=300.0,
                      help="per-subprocess timeout in seconds")
+
+    beta = sub.add_parser(
+        "beta-run",
+        help="run the whole beta v0.1 chain end-to-end (PNG -> CAD -> "
+             "STEP -> FEA -> physics -> viz/PDF)")
+    beta.add_argument("--png", required=True, help="input canvas PNG")
+    beta.add_argument("--vectorize-script", required=True,
+                      help="path to Draw tools/vectorize.py (never copied "
+                           "into OCRE)")
+    beta.add_argument("--vectorize-sha256", required=True,
+                      help="pinned SHA-256 of the vectorize script "
+                           "(verified before running)")
+    beta.add_argument("--out-dir", required=True,
+                      help="output directory (report + step subdirs)")
+    beta.add_argument("--origin", required=True, choices=list(_ORIGINS),
+                      help="document source origin (explicit, never a default)")
+    beta.add_argument("--draw-repo", required=True,
+                      help="Draw repo the artifacts came from")
+    beta.add_argument("--draw-commit", required=True,
+                      help="pinned Draw revision, full 40-hex git SHA")
+    beta.add_argument("--thickness-mm", type=float, default=None,
+                      help="DECLARED extrusion thickness in mm (required; "
+                           "missing blocks the job, never estimated)")
+    beta.add_argument("--material", default=None,
+                      help="DECLARED material name (required; missing "
+                           "blocks the job, never estimated)")
+    beta.add_argument("--ocs-binary", default=None,
+                      help="OpenCADStudio binary for the live-CAD step "
+                           "(default: OCS_BINARY env or PATH; without it "
+                           "the step is skipped-unavailable, honestly)")
+    beta.add_argument("--draw-config", default=None,
+                      help="path to Draw's config.py (paper source; "
+                           "overrides the default paper)")
+    beta.add_argument("--document", default=None,
+                      help="optional draw.paper.v1 document to use as the "
+                           "working document for steps 2+ (e.g. the "
+                           "beta-exemplo fixture, which carries an erased "
+                           "stroke to prove the eraser); without it, the "
+                           "document from step 1 is the working document")
+    beta.add_argument("--fmu", default=None,
+                      help="optional .fmu file for the FMPy gate; without "
+                           "it the gate reports not-triggered")
+    beta.add_argument("--timeout-s", type=float, default=300.0,
+                      help="per-subprocess timeout in seconds")
     return parser
 
 
@@ -481,6 +542,824 @@ def _cmd_validate(args: argparse.Namespace) -> int:
     return 0 if report.valid else 1
 
 
+# ---------------------------------------------------------------------------
+# beta-run: the whole beta v0.1 chain in one command.
+#
+# Step order (each step records what ran, what failed, timings and the
+# document revision it saw; the final report is beta-report.json + .txt):
+#   1. export      PNG -> draw.paper.v1 (F0 export) -> DXF R2000
+#   2. ocs         live CAD: sync_strokes + scan + sync_document (eraser)
+#   3. step        2D -> 3D: closed stable stroke -> STEP (build123d)
+#   4. fea         Gmsh mesh -> CalculiX axial case, gate G4.1 (<= 1%)
+#   5. physics     report step: PyBullet envelope + MuJoCo cross-check
+#   6. viz         PyVista .png (visualization only) + .glb + PDF
+#   7. fmu         FMPy gate (not-triggered without an FMU)
+#
+# The working document for steps 2+ is --document when given (the
+# beta-exemplo fixture carries an erased stroke, so the OCS step can
+# prove the eraser), else the document step 1 built. Both documents
+# are recorded in the report with their SHAs. The CAD loop is the
+# quality bar: a line on paper -> the line in CAD, 2D and 3D, with
+# the eraser working. Simulations are a consequence: the axial FEA
+# case only validates the whole path (G4.1), it is not the centre.
+# The physics load profile is an artifact only -- the FEA gate is
+# NOT rewired to use it (that wiring is future work).
+# ---------------------------------------------------------------------------
+
+BETA_FINGERPRINT_DOMAIN = "DRAW:PAPER-APPROVAL:FINGERPRINT"
+_BETA_STEP_IDS = ("export", "ocs", "step", "fea", "physics", "viz", "fmu")
+
+
+def _beta_step_report(
+    step_id: str,
+    status: str,
+    duration_s: float,
+    detail: dict[str, Any] | None = None,
+    error: str | None = None,
+) -> dict[str, Any]:
+    report: dict[str, Any] = {
+        "id": step_id,
+        "status": status,
+        "duration_s": round(float(duration_s), 3),
+    }
+    if detail is not None:
+        report["detail"] = detail
+    if error is not None:
+        report["error"] = error
+    return report
+
+
+def _beta_artifact_entry(path: str | Path) -> dict[str, Any]:
+    target = Path(path)
+    if target.is_file():
+        return {
+            "path": str(target),
+            "sha256": _sha256_file(target),
+            "bytes": target.stat().st_size,
+        }
+    return {"path": str(target), "sha256": None,
+            "note": "file not present"}
+
+
+def _beta_step_export(ctx: dict[str, Any]) -> dict[str, Any]:
+    """Step 1: PNG -> draw.paper.v1 (F0 export) -> DXF R2000."""
+    args = ctx["args"]
+    started = time.perf_counter()
+    export_dir = ctx["out_dir"] / "export"
+    export_dir.mkdir(parents=True, exist_ok=True)
+    namespace = argparse.Namespace(
+        png=args.png,
+        vectorize_script=args.vectorize_script,
+        vectorize_sha256=args.vectorize_sha256,
+        out_dir=str(export_dir),
+        origin=args.origin,
+        draw_repo=args.draw_repo,
+        draw_commit=args.draw_commit,
+        order_kind="unknown",
+        paper=None,
+        draw_config=args.draw_config,
+        doc_id=None,
+        timeout_s=args.timeout_s,
+        epsilon=None,
+        thinning=None,
+        librecad_check=True,
+    )
+    buf = io.StringIO()
+    with redirect_stdout(buf):
+        code = _cmd_export(namespace)
+    try:
+        summary = json.loads(buf.getvalue())
+    except ValueError:
+        summary = {}
+    duration = time.perf_counter() - started
+    if code != 0:
+        return _beta_step_report(
+            "export", "failed", duration,
+            {"returncode": code, "summary": summary},
+            error=f"export subcommand exited with code {code}",
+        )
+    doc_path = export_dir / "document.json"
+    try:
+        doc = loads_document(doc_path.read_bytes())
+    except (OSError, ValueError) as exc:
+        return _beta_step_report(
+            "export", "failed", duration,
+            {"returncode": code, "summary": summary},
+            error=f"export succeeded but document.json could not be "
+            f"read back: {exc}",
+        )
+    ctx["export_doc"] = doc
+    ctx["export_doc_sha256"] = document_sha256(doc)
+    ctx["export_dxf"] = export_dir / "document.dxf"
+    detail = {
+        "doc_id": doc["doc_id"],
+        "revision": doc["revision"],
+        "document_sha256": ctx["export_doc_sha256"],
+        "dxf_sha256": summary.get("dxf_sha256"),
+        "fingerprint_digest": summary.get("fingerprint_digest"),
+        "librecad_gate": summary.get("librecad_gate"),
+        "strokes": len(doc.get("strokes", [])),
+    }
+    return _beta_step_report("export", "ok", duration, detail)
+
+
+def _beta_step_ocs(ctx: dict[str, Any]) -> dict[str, Any]:
+    """Step 2: live CAD (OCS headless) + eraser proof.
+
+    Without a binary the step is ``skipped-unavailable`` and the
+    chain goes on by file -- never faked. With a binary: the working
+    document's DXF is opened, ``sync_strokes`` preserves the ids
+    (proven by ``scan_stroke_ids``) and ``sync_document`` proves the
+    erased strokes absent (``erased`` when the CAD still had them,
+    ``already_absent`` when the F0 DXF never carried them -- erased
+    strokes never go to DXF by the F0 rule) and runs ``save_verified``.
+    """
+    from .dxf_export import export_dxf
+    from .ocs import OcsError, find_ocs_binary, launch_headless, stop_server
+
+    args = ctx["args"]
+    started = time.perf_counter()
+    binary = find_ocs_binary(args.ocs_binary)
+    if binary is None:
+        return _beta_step_report(
+            "ocs", "skipped-unavailable", time.perf_counter() - started,
+            {"reason": "no OpenCADStudio binary: --ocs-binary not given "
+             "and neither OCS_BINARY nor PATH provides one; the live-CAD "
+             "step was not run (honest skip, not an approval); the chain "
+             "continues by file"},
+        )
+    doc = ctx["doc"]
+    ocs_dir = ctx["out_dir"] / "ocs"
+    ocs_dir.mkdir(parents=True, exist_ok=True)
+    dxf_path = ocs_dir / "document.dxf"
+    try:
+        dxf_report = export_dxf(doc, dxf_path)
+    except ValueError as exc:
+        return _beta_step_report(
+            "ocs", "failed", time.perf_counter() - started,
+            {"binary": binary},
+            error=f"could not export the working document to DXF for "
+            f"the OCS step: {exc}",
+        )
+    ctx["ocs_dxf"] = dxf_path
+    live_ids = [s["stroke_id"] for s in doc.get("strokes", [])
+                if s.get("status") != "erased"]
+    erased_ids = [s["stroke_id"] for s in doc.get("strokes", [])
+                  if s.get("status") == "erased"]
+    try:
+        process, client = launch_headless(binary)
+    except OcsError as exc:
+        return _beta_step_report(
+            "ocs", "failed", time.perf_counter() - started,
+            {"binary": binary, "code": exc.code},
+            error=f"could not launch the headless OpenCADStudio server: "
+            f"{exc}",
+        )
+    try:
+        try:
+            sync_report = client.sync_strokes(
+                dxf_path, live_ids,
+                out_path=ocs_dir / "ocs-verified.dxf")
+            scan_after_sync = client.scan_stroke_ids()
+            sync_doc_report = client.sync_document(
+                doc, out_path=ocs_dir / "ocs-after-erase.dxf")
+            scan_after_document = client.scan_stroke_ids()
+        except OcsError as exc:
+            return _beta_step_report(
+                "ocs", "failed", time.perf_counter() - started,
+                {"binary": binary, "code": exc.code,
+                 "dxf_report": dxf_report},
+                error=f"live-CAD sync failed: {exc}",
+            )
+    finally:
+        stop_server(process)
+    if set(scan_after_document) != set(live_ids):
+        return _beta_step_report(
+            "ocs", "failed", time.perf_counter() - started,
+            {"binary": binary, "sync": sync_report,
+             "scan_after_sync": scan_after_sync,
+             "scan_after_sync_document": scan_after_document,
+             "live_ids": live_ids},
+            error="scan after sync_document does not match the live "
+            f"stroke ids: CAD has {sorted(scan_after_document)}, "
+            f"document has {sorted(live_ids)}",
+        )
+    detail = {
+        "binary": binary,
+        "dxf_report": dxf_report,
+        "live_ids": live_ids,
+        "erased_ids_in_document": erased_ids,
+        "sync": sync_report,
+        "scan_after_sync": scan_after_sync,
+        "sync_document": sync_doc_report,
+        "scan_after_sync_document": scan_after_document,
+        "eraser_proof": (
+            "sync_document proved the erased strokes absent "
+            f"(erased now: {sync_doc_report.get('erased')}, already "
+            f"absent: {sync_doc_report.get('already_absent')})"
+            if erased_ids else
+            "no erased stroke in the working document: the eraser "
+            "proof is not-triggered for this run (sync_document still "
+            "ran and saved the verified file)"
+        ),
+    }
+    return _beta_step_report("ocs", "ok", time.perf_counter() - started,
+                             detail)
+
+
+def _beta_step_step(ctx: dict[str, Any]) -> dict[str, Any]:
+    """Step 3: 2D -> 3D: closed stable stroke -> STEP (build123d).
+
+    Thickness and material are DECLARED (checked in preflight); a
+    document without a closed stable stroke blocks the job (the
+    exporter refuses fail-closed) instead of the chain estimating a
+    solid. The FreeCAD oracle runs when FREECAD_CMD exists, else the
+    step reports it ``unavailable`` and relies on the worker BRepCheck.
+    """
+    from .step_export import (
+        StepExportError,
+        StepWorkerError,
+        document_to_step,
+        oracle_step,
+        validate_step,
+    )
+
+    args = ctx["args"]
+    started = time.perf_counter()
+    step_dir = ctx["out_dir"] / "step"
+    step_dir.mkdir(parents=True, exist_ok=True)
+    step_path = step_dir / "drawing.step"
+    try:
+        report = document_to_step(
+            ctx["doc"], args.thickness_mm, args.material, step_path,
+            timeout_s=args.timeout_s)
+    except StepExportError as exc:
+        return _beta_step_report(
+            "step", "blocked", time.perf_counter() - started,
+            {"thickness_mm": args.thickness_mm,
+             "material": args.material},
+            error=f"STEP export refused (fail-closed): {exc}",
+        )
+    except StepWorkerError as exc:
+        return _beta_step_report(
+            "step", "failed", time.perf_counter() - started,
+            {"thickness_mm": args.thickness_mm,
+             "material": args.material},
+            error=f"STEP worker failed: {exc}",
+        )
+    ctx["step_path"] = step_path
+    ctx["step_report"] = report
+    try:
+        brepcheck = validate_step(step_path, timeout_s=args.timeout_s)
+    except StepWorkerError as exc:
+        return _beta_step_report(
+            "step", "failed", time.perf_counter() - started,
+            {"step": report},
+            error=f"BRepCheck failed: {exc}",
+        )
+    try:
+        oracle = oracle_step(step_path, timeout_s=args.timeout_s)
+    except StepWorkerError as exc:
+        return _beta_step_report(
+            "step", "failed", time.perf_counter() - started,
+            {"step": report, "brepcheck": brepcheck},
+            error=f"FreeCAD oracle failed: {exc}",
+        )
+    if oracle.get("status") == "fail":
+        return _beta_step_report(
+            "step", "failed", time.perf_counter() - started,
+            {"step": report, "brepcheck": brepcheck, "oracle": oracle},
+            error="FreeCAD oracle says the STEP is not valid",
+        )
+    detail = {"step": report, "brepcheck": brepcheck, "oracle": oracle}
+    return _beta_step_report("step", "ok", time.perf_counter() - started,
+                             detail)
+
+
+def _beta_step_fea(ctx: dict[str, Any]) -> dict[str, Any]:
+    """Step 4: Gmsh mesh -> CalculiX axial case, gate G4.1 (<= 1%).
+
+    The case runs on the REFERENCE bar STEP (built by Gmsh), not on
+    the drawing STEP: the gate's references (Rx 2100 N, S11 21 MPa)
+    belong to the 100x10x10 mm bar. The drawing STEP is validated by
+    step 3 (BRepCheck + FreeCAD oracle). A gate outside 1% marks the
+    run ``failed`` and the command exits non-zero.
+    """
+    from .fea import build_bar_step, run_axial_case
+
+    args = ctx["args"]
+    started = time.perf_counter()
+    fea_dir = ctx["out_dir"] / "fea"
+    built = build_bar_step(fea_dir / "bar", timeout_s=args.timeout_s)
+    if not built["ok"]:
+        return _beta_step_report(
+            "fea", "failed", time.perf_counter() - started,
+            {"build": built},
+            error=f"could not build the reference bar STEP: "
+            f"{built.get('failure')}",
+        )
+    case_dir = fea_dir / "case"
+    case_dir.mkdir(parents=True, exist_ok=True)
+    result = run_axial_case(
+        built["step_path"], case_dir,
+        doc_id=ctx["doc"]["doc_id"],
+        document_sha256=ctx["doc_sha256"])
+    (case_dir / "fea-axial-result.json").write_text(
+        json.dumps(result, sort_keys=True, indent=2), encoding="utf-8")
+    ctx["fea_result"] = result
+    ctx["fea_dir"] = case_dir
+    ctx["fea_input_step"] = case_dir / "input.step"
+    status = {"passed": "ok", "failed": "failed",
+              "blocked": "blocked"}.get(result["status"], "failed")
+    detail = {
+        "case": result["case"],
+        "gate": result["gate"],
+        "measured": result["measured"],
+        "errors_pct": result["errors_pct"],
+        "fingerprint": result["fingerprint"],
+        "artifacts": result["artifacts"],
+    }
+    error = None
+    if status != "ok":
+        error = "; ".join(result.get("failures") or
+                          [f"axial case status: {result['status']}"])
+    return _beta_step_report("fea", status, time.perf_counter() - started,
+                             detail, error=error)
+
+
+def _beta_step_physics(ctx: dict[str, Any]) -> dict[str, Any]:
+    """Step 5 (report step): PyBullet envelope + MuJoCo cross-check.
+
+    The load profile is returned as an artifact; the FEA gate is NOT
+    rewired to use it (that wiring is future work -- the gate stays
+    the declared axial case).
+    """
+    from .physics import run_contact_case
+
+    started = time.perf_counter()
+    phys_dir = ctx["out_dir"] / "physics"
+    phys_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        report = run_contact_case()
+    except Exception as exc:  # noqa: BLE001 - engine/model failure is a step failure
+        return _beta_step_report(
+            "physics", "failed", time.perf_counter() - started,
+            {}, error=f"physics contact case failed: "
+            f"{type(exc).__name__}: {exc}",
+        )
+    (phys_dir / "physics.json").write_text(
+        json.dumps(report, sort_keys=True, indent=2), encoding="utf-8")
+    profiles: list[str] = []
+    for engine in ("pybullet", "mujoco"):
+        profile = report.get(f"load_profile_{engine}")
+        if profile is not None:
+            (phys_dir / f"load-profile-{engine}.json").write_text(
+                json.dumps(profile, sort_keys=True, indent=2),
+                encoding="utf-8")
+            profiles.append(engine)
+    engines = {
+        name: {"status": value.get("status"),
+               "envelope": (value.get("envelope") or {})}
+        for name, value in (report.get("engines") or {}).items()
+    }
+    pin_check = report.get("pinocchio_check") or {}
+    detail = {
+        "case": report.get("case"),
+        "model_sha256": report.get("model_sha256"),
+        "engines": engines,
+        "comparison": report.get("comparison"),
+        "pinocchio_check_passed": pin_check.get("passed"),
+        "pinocchio_check": pin_check,
+        "load_profiles": profiles,
+        "note": "Load profile is an artifact only; the FEA gate stays "
+        "the declared axial case (wiring the profile into FEA is "
+        "future work, not this run).",
+    }
+    if not profiles:
+        return _beta_step_report(
+            "physics", "failed", time.perf_counter() - started, detail,
+            error="no engine produced a load profile",
+        )
+    return _beta_step_report("physics", "ok", time.perf_counter() - started,
+                             detail)
+
+
+def _beta_gmsh_surface_stl(
+    step_path: str | Path,
+    out_stl: str | Path,
+    *,
+    mesh_size_mm: float = 2.5,
+    timeout_s: float = 300.0,
+    gmsh_bin: str = "/usr/bin/gmsh",
+) -> dict[str, Any]:
+    """Full closed surface triangulation of a STEP (Gmsh, subprocess).
+
+    The FEA mesh (``bar.msh``) only carries the two physical faces
+    (``fixed``/``loaded``), so its surface is not watertight; this
+    re-meshes the surface with ``Mesh.SaveAll = 1`` (``Mesh 2``) for
+    the viewer ``.glb``. Same subprocess rules as the FEA module:
+    argv list, isolated cwd, timeout, ``shell=False``.
+    """
+    from .fea import DEFAULT_GMSH_BIN, DEFAULT_MESH_SIZE_MM
+
+    gmsh_bin = gmsh_bin or DEFAULT_GMSH_BIN
+    mesh_size_mm = mesh_size_mm or DEFAULT_MESH_SIZE_MM
+    out_stl = Path(out_stl)
+    out_stl.parent.mkdir(parents=True, exist_ok=True)
+    geo = (
+        "SetFactory(\"OpenCASCADE\");\n"
+        "Merge \"input.step\";\n"
+        "Mesh.SaveAll = 1;\n"
+        f"Mesh.CharacteristicLengthMax = {mesh_size_mm:g};\n"
+        "Mesh 2;\n"
+        "Save \"surface.stl\";\n"
+    )
+    with tempfile.TemporaryDirectory(prefix="ocre-beta-stl-") as tmp:
+        tmp_path = Path(tmp)
+        shutil.copyfile(step_path, tmp_path / "input.step")
+        (tmp_path / "surf.geo").write_text(geo, encoding="utf-8")
+        try:
+            completed = subprocess.run(
+                [gmsh_bin, "-3", str(tmp_path / "surf.geo"),
+                 "-format", "stl", "-o", str(tmp_path / "surface.stl")],
+                cwd=str(tmp_path), timeout=timeout_s, shell=False,
+                capture_output=True, text=True, errors="replace",
+            )
+        except subprocess.TimeoutExpired as exc:
+            raise RuntimeError(
+                f"gmsh surface mesh timed out after {timeout_s}s"
+            ) from exc
+        except OSError as exc:
+            raise RuntimeError(
+                f"could not start gmsh ({gmsh_bin}): {exc}"
+            ) from exc
+        produced = tmp_path / "surface.stl"
+        if completed.returncode != 0 or not produced.is_file():
+            raise RuntimeError(
+                f"gmsh surface mesh failed (returncode "
+                f"{completed.returncode}): "
+                f"{(completed.stderr or completed.stdout or '')[-2000:]}"
+            )
+        shutil.copyfile(produced, out_stl)
+    return {"stl_path": str(out_stl), "stl_bytes": out_stl.stat().st_size,
+            "mesh_size_mm": mesh_size_mm, "gmsh_bin": gmsh_bin}
+
+
+def _beta_step_viz(ctx: dict[str, Any]) -> dict[str, Any]:
+    """Step 6: PyVista .png (visualization, never analysis) + .glb + PDF.
+
+    The render reads the FEA ``.frd`` (solver field, SXX by default);
+    the ``.glb`` is the axial-bar surface mesh scaled mm -> m; the
+    PDF plots the working document's DXF via LibreCAD ``dxf2pdf``.
+    """
+    from .viz import VizError, plot_pdf, render_field, to_glb
+
+    args = ctx["args"]
+    started = time.perf_counter()
+    viz_dir = ctx["out_dir"] / "viz"
+    viz_dir.mkdir(parents=True, exist_ok=True)
+    fea_result = ctx.get("fea_result")
+    if not isinstance(fea_result, dict) or fea_result.get("status") != "passed":
+        return _beta_step_report(
+            "viz", "failed", time.perf_counter() - started,
+            {"fea_status": (fea_result or {}).get("status")},
+            error="no passed FEA result to visualize (render needs the "
+            "solver .frd)",
+        )
+    frd_path = ctx["fea_dir"] / "job.frd"
+    try:
+        render = render_field(frd_path, viz_dir / "field.png",
+                              timeout_s=args.timeout_s)
+    except VizError as exc:
+        return _beta_step_report(
+            "viz", "failed", time.perf_counter() - started, {},
+            error=f"PyVista render failed: {exc}",
+        )
+    try:
+        stl = _beta_gmsh_surface_stl(
+            ctx["fea_input_step"], viz_dir / "bar-surface.stl",
+            timeout_s=args.timeout_s)
+        glb = to_glb(viz_dir / "bar-surface.stl", viz_dir / "model.glb",
+                     units="mm")
+    except (RuntimeError, VizError) as exc:
+        return _beta_step_report(
+            "viz", "failed", time.perf_counter() - started,
+            {"render": render},
+            error=f".glb export failed: {exc}",
+        )
+    dxf_path = ctx.get("ocs_dxf")
+    if dxf_path is None:
+        from .dxf_export import export_dxf
+
+        dxf_path = viz_dir / "document.dxf"
+        try:
+            export_dxf(ctx["doc"], dxf_path)
+        except ValueError as exc:
+            return _beta_step_report(
+                "viz", "failed", time.perf_counter() - started,
+                {"render": render, "glb": glb},
+                error=f"could not export the working document to DXF "
+                f"for the PDF: {exc}",
+            )
+    try:
+        pdf = plot_pdf(dxf_path, viz_dir / "drawing.pdf",
+                       timeout_s=args.timeout_s)
+    except VizError as exc:
+        return _beta_step_report(
+            "viz", "failed", time.perf_counter() - started,
+            {"render": render, "glb": glb, "stl": stl},
+            error=f"PDF plot failed: {exc}",
+        )
+    detail = {"render": render, "stl": stl, "glb": glb, "pdf": pdf}
+    return _beta_step_report("viz", "ok", time.perf_counter() - started,
+                             detail)
+
+
+def _beta_step_fmu(ctx: dict[str, Any]) -> dict[str, Any]:
+    """Step 7: FMPy gate -- ``not-triggered`` without an FMU."""
+    from .fmu_gate import validate_fmu
+
+    started = time.perf_counter()
+    result = validate_fmu(ctx["args"].fmu, timeout_s=ctx["args"].timeout_s)
+    mapping = {"pass": "ok", "fail": "failed", "blocked": "blocked",
+               "not-triggered": "not-triggered",
+               "unavailable": "skipped-unavailable"}
+    status = mapping.get(str(result.get("status")), "failed")
+    error = None
+    if status in ("failed", "blocked"):
+        error = str(result.get("reason") or "FMU gate failed")
+    return _beta_step_report("fmu", status, time.perf_counter() - started,
+                             result, error=error)
+
+
+def _beta_text_report(report: dict[str, Any]) -> str:
+    lines = [
+        "beta-run OCRE<->Draw v0.1",
+        f"status: {report['status']} (exit {report['exit_code']})",
+        f"fingerprint domain: {report['fingerprint_domain']}",
+        f"duration: {report['duration_s']:.1f}s",
+        "",
+    ]
+    docs = report.get("documents", {})
+    for key in ("export", "working"):
+        entry = docs.get(key)
+        if entry:
+            lines.append(
+                f"document {key}: {entry.get('doc_id')} "
+                f"rev {entry.get('revision')} "
+                f"sha256 {str(entry.get('sha256'))[:16]}...")
+    if docs.get("working_source"):
+        lines.append(f"working document source: {docs['working_source']}")
+    lines.append("")
+    for step in report["steps"]:
+        line = f"[{step['status']}] {step['id']} ({step['duration_s']}s)"
+        if step.get("error"):
+            line += f" -- {step['error']}"
+        lines.append(line)
+        detail = step.get("detail") or {}
+        if step["id"] == "fea" and detail.get("errors_pct"):
+            lines.append(
+                f"    gate G4.1 errors: Rx "
+                f"{detail['errors_pct'].get('rx'):.4f}% / S11 "
+                f"{detail['errors_pct'].get('s11'):.4f}% (<= 1%)")
+        if step["id"] == "step" and isinstance(detail.get("step"), dict):
+            lines.append(
+                f"    STEP volume: "
+                f"{detail['step'].get('volume_mm3')} mm3, "
+                f"thickness {detail['step'].get('thickness_mm')} mm, "
+                f"material {detail['step'].get('material_declared')}")
+        if step["id"] == "physics" and isinstance(detail.get("engines"), dict):
+            for name, eng in detail["engines"].items():
+                env = eng.get("envelope") or {}
+                lines.append(
+                    f"    {name}: {eng.get('status')}, "
+                    f"f_max {env.get('f_max_N')} N")
+        if step["id"] == "fmu":
+            lines.append(f"    {detail.get('reason', '')}")
+    lines.append("")
+    lines.append("artifacts:")
+    for artifact in report.get("artifacts", []):
+        sha = artifact.get("sha256") or "?"
+        lines.append(f"  {artifact['path']} (sha256 {str(sha)[:16]}...)")
+    for note in report.get("notes", []):
+        lines.append(f"note: {note}")
+    return "\n".join(lines) + "\n"
+
+
+def _cmd_beta_run(args: argparse.Namespace) -> int:
+    out_dir = Path(args.out_dir)
+    started_at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    started = time.perf_counter()
+    report: dict[str, Any] = {
+        "command": "beta-run",
+        "status": "blocked",
+        "exit_code": 2,
+        "fingerprint_domain": BETA_FINGERPRINT_DOMAIN,
+        "started_at": started_at,
+        "params": {
+            "png": args.png,
+            "vectorize_script": args.vectorize_script,
+            "vectorize_sha256": args.vectorize_sha256,
+            "origin": args.origin,
+            "draw_repo": args.draw_repo,
+            "draw_commit": args.draw_commit,
+            "thickness_mm": args.thickness_mm,
+            "material": args.material,
+            "ocs_binary": args.ocs_binary,
+            "draw_config": args.draw_config,
+            "document": args.document,
+            "fmu": args.fmu,
+            "timeout_s": args.timeout_s,
+        },
+        "documents": {},
+        "steps": [],
+        "artifacts": [],
+        "notes": [
+            "The CAD loop is the quality bar: paper line -> CAD line, "
+            "2D and 3D, with the eraser working. Simulations are a "
+            "consequence: the axial FEA case only validates the whole "
+            "path (gate G4.1).",
+            "The physics load profile is an artifact only; the FEA gate "
+            "stays the declared axial case (wiring the profile into "
+            "FEA is future work).",
+            "The FMU gate reports not-triggered without an FMU; it never "
+            "runs end-to-end without one.",
+        ],
+    }
+
+    def _finish() -> int:
+        report["duration_s"] = round(time.perf_counter() - started, 3)
+        report["finished_at"] = time.strftime(
+            "%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        try:
+            out_dir.mkdir(parents=True, exist_ok=True)
+            _atomic_write_json(out_dir / "beta-report.json", report)
+            (out_dir / "beta-report.txt").write_text(
+                _beta_text_report(report), encoding="utf-8")
+        except OSError as exc:
+            print(f"error: could not write the beta report: {exc}",
+                  file=sys.stderr)
+        print(json.dumps(report, sort_keys=True, indent=2))
+        return int(report["exit_code"])
+
+    # --- Preflight (fail-closed, before any heavy work). ---
+    preflight_errors: list[str] = []
+    if not _HEX40_RE.fullmatch(args.draw_commit or ""):
+        preflight_errors.append(
+            "--draw-commit must be a full 40-hex git revision "
+            f"(got {args.draw_commit!r})")
+    png_path = Path(args.png)
+    if not png_path.is_file():
+        preflight_errors.append(f"PNG not found: {png_path}")
+    if not Path(args.vectorize_script).is_file():
+        preflight_errors.append(
+            f"vectorize script not found: {args.vectorize_script}")
+    if args.thickness_mm is None:
+        preflight_errors.append(
+            "thickness-mm is required and declared by a human "
+            "(thickness is never invented)")
+    elif not (args.thickness_mm == args.thickness_mm
+              and args.thickness_mm > 0):
+        preflight_errors.append(
+            f"thickness-mm must be positive and finite "
+            f"(got {args.thickness_mm!r})")
+    if not isinstance(args.material, str) or not args.material.strip():
+        preflight_errors.append(
+            "material is required and declared by a human "
+            "(material is never invented)")
+    working_doc: dict[str, Any] | None = None
+    if args.document:
+        doc_path = Path(args.document)
+        if not doc_path.is_file():
+            preflight_errors.append(
+                f"--document not found: {doc_path}")
+        else:
+            try:
+                working_doc = loads_document(doc_path.read_bytes())
+                validate_draw_document_or_raise(working_doc)
+            except ValueError as exc:
+                preflight_errors.append(
+                    f"--document failed validation: {exc}")
+    if preflight_errors:
+        report["status"] = "blocked"
+        report["exit_code"] = 2
+        report["steps"] = [
+            _beta_step_report(
+                "preflight", "blocked", time.perf_counter() - started,
+                {"errors": preflight_errors},
+                error="; ".join(preflight_errors),
+            )
+        ]
+        return _finish()
+
+    ctx: dict[str, Any] = {
+        "args": args,
+        "out_dir": out_dir,
+        "doc": working_doc,
+        "doc_sha256": (document_sha256(working_doc)
+                       if working_doc is not None else None),
+    }
+    if working_doc is not None:
+        report["documents"]["working"] = {
+            "doc_id": working_doc["doc_id"],
+            "revision": working_doc["revision"],
+            "sha256": ctx["doc_sha256"],
+        }
+        report["documents"]["working_source"] = "example-document (--document)"
+
+    # --- The chain, in order. ---
+    steps: list[dict[str, Any]] = []
+    runners = (
+        _beta_step_export,
+        _beta_step_ocs,
+        _beta_step_step,
+        _beta_step_fea,
+        _beta_step_physics,
+        _beta_step_viz,
+        _beta_step_fmu,
+    )
+    for runner in runners:
+        step_id = runner.__name__.removeprefix("_beta_step_")
+        if step_id == "export":
+            step = runner(ctx)
+            steps.append(step)
+            if step["status"] != "ok":
+                break
+            # The working document is --document when given, else the
+            # document step 1 just built.
+            if ctx["doc"] is None:
+                ctx["doc"] = ctx["export_doc"]
+                ctx["doc_sha256"] = ctx["export_doc_sha256"]
+                report["documents"]["working_source"] = "export (step 1)"
+            report["documents"]["export"] = {
+                "doc_id": ctx["export_doc"]["doc_id"],
+                "revision": ctx["export_doc"]["revision"],
+                "sha256": ctx["export_doc_sha256"],
+            }
+            report["documents"]["working"] = {
+                "doc_id": ctx["doc"]["doc_id"],
+                "revision": ctx["doc"]["revision"],
+                "sha256": ctx["doc_sha256"],
+            }
+            continue
+        steps.append(runner(ctx))
+    for missing in _BETA_STEP_IDS[len(steps):]:
+        steps.append(_beta_step_report(
+            missing, "not-run", 0.0,
+            {"reason": "a previous step failed; the chain stopped "
+             "before this step (no document to work on)"},
+        ))
+    report["steps"] = steps
+
+    statuses = [s["status"] for s in steps]
+    if "failed" in statuses:
+        report["status"] = "failed"
+        report["exit_code"] = 1
+    elif "blocked" in statuses:
+        report["status"] = "blocked"
+        report["exit_code"] = 2
+    else:
+        report["status"] = "ok"
+        report["exit_code"] = 0
+
+    artifact_paths: list[Path] = [
+        out_dir / "export" / "document.json",
+        out_dir / "export" / "document.dxf",
+        out_dir / "export" / "sidecar.json",
+        out_dir / "export" / "fingerprint.json",
+        out_dir / "ocs" / "document.dxf",
+        out_dir / "ocs" / "ocs-verified.dxf",
+        out_dir / "ocs" / "ocs-after-erase.dxf",
+        out_dir / "step" / "drawing.step",
+        out_dir / "fea" / "case" / "fea-axial-result.json",
+        out_dir / "fea" / "case" / "job.frd",
+        out_dir / "fea" / "case" / "job.dat",
+        out_dir / "physics" / "physics.json",
+        out_dir / "physics" / "load-profile-pybullet.json",
+        out_dir / "physics" / "load-profile-mujoco.json",
+        out_dir / "viz" / "field.png",
+        out_dir / "viz" / "model.glb",
+        out_dir / "viz" / "drawing.pdf",
+    ]
+    report["artifacts"] = [
+        _beta_artifact_entry(path) for path in artifact_paths
+        if path.exists()
+    ]
+    return _finish()
+
+
+def _cmd_validate(args: argparse.Namespace) -> int:
+    path = Path(args.document)
+    try:
+        raw = path.read_bytes()
+    except OSError as exc:
+        print(f"error: cannot read document: {exc}", file=sys.stderr)
+        return 2
+    report = validate_draw_document(raw)
+    print(json.dumps(report.as_dict(), sort_keys=True, indent=2))
+    return 0 if report.valid else 1
+
+
 def main(argv: list[str] | None = None) -> int:
     """CLI entry point; returns a process exit code."""
     parser = _build_parser()
@@ -496,6 +1375,8 @@ def main(argv: list[str] | None = None) -> int:
         return _cmd_validate(args)
     if args.command == "fea-axial":
         return _cmd_fea_axial(args)
+    if args.command == "beta-run":
+        return _cmd_beta_run(args)
     parser.error(f"unknown command: {args.command!r}")
     return 2
 

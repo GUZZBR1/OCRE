@@ -294,5 +294,41 @@ class TestSvgToPdfAndTools(unittest.TestCase):
         self.assertTrue(version is None or isinstance(version, str))
 
 
+class TestReadFrdC3D4(unittest.TestCase):
+    """O .frd do caso axial FEA do beta (C3D4, tipo 3) também é lido.
+
+    O deck próprio do FEA usa tetraedros lineares C3D4 e o .frd do
+    ccx traz elementos tipo 3 (4 nós) — o parser OCRE-side aceita
+    tipo 3 (``tetra``) e tipo 6 (``tetra10``). Sem isso o ``beta-run``
+    não renderizaria o campo do caso axial.
+    """
+
+    def test_read_frd_do_caso_axial_c3d4(self):
+        import shutil
+
+        if shutil.which("gmsh") is None or shutil.which("ccx") is None:
+            self.skipTest("gmsh/ccx ausentes — .frd C3D4 não gerado")
+        from ocre_core.draw.fea import build_bar_step, run_axial_case
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            built = build_bar_step(tmp_path / "gen")
+            self.assertTrue(built["ok"], built.get("failure"))
+            result = run_axial_case(built["step_path"], tmp_path / "case")
+            self.assertEqual(result["status"], "passed", result)
+            frd = tmp_path / "case" / "job.frd"
+            mesh, info = viz.load_result_mesh(frd)
+            self.assertEqual(info["reader"], "ocre read_frd")
+            self.assertEqual(mesh.cells[0].type, "tetra")
+            self.assertEqual(info["points"], result["measured"]["n_nodes"])
+            self.assertEqual(info["cells"],
+                             result["measured"]["n_elements"])
+            for field in ("SXX", "SYY", "SZZ", "STRESS", "DISP", "D1"):
+                self.assertIn(field, info["fields"])
+            sxx = np.asarray(mesh.point_data["SXX"])
+            self.assertAlmostEqual(float(sxx.min()), 21.0, places=2)
+            self.assertAlmostEqual(float(sxx.max()), 21.0, places=2)
+
+
 if __name__ == "__main__":
     unittest.main()
