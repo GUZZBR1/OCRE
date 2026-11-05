@@ -1,11 +1,14 @@
 """Testes do gate G0.2 (LibreCAD via subprocesso).
 
-Ressalva explícita: o binário ``librecad`` NÃO existe nesta máquina —
-o comportamento "não disponível" é testado de verdade, e os caminhos
-pass/fail são testados com um STUB executável que imita a CLI
-(``librecad dxf2svg <dxf> [svg]``). Nenhum teste aqui prova que o
-LibreCAD real abre um DXF; o gate real (10/10) só existe na bateria
-G0.2, ainda não rodada.
+O binário ``librecad`` existe nesta máquina (2.2.0.2, instalado
+2026-11-05) — mas o conversor do gate é ``dxf2pdf``, não ``dxf2svg``:
+o ``dxf2svg`` TRAVA nesta build (timeout verificado num DXF mínimo e
+no DXF da F0) e o ``dxf2pdf`` funciona. Os caminhos pass/fail são
+testados com um STUB executável que imita a CLI
+(``librecad dxf2pdf <dxf> [pdf]``), e o comportamento "não disponível"
+é testado de verdade com um binário inexistente. Nenhum teste aqui
+prova que o LibreCAD real abre um DXF; o gate real (10/10) só existe
+na bateria G0.2, ainda não rodada.
 """
 
 import os
@@ -17,12 +20,12 @@ from pathlib import Path
 from ocre_core.draw.librecad_gate import check_dxf, gate_batch, librecad_available
 
 STUB_PASS = """#!/bin/sh
-# Stub: imita `librecad dxf2svg <dxf> [svg]` com sucesso.
+# Stub: imita `librecad dxf2pdf <dxf> [pdf]` com sucesso.
 # Com saída explícita (4 args) escreve nela; sem ela (3 args),
-# escreve <dxf>.svg ao lado da entrada.
-if [ "$1" != "dxf2svg" ]; then echo "uso: librecad dxf2svg <dxf> [svg]" >&2; exit 2; fi
-if [ -n "$3" ]; then OUT="$3"; else OUT="${2%.dxf}.svg"; fi
-printf '<svg xmlns="http://www.w3.org/2000/svg"><path d="M0 0"/></svg>\\n' > "$OUT"
+# escreve <dxf>.pdf ao lado da entrada.
+if [ "$1" != "dxf2pdf" ]; then echo "uso: librecad dxf2pdf <dxf> [pdf]" >&2; exit 2; fi
+if [ -n "$3" ]; then OUT="$3"; else OUT="${2%.dxf}.pdf"; fi
+printf '%%PDF-1.4\\n' > "$OUT"
 exit 0
 """
 
@@ -32,9 +35,9 @@ exit 1
 """
 
 STUB_ONLY_IMPLICIT = """#!/bin/sh
-# Stub: recusa a forma com saída explícita, aceita só `dxf2svg <dxf>`.
-if [ -n "$3" ]; then echo "uso: librecad dxf2svg <dxf>" >&2; exit 2; fi
-printf '<svg xmlns="http://www.w3.org/2000/svg"/>' > "${2%.dxf}.svg"
+# Stub: recusa a forma com saída explícita, aceita só `dxf2pdf <dxf>`.
+if [ -n "$3" ]; then echo "uso: librecad dxf2pdf <dxf>" >&2; exit 2; fi
+printf '%%PDF-1.4\\n' > "${2%.dxf}.pdf"
 exit 0
 """
 
@@ -83,12 +86,12 @@ class LibreCADGateTests(unittest.TestCase):
     def test_librecad_available_returns_none_when_absent(self):
         self.assertIsNone(librecad_available("librecad-inexistente-xyz"))
 
-    def test_stub_pass_returns_pass_with_svg_bytes(self):
+    def test_stub_pass_returns_pass_with_pdf_bytes(self):
         stub = make_stub(self.tmp, "librecad", STUB_PASS)
         result = check_dxf(self.dxf, binary=str(stub))
         self.assertEqual(result["status"], "pass")
         self.assertTrue(result["available"])
-        self.assertGreater(result["svg_bytes"], 0)
+        self.assertGreater(result["pdf_bytes"], 0)
         self.assertEqual(result["attempt"], 1)
 
     def test_stub_fail_returns_fail_with_stderr(self):

@@ -5,10 +5,25 @@ via subprocesso, nunca linkado ou importado (ressalva V3 da aprovação
 do Senado). Nenhum código do LibreCAD entra no OCRE e nenhum módulo
 Python dele é importado.
 
-O gate roda ``librecad dxf2svg <dxf> <svg>`` com
+O gate roda ``librecad dxf2pdf <dxf> <pdf>`` com
 ``QT_QPA_PLATFORM=offscreen`` (sem display), timeout obrigatório e
-stdout/stderr capturados. Passa se o processo sai com código 0 e o SVG
+stdout/stderr capturados. Passa se o processo sai com código 0 e o PDF
 de saída existe e não está vazio.
+
+Motivo da troca (verificado 2026-11-05 nesta máquina, LibreCAD
+2.2.0.2): o conversor anterior, ``dxf2svg``, TRAVA nesta build —
+``QT_QPA_PLATFORM=offscreen timeout 10 librecad dxf2svg`` num DXF
+mínimo morre por timeout (exit 124) sem produzir nada, e o mesmo no
+DXF da F0. Já ``dxf2pdf`` no mesmo DXF sai com código 0 em ~0,2 s e
+produz um PDF de 1229 bytes. O gate usava ``dxf2svg`` até então.
+
+Quirque desta build: o ``dxf2pdf`` IGNORA o caminho de saída
+explícito e sempre escreve ``<entrada>.pdf`` ao lado do DXF de
+entrada. Por isso o gate roda as conversões sobre uma CÓPIA do DXF
+dentro de um diretório temporário (nunca sobre o original), para o
+PDF não poluir o diretório do DXF original; a saída esperada é
+``<stem>.pdf`` dentro do temporário, valendo tanto para a forma
+explícita quanto para a implícita.
 
 Se o binário NÃO existir na máquina, o gate devolve
 ``status == "unavailable"`` — um skip honesto, nunca um passo fingido.
@@ -57,13 +72,13 @@ def _run_conversion(
 ) -> dict:
     """Uma tentativa de conversão; devolve dict com returncode/stdout/stderr.
 
-    Com ``out_path`` dado: ``librecad dxf2svg <dxf> <svg>``. Sem ele:
-    ``librecad dxf2svg <dxf>`` e o LibreCAD escreve ``<dxf>.svg`` ao
+    Com ``out_path`` dado: ``librecad dxf2pdf <dxf> <pdf>``. Sem ele:
+    ``librecad dxf2pdf <dxf>`` e o LibreCAD escreve ``<dxf>.pdf`` ao
     lado da entrada.
     """
     env = dict(os.environ)
     env["QT_QPA_PLATFORM"] = "offscreen"
-    command = [binary, "dxf2svg", str(dxf_path)]
+    command = [binary, "dxf2pdf", str(dxf_path)]
     if out_path is not None:
         command.append(str(out_path))
     try:
@@ -115,18 +130,20 @@ def check_dxf(
         }
 
     with tempfile.TemporaryDirectory(prefix="ocre-librecad-") as tmp:
-        out_path = Path(tmp) / (dxf_path.stem + ".svg")
-        attempt = _run_conversion(binary_path, dxf_path, out_path, timeout_s)
+        # A conversão roda sobre uma cópia no temporário: o dxf2pdf
+        # desta build ignora a saída explícita e escreve <entrada>.pdf
+        # ao lado do DXF — sobre o original, isso poluiria o diretório
+        # do usuário. No temporário, a saída esperada é <stem>.pdf.
+        copy_path = Path(tmp) / dxf_path.name
+        copy_path.write_bytes(dxf_path.read_bytes())
+        out_path = Path(tmp) / (dxf_path.stem + ".pdf")
+        attempt = _run_conversion(binary_path, copy_path, out_path, timeout_s)
         used_attempt = 1
         if attempt["returncode"] != 0 or not out_path.is_file():
             # Segunda forma: sem arquivo de saída explícito; o LibreCAD
-            # escreve <entrada>.svg ao lado da entrada (numa cópia, para
-            # não sujar o diretório do DXF original).
-            copy_path = Path(tmp) / dxf_path.name
-            copy_path.write_bytes(dxf_path.read_bytes())
-            fallback_out = Path(tmp) / (dxf_path.stem + ".svg")
+            # escreve <entrada>.pdf ao lado da entrada (a cópia, no
+            # temporário, para não sujar o diretório do DXF original).
             attempt = _run_conversion(binary_path, copy_path, None, timeout_s)
-            out_path = fallback_out
             used_attempt = 2
         if attempt["returncode"] != 0:
             return {
@@ -150,7 +167,7 @@ def check_dxf(
                 "returncode": attempt["returncode"],
                 "stdout": attempt["stdout"],
                 "stderr": attempt["stderr"],
-                "reason": "librecad saiu com código 0 mas não produziu SVG",
+                "reason": "librecad saiu com código 0 mas não produziu PDF",
             }
         return {
             "status": "pass",
@@ -159,7 +176,7 @@ def check_dxf(
             "binary": binary_path,
             "attempt": used_attempt,
             "returncode": 0,
-            "svg_bytes": out_path.stat().st_size,
+            "pdf_bytes": out_path.stat().st_size,
             "stdout": attempt["stdout"],
             "stderr": attempt["stderr"],
         }
