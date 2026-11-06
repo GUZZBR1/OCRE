@@ -38,6 +38,17 @@ Versão pinada (registrada após a instalação; ver `requirements-step-worker.t
 .venv-beta/bin/pip freeze | grep -iE 'build123d|^OCP'
 ```
 
+Origem dos pins: instalado 2026-11-05 no worktree `ocre-beta-wt-step`,
+branch `beta/step`. O venv é o ÚNICO lugar onde o build123d existe;
+nada foi instalado globalmente. Verificação:
+`.venv-beta/bin/python -c "import build123d; print(build123d.__version__)"`
+-> `0.13.0`; `OCP.__version__` -> `8.0.1.1` (OCCT empacotado).
+
+O venv também carrega as dependências de teste do backend
+(`backend/requirements.txt` + `requirements-dev.txt`: ezdxf 1.4.5,
+fastapi 0.162.0, pytest 9.2.0 etc.) porque a suíte é rodada com
+`.venv-beta/bin/python -m pytest`, como manda o task do beta.
+
 **NUNCA** instale CadQuery neste venv, **NUNCA** instale nada global
 (sem `--system`, sem `sudo pip`).
 
