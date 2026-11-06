@@ -280,7 +280,7 @@ def _cmd_export(args: argparse.Namespace) -> int:
     if not png_path.is_file():
         print(f"error: PNG not found: {png_path}", file=sys.stderr)
         return 2
-    out_dir = Path(args.out_dir)
+    out_dir = Path(args.out_dir).resolve()
     out_dir.mkdir(parents=True, exist_ok=True)
 
     # Paper policy (D3): single source in paper.py. Resolve BEFORE the
@@ -1147,7 +1147,7 @@ def _beta_text_report(report: dict[str, Any]) -> str:
 
 
 def _cmd_beta_run(args: argparse.Namespace) -> int:
-    out_dir = Path(args.out_dir)
+    out_dir = Path(args.out_dir).resolve()
     started_at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
     started = time.perf_counter()
     report: dict[str, Any] = {
