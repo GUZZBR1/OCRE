@@ -1031,6 +1031,14 @@ def _beta_step_viz(ctx: dict[str, Any]) -> dict[str, Any]:
     try:
         render = render_field(frd_path, viz_dir / "field.png",
                               timeout_s=args.timeout_s)
+    except ImportError as exc:
+        # viz deps (meshio, imported lazily in viz.py) are missing:
+        # record the step as failed instead of killing beta-run --
+        # the report must still be written with the other steps.
+        return _beta_step_report(
+            "viz", "failed", time.perf_counter() - started, {},
+            error=f"viz dependency missing: {exc}",
+        )
     except VizError as exc:
         return _beta_step_report(
             "viz", "failed", time.perf_counter() - started, {},
@@ -1042,7 +1050,7 @@ def _beta_step_viz(ctx: dict[str, Any]) -> dict[str, Any]:
             timeout_s=args.timeout_s)
         glb = to_glb(viz_dir / "bar-surface.stl", viz_dir / "model.glb",
                      units="mm")
-    except (RuntimeError, VizError) as exc:
+    except (RuntimeError, VizError, ImportError) as exc:
         return _beta_step_report(
             "viz", "failed", time.perf_counter() - started,
             {"render": render},
