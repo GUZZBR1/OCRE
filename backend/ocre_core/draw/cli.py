@@ -511,14 +511,15 @@ def _cmd_export(args: argparse.Namespace) -> int:
 
 def _cmd_fea_axial(args: argparse.Namespace) -> int:
     from .fea import AxialCaseSpec, run_axial_case
+    out_dir = Path(args.out_dir).resolve()
     spec = AxialCaseSpec(
         step_path=args.step,
         timeout_gmsh_s=args.timeout_s, timeout_ccx_s=args.timeout_s)
     result = run_axial_case(
-        args.step, args.out_dir, spec=spec, doc_id=args.doc_id,
+        args.step, out_dir, spec=spec, doc_id=args.doc_id,
         document_sha256=args.document_sha256,
         mesh_size_mm=args.mesh_size)
-    out_path = Path(args.out_dir) / "fea-axial-result.json"
+    out_path = out_dir / "fea-axial-result.json"
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text(json.dumps(result, sort_keys=True, indent=2),
                         encoding="utf-8")
