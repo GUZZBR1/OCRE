@@ -45,6 +45,7 @@ import math
 import os
 import shutil
 import subprocess
+import sys
 import tempfile
 from pathlib import Path
 from typing import Any
@@ -85,12 +86,34 @@ def _worktree_root() -> Path:
     return Path(__file__).resolve().parents[3]
 
 
+_sys_executable_has_build123d: bool | None = None
+
+
+def _sys_executable_imports_build123d() -> bool:
+    """True se o interpretador corrente importa build123d (probe em
+    subprocesso, com cache — nunca importa build123d neste processo)."""
+    global _sys_executable_has_build123d
+    if _sys_executable_has_build123d is None:
+        try:
+            probe = subprocess.run(
+                [sys.executable, "-c", "import build123d"],
+                capture_output=True, text=True, timeout=120,
+            )
+            _sys_executable_has_build123d = probe.returncode == 0
+        except (OSError, subprocess.SubprocessError):
+            _sys_executable_has_build123d = False
+    return _sys_executable_has_build123d
+
+
 def find_step_worker_python(explicit: str | Path | None = None) -> Path | None:
     """Python do venv próprio do beta (``.venv-beta``), ou ``None``.
 
     Ordem: argumento explícito > env ``OCRE_STEP_WORKER_PYTHON`` >
-    ``<worktree>/.venv-beta/bin/python``. Nunca o Python do sistema:
-    o build123d vive SÓ no venv do beta.
+    ``<worktree>/.venv-beta/bin/python`` > ``sys.executable`` (só se
+    importar build123d). O último fallback existe para clone fresco
+    sem ``.venv-beta``: a suíte é rodada com o venv do beta, e nesse
+    caso ``sys.executable`` É o python do venv. Nunca importa
+    build123d neste processo — a checagem é por subprocesso.
     """
     candidates: list[Path] = []
     if explicit is not None:
@@ -102,6 +125,8 @@ def find_step_worker_python(explicit: str | Path | None = None) -> Path | None:
     for candidate in candidates:
         if candidate.is_file() and os.access(candidate, os.X_OK):
             return candidate
+    if _sys_executable_imports_build123d():
+        return Path(sys.executable)
     return None
 
 
@@ -115,7 +140,8 @@ def _run_worker(job: dict, *, timeout_s: float, worker_python: str | Path | None
     if python is None:
         raise StepWorkerError(
             "venv do worker STEP não encontrado: crie .venv-beta no worktree "
-            "e instale build123d nele (ver docs/step-worker.md); "
+            "e instale build123d nele (ver docs/step-worker.md) — o "
+            "interpretador corrente também não importa build123d; "
             "CadQuery NUNCA deve ser instalado nesse venv"
         )
     with tempfile.TemporaryDirectory(prefix="ocre-step-worker-") as tmp:
