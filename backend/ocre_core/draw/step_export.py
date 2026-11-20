@@ -51,6 +51,7 @@ from pathlib import Path
 from typing import Any
 
 from .paper import DEFAULT_SPEC
+from .document import document_sha256
 
 __all__ = [
     "DEFAULT_TIMEOUT_S",
@@ -59,6 +60,7 @@ __all__ = [
     "document_to_step",
     "export_dxf_ac1015",
     "find_step_worker_python",
+    "load_step_material_manifest",
     "oracle_step",
     "validate_step",
     "worker_versions",
@@ -71,8 +73,40 @@ DEFAULT_TIMEOUT_S = 300
 VOLUME_TOLERANCE_REL = 1e-3
 _FREECAD_ORACLE_SCRIPT = "freecad_oracle.py"
 ORACLE_UNAVAILABLE = "unavailable"
+MATERIAL_MANIFEST_SCHEMA = "ocre.step-material-manifest.v1"
 
 
+def _document_sha256(document: dict) -> str:
+    return document_sha256(document)
+
+
+def load_step_material_manifest(step_path: str | Path, *, document: dict | None = None) -> dict:
+    """Read material from the adjacent sidecar after verifying STEP and source identity."""
+    step_path = Path(step_path)
+    manifest_path = step_path.with_suffix(step_path.suffix + ".manifest.json")
+    try:
+        data = json.loads(manifest_path.read_text(encoding="utf-8"))
+        if not isinstance(data, dict) or data.get("schema") != MATERIAL_MANIFEST_SCHEMA:
+            raise StepExportError("schema de manifesto STEP desconhecido")
+        step, source, geometry, material = data["step"], data["document"], data["geometry"], data["material"]
+        if step["path"] != step_path.name or step["sha256"] != hashlib.sha256(step_path.read_bytes()).hexdigest():
+            raise StepExportError("SHA/caminho do STEP não corresponde ao manifesto")
+        ids = geometry["stroke_ids"]
+        if not isinstance(ids, list) or not ids or any(not isinstance(x, str) or not x for x in ids) or len(ids) != len(set(ids)):
+            raise StepExportError("IDs de geometria inválidos no manifesto")
+        if not isinstance(material.get("value"), str) or not material["value"].strip():
+            raise StepExportError("material ausente no manifesto")
+        if document is not None:
+            if source.get("document_sha256") != _document_sha256(document):
+                raise StepExportError("document_sha256 não corresponde ao documento fornecido")
+            expected_ids = [s.get("stroke_id") for s in document.get("strokes", []) if isinstance(s, dict) and s.get("status") == "stable" and s.get("closed")]
+            if ids != expected_ids:
+                raise StepExportError("IDs de geometria não correspondem ao documento fornecido")
+        return {"material": material["value"], "geometry": geometry, "document": source, "step": step, "source": "manifest"}
+    except StepExportError:
+        raise
+    except (OSError, ValueError, KeyError, TypeError, AttributeError) as exc:
+        raise StepExportError(f"manifesto STEP inválido ou ilegível: {manifest_path}") from exc
 class StepExportError(ValueError):
     """Documento/parâmetros inválidos para exportação STEP (fail-closed)."""
 
@@ -363,7 +397,44 @@ def document_to_step(
         "worker_versions": result.get("worker_versions", {}),
         "timestamp_param_used": result.get("timestamp_param_used"),
         "notes": result.get("notes", []),
+        "material_in_step_native": bool(result.get("material_in_step_native", False)),
     }
+    # AP214 emitted by the current build123d/OCP writer does not encode
+    # material semantics. Ship an explicit, hash-bound handoff next to the
+    # STEP so downstream CAD tooling can consume the declaration safely.
+    manifest_path = out_path.with_suffix(out_path.suffix + ".manifest.json")
+    manifest = {
+        "schema": "ocre.step-material-manifest.v1",
+        "step": {"path": out_path.name, "sha256": result["sha256"]},
+        "document": {
+            "doc_id": document.get("doc_id"),
+            "revision": document.get("revision"),
+            "document_sha256": _document_sha256(document),
+        },
+        "geometry": {
+            "stroke_ids": stroke_ids,
+            "profiles": len(profiles),
+            "thickness_mm": float(thickness_mm),
+            "volume_mm3": volume,
+            "bbox_mm": result["bbox_mm"],
+        },
+        "material": {"value": material.strip(), "source": "human-confirmed-or-declared"},
+        "material_in_step_native": bool(result.get("material_in_step_native", False)),
+    }
+    # Publish sidecar atomically so a failed write cannot truncate a prior manifest.
+    manifest_bytes = (json.dumps(manifest, sort_keys=True, indent=2) + "\n").encode("utf-8")
+    fd, temp_name = tempfile.mkstemp(prefix=manifest_path.name + ".", suffix=".tmp", dir=manifest_path.parent)
+    temp_path = Path(temp_name)
+    try:
+        with os.fdopen(fd, "wb") as stream:
+            stream.write(manifest_bytes)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temp_path, manifest_path)
+    finally:
+        temp_path.unlink(missing_ok=True)
+    report["material_manifest_path"] = str(manifest_path)
+    report["material_manifest_sha256"] = hashlib.sha256(manifest_path.read_bytes()).hexdigest()
     return report
 
 

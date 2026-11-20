@@ -158,6 +158,16 @@ def _module_file_sha256(module_name: str) -> str:
     return _sha256_file(path)
 
 
+def _resolve_ai_adapter(factory_spec: str):
+    """Resolve the optional provider seam without coupling it to ledger state."""
+    import importlib
+    from .ai.registry import register_model, require_model
+    module_name, factory_name = factory_spec.split(":", 1)
+    adapter = getattr(importlib.import_module(module_name), factory_name)()
+    register_model("cli-injected", adapter)
+    return require_model("cli-injected")
+
+
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="ocre-draw-export",
@@ -183,6 +193,8 @@ def _build_parser() -> argparse.ArgumentParser:
     exp.add_argument("--paper", default=None,
                      help="paper format from the paper registry (operator flag; "
                           "default: the current Draw paper, today A4)")
+    exp.add_argument("--ai-adapter-factory", default=None,
+                     help="optional module:callable returning a ModelAdapter")
     exp.add_argument("--draw-config", default=None,
                      help="path to Draw's config.py; the paper is derived from "
                           "its PAPER_W/PAPER_H (read as text/AST, never "
@@ -247,6 +259,18 @@ def _build_parser() -> argparse.ArgumentParser:
     beta.add_argument("--material", default=None,
                       help="DECLARED material name (required; missing "
                            "blocks the job, never estimated)")
+    beta.add_argument("--ai-adapter-factory", default=None,
+                      help="optional module:callable returning a ModelAdapter; injectable provider seam")
+    beta.add_argument("--proposal-file", default=None,
+                      help="persistent JSON proposal ledger (defaults to OUT_DIR/proposals.json)")
+    beta.add_argument("--confirm-proposal", action="append", default=[],
+                      help="proposal id explicitly confirmed by this human; repeatable")
+    beta.add_argument("--reject-proposal", action="append", default=[],
+                      help="proposal id explicitly rejected by this human; repeatable")
+    beta.add_argument("--confirmed-by", default=None,
+                      help="human identity required with --confirm-proposal")
+    beta.add_argument("--cad-only", action="store_true",
+                      help="stop after DXF/OCS/STEP; skip simulation, physics and visualization")
     beta.add_argument("--ocs-binary", default=None,
                       help="OpenCADStudio binary for the live-CAD step "
                            "(default: OCS_BINARY env or PATH; without it "
@@ -273,7 +297,6 @@ def _cmd_export(args: argparse.Namespace) -> int:
     from .dxf_export import export_dxf
     from .librecad_gate import check_dxf
     from .vectorize_runner import VectorizeError, run_vectorize
-
     if not _HEX40_RE.fullmatch(args.draw_commit):
         print(
             "error: --draw-commit must be a full 40-hex git revision "
@@ -396,6 +419,23 @@ def _cmd_export(args: argparse.Namespace) -> int:
     except ValueError as exc:
         print(f"error: DXF export failed: {exc}", file=sys.stderr)
         return 1
+    observation = None
+    adapter = getattr(args, "ai_adapter", None)
+    if adapter is None and getattr(args, "ai_adapter_factory", None):
+        try:
+            adapter = _resolve_ai_adapter(args.ai_adapter_factory)
+        except Exception:
+            adapter = None
+    if adapter is not None or getattr(args, "observe_conversions", False) or getattr(args, "ai_adapter_factory", None):
+        from .ai.observer import observe_conversion
+        observation = observe_conversion(doc, adapter, stage="dxf",
+                                         artifacts={dxf_path.name: dxf_tmp.read_bytes()})
+        if observation.get("status") == "confirmed-error":
+            dxf_tmp.unlink(missing_ok=True)
+            print(json.dumps({"status": "failed", "observation": observation}))
+            print("error: DXF observer confirmed a conversion error", file=sys.stderr)
+            return 1
+        dxf_report["observation"] = observation
     dxf_sha_hex = dxf_report["output_sha256"]
     os.replace(dxf_tmp, dxf_path)
     dxf_report["output_path"] = str(dxf_path)
@@ -607,6 +647,8 @@ def _beta_step_export(ctx: dict[str, Any]) -> dict[str, Any]:
     args = ctx["args"]
     started = time.perf_counter()
     export_dir = ctx["out_dir"] / "export"
+    if args.document and Path(args.document).resolve() == (export_dir / "document.json").resolve():
+        export_dir = ctx["out_dir"] / "export-rerun"
     export_dir.mkdir(parents=True, exist_ok=True)
     namespace = argparse.Namespace(
         png=args.png,
@@ -625,6 +667,8 @@ def _beta_step_export(ctx: dict[str, Any]) -> dict[str, Any]:
         epsilon=None,
         thinning=None,
         librecad_check=True,
+        ai_adapter=ctx.get("ai_adapter"),
+        observe_conversions=ctx["observe_conversions"],
     )
     buf = io.StringIO()
     with redirect_stdout(buf):
@@ -653,6 +697,7 @@ def _beta_step_export(ctx: dict[str, Any]) -> dict[str, Any]:
     ctx["export_doc"] = doc
     ctx["export_doc_sha256"] = document_sha256(doc)
     ctx["export_dxf"] = export_dir / "document.dxf"
+    ctx["export_dir"] = export_dir
     detail = {
         "doc_id": doc["doc_id"],
         "revision": doc["revision"],
@@ -662,6 +707,9 @@ def _beta_step_export(ctx: dict[str, Any]) -> dict[str, Any]:
         "librecad_gate": summary.get("librecad_gate"),
         "strokes": len(doc.get("strokes", [])),
     }
+    observation = summary.get("dxf_report", {}).get("observation")
+    if observation is not None:
+        detail["observation"] = observation
     return _beta_step_report("export", "ok", duration, detail)
 
 
@@ -791,6 +839,13 @@ def _beta_step_step(ctx: dict[str, Any]) -> dict[str, Any]:
     step_dir = ctx["out_dir"] / "step"
     step_dir.mkdir(parents=True, exist_ok=True)
     step_path = step_dir / "drawing.step"
+    final_step_path = step_path
+    staging = ctx["observe_conversions"]
+    temp_context = None
+    if staging:
+        import tempfile
+        temp_context = tempfile.TemporaryDirectory(dir=step_dir)
+        step_path = Path(temp_context.name) / "drawing.step"
     try:
         report = document_to_step(
             ctx["doc"], args.thickness_mm, args.material, step_path,
@@ -809,8 +864,16 @@ def _beta_step_step(ctx: dict[str, Any]) -> dict[str, Any]:
              "material": args.material},
             error=f"STEP worker failed: {exc}",
         )
-    ctx["step_path"] = step_path
-    ctx["step_report"] = report
+    if staging:
+        from .ai.observer import observe_conversion
+        observation = observe_conversion(ctx["doc"], ctx["ai_adapter"], stage="step",
+                                        artifacts={step_path.name: step_path.read_bytes()})
+        ctx["step_observation"] = observation
+        if observation.get("status") == "confirmed-error":
+            temp_context.cleanup()
+            return _beta_step_report("step", "failed", time.perf_counter() - started,
+                                     {"step": report, "observation": observation},
+                                     error="STEP observer confirmed a conversion error")
     try:
         brepcheck = validate_step(step_path, timeout_s=args.timeout_s)
     except StepWorkerError as exc:
@@ -828,12 +891,27 @@ def _beta_step_step(ctx: dict[str, Any]) -> dict[str, Any]:
             error=f"FreeCAD oracle failed: {exc}",
         )
     if oracle.get("status") == "fail":
+        if temp_context is not None:
+            temp_context.cleanup()
         return _beta_step_report(
             "step", "failed", time.perf_counter() - started,
             {"step": report, "brepcheck": brepcheck, "oracle": oracle},
             error="FreeCAD oracle says the STEP is not valid",
         )
+    if staging:
+        manifest = Path(report["material_manifest_path"])
+        final_manifest = final_step_path.with_suffix(".step.manifest.json")
+        os.replace(step_path, final_step_path)
+        os.replace(manifest, final_manifest)
+        temp_context.cleanup()
+        step_path = final_step_path
+        report["output_path"] = str(step_path)
+        report["material_manifest_path"] = str(final_manifest)
+    ctx["step_path"] = step_path
+    ctx["step_report"] = report
     detail = {"step": report, "brepcheck": brepcheck, "oracle": oracle}
+    if ctx.get("step_observation") is not None:
+        detail["observation"] = ctx["step_observation"]
     return _beta_step_report("step", "ok", time.perf_counter() - started,
                              detail)
 
@@ -1158,6 +1236,7 @@ def _beta_text_report(report: dict[str, Any]) -> str:
 
 def _cmd_beta_run(args: argparse.Namespace) -> int:
     out_dir = Path(args.out_dir).resolve()
+    proposal_file = Path(args.proposal_file).resolve() if args.proposal_file else out_dir / "proposals.json"
     started_at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
     started = time.perf_counter()
     report: dict[str, Any] = {
@@ -1180,6 +1259,8 @@ def _cmd_beta_run(args: argparse.Namespace) -> int:
             "document": args.document,
             "fmu": args.fmu,
             "timeout_s": args.timeout_s,
+            "cad_only": args.cad_only,
+            "proposal_file": str(proposal_file),
         },
         "documents": {},
         "steps": [],
@@ -1233,7 +1314,7 @@ def _cmd_beta_run(args: argparse.Namespace) -> int:
         preflight_errors.append(
             f"thickness-mm must be positive and finite "
             f"(got {args.thickness_mm!r})")
-    if not isinstance(args.material, str) or not args.material.strip():
+    if not (isinstance(args.material, str) and args.material.strip()) and not (args.ai_adapter_factory or args.proposal_file or args.confirm_proposal or args.reject_proposal):
         preflight_errors.append(
             "material is required and declared by a human "
             "(material is never invented)")
@@ -1269,6 +1350,13 @@ def _cmd_beta_run(args: argparse.Namespace) -> int:
         "doc_sha256": (document_sha256(working_doc)
                        if working_doc is not None else None),
     }
+    ctx["observe_conversions"] = bool(args.ai_adapter_factory or args.cad_only or args.proposal_file)
+    ctx["ai_adapter"] = None
+    if args.ai_adapter_factory:
+        try:
+            ctx["ai_adapter"] = _resolve_ai_adapter(args.ai_adapter_factory)
+        except Exception as exc:
+            report["ai_adapter"] = {"status": "unavailable", "error": type(exc).__name__}
     if working_doc is not None:
         report["documents"]["working"] = {
             "doc_id": working_doc["doc_id"],
@@ -1276,6 +1364,106 @@ def _cmd_beta_run(args: argparse.Namespace) -> int:
             "sha256": ctx["doc_sha256"],
         }
         report["documents"]["working_source"] = "example-document (--document)"
+
+    def process_proposals(ctx: dict[str, Any], proposal_file: Path) -> bool:
+        """Load/update proposals bound to the current document."""
+        ai_adapter = ctx["ai_adapter"]
+        doc = ctx.get("doc")
+        if doc is None:
+            return True
+        try:
+            from dataclasses import asdict
+            from .ai.proposals import Proposal, confirm, reject
+            from .ai.semantics import analyze, material_for_step
+            digest = document_sha256(doc)
+            ledger = (
+                json.loads(proposal_file.read_text(encoding="utf-8"))
+                if proposal_file.is_file() else None
+            )
+            if ledger is not None:
+                if not isinstance(ledger, dict):
+                    raise ValueError("proposal ledger must be a JSON object")
+                if (ledger.get("document_sha256") != digest
+                        or ledger.get("revision") != doc.get("revision")):
+                    raise ValueError("proposal ledger document revision/hash mismatch")
+                if not isinstance(ledger.get("proposals"), list):
+                    raise ValueError("proposal ledger proposals must be a list")
+            if ledger is None and ai_adapter is not None:
+                proposals = analyze(doc, ai_adapter, explicit_material=args.material)
+                ledger = {
+                    "document_sha256": digest,
+                    "revision": doc["revision"],
+                    "proposals": [asdict(proposal) for proposal in proposals],
+                }
+                proposal_file.parent.mkdir(parents=True, exist_ok=True)
+                _atomic_write_json(proposal_file, ledger)
+            if ledger is not None:
+                confirmed, rejected = set(args.confirm_proposal), set(args.reject_proposal)
+                if confirmed & rejected:
+                    raise ValueError("proposal ids cannot be both confirmed and rejected")
+                if args.confirmed_by and not (confirmed or rejected):
+                    raise ValueError("--confirmed-by requires a proposal action")
+                if (confirmed or rejected) and not args.confirmed_by:
+                    raise ValueError("--confirmed-by is required with proposal actions")
+                proposals_by_id: dict[str, Proposal] = {}
+                for raw_proposal in ledger["proposals"]:
+                    if not isinstance(raw_proposal, dict):
+                        raise ValueError("each ledger proposal must be an object")
+                    proposal = Proposal(**raw_proposal)
+                    if proposal.proposal_id in proposals_by_id:
+                        raise ValueError(f"duplicate proposal id: {proposal.proposal_id}")
+                    if (proposal.document_revision != doc.get("revision")
+                            or proposal.document_sha256 != digest):
+                        raise ValueError(
+                            f"proposal {proposal.proposal_id} document revision/hash mismatch"
+                        )
+                    if proposal.state not in {"pending", "confirmed", "rejected"}:
+                        raise ValueError(f"invalid state for proposal {proposal.proposal_id}")
+                    proposals_by_id[proposal.proposal_id] = proposal
+                known = set(proposals_by_id)
+                requested = confirmed | rejected
+                if requested - known:
+                    raise ValueError(f"unknown proposal ids: {sorted(requested - known)}")
+                for proposal_id in confirmed:
+                    proposal = proposals_by_id[proposal_id]
+                    if proposal.state == "rejected":
+                        raise ValueError(f"cannot confirm rejected proposal {proposal_id}")
+                    if proposal.state == "pending":
+                        proposals_by_id[proposal_id] = confirm(proposal, by=args.confirmed_by)
+                for proposal_id in rejected:
+                    proposal = proposals_by_id[proposal_id]
+                    if proposal.state == "confirmed":
+                        raise ValueError(f"cannot reject confirmed proposal {proposal_id}")
+                    if proposal.state == "pending":
+                        proposals_by_id[proposal_id] = reject(proposal, by=args.confirmed_by)
+                ledger["proposals"] = [asdict(p) for p in proposals_by_id.values()]
+                if requested:
+                    _atomic_write_json(proposal_file, ledger)
+                report["proposals"] = {
+                    "path": str(proposal_file),
+                    "count": len(ledger["proposals"]),
+                    "document_sha256": digest,
+                }
+                materials = {
+                    material
+                    for proposal in proposals_by_id.values()
+                    if (material := material_for_step(doc, proposal)) is not None
+                }
+                if len(materials) > 1:
+                    raise ValueError("multiple distinct confirmed materials require resolution")
+                if (not (isinstance(args.material, str) and args.material.strip())
+                        and materials):
+                    args.material = next(iter(materials))
+        except Exception as exc:
+            report["proposal_error"] = str(exc)
+        if not (isinstance(args.material, str) and args.material.strip()):
+            steps.append(_beta_step_report(
+                "human-confirmation", "blocked", 0,
+                {"proposal_file": str(proposal_file)},
+                error="valid declared or confirmed material required",
+            ))
+            return False
+        return True
 
     # --- The chain, in order. ---
     steps: list[dict[str, Any]] = []
@@ -1288,6 +1476,8 @@ def _cmd_beta_run(args: argparse.Namespace) -> int:
         _beta_step_viz,
         _beta_step_fmu,
     )
+    if args.cad_only:
+        runners = runners[:3]
     for runner in runners:
         step_id = runner.__name__.removeprefix("_beta_step_")
         if step_id == "export":
@@ -1311,9 +1501,11 @@ def _cmd_beta_run(args: argparse.Namespace) -> int:
                 "revision": ctx["doc"]["revision"],
                 "sha256": ctx["doc_sha256"],
             }
+            if not process_proposals(ctx, proposal_file): break
             continue
         steps.append(runner(ctx))
-    for missing in _BETA_STEP_IDS[len(steps):]:
+    ran = {step["id"] for step in steps}
+    for missing in (step_id for step_id in _BETA_STEP_IDS if step_id not in ran):
         steps.append(_beta_step_report(
             missing, "not-run", 0.0,
             {"reason": "a previous step failed; the chain stopped "
@@ -1332,15 +1524,17 @@ def _cmd_beta_run(args: argparse.Namespace) -> int:
         report["status"] = "ok"
         report["exit_code"] = 0
 
+    export_dir = ctx.get("export_dir", out_dir / "export")
     artifact_paths: list[Path] = [
-        out_dir / "export" / "document.json",
-        out_dir / "export" / "document.dxf",
-        out_dir / "export" / "sidecar.json",
-        out_dir / "export" / "fingerprint.json",
+        export_dir / "document.json",
+        export_dir / "document.dxf",
+        export_dir / "sidecar.json",
+        export_dir / "fingerprint.json",
         out_dir / "ocs" / "document.dxf",
         out_dir / "ocs" / "ocs-verified.dxf",
         out_dir / "ocs" / "ocs-after-erase.dxf",
         out_dir / "step" / "drawing.step",
+        out_dir / "step" / "drawing.step.manifest.json",
         out_dir / "fea" / "case" / "fea-axial-result.json",
         out_dir / "fea" / "case" / "job.frd",
         out_dir / "fea" / "case" / "job.dat",
@@ -1351,9 +1545,13 @@ def _cmd_beta_run(args: argparse.Namespace) -> int:
         out_dir / "viz" / "model.glb",
         out_dir / "viz" / "drawing.pdf",
     ]
+    published = {
+        (export_dir.name if step["id"] == "export" else step["id"])
+        for step in steps if step["status"] == "ok"
+    }
     report["artifacts"] = [
         _beta_artifact_entry(path) for path in artifact_paths
-        if path.exists()
+        if path.relative_to(out_dir).parts[0] in published and path.is_file()
     ]
     return _finish()
 

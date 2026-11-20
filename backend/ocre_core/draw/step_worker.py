@@ -19,8 +19,8 @@ Job ``export`` (campos):
   mm, já no sentido CAD (y-up), polilinha FECHADA (o último ponto NÃO
   precisa repetir o primeiro; ponto final igual ao inicial é removido).
 - ``thickness_mm``: espessura declarada (float > 0).
-- ``material``: string declarada (registrada no relatório; o STEP
-  AP214 emitido pelo OCCT NÃO carrega material — ver ``notes``).
+- ``material``: designação declarada ou confirmada por uma pessoa, gravada
+  no STEP via XCAF e no relatório. A densidade fica ausente.
 - ``out_path``: caminho do STEP a escrever.
 - ``timestamp``: string opcional passada a ``export_step`` quando o
   build123d instalado aceita o parâmetro (saída determinística).
@@ -38,7 +38,6 @@ e de traço fechado é do host (``step_export.py``). Aqui só geometria.
 from __future__ import annotations
 
 import hashlib
-import inspect
 import json
 import math
 import sys
@@ -66,6 +65,41 @@ def _file_schema(step_path: Path) -> str | None:
 
 def _sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _export_step_with_material(shape, path: Path, material: str, timestamp: str | None) -> bool:
+    """Write a STEP with a descriptive XCAF material label (no density)."""
+    from OCP import IFSelect, Message, STEPCAFControl, STEPControl
+    from OCP.STEPCAFControl import STEPCAFControl_Writer
+    from OCP.TCollection import TCollection_ExtendedString, TCollection_HAsciiString
+    from OCP.XCAFDoc import XCAFDoc_DocumentTool
+    from OCP.TDocStd import TDocStd_Document
+
+    messenger = Message.Message.DefaultMessenger_s()
+    printers = messenger.Printers()
+    for printer in printers:
+        printer.SetTraceLevel(Message.Message_Gravity.Message_Fail)
+    doc = TDocStd_Document(TCollection_ExtendedString("BinXCAF"))
+    shape_tool = XCAFDoc_DocumentTool.ShapeTool_s(doc.Main())
+    label = shape_tool.AddShape(shape, False)
+    materials = XCAFDoc_DocumentTool.MaterialTool_s(doc.Main())
+    empty = TCollection_HAsciiString("")
+    materials.SetMaterial(label, TCollection_HAsciiString(material), empty, 0.0, empty, empty)
+    writer = STEPCAFControl_Writer()
+    writer.SetMaterialMode(True)
+    if not writer.Transfer(doc, STEPControl.STEPControl_AsIs):
+        raise RuntimeError("STEPCAFControl_Writer.Transfer falhou")
+    try:
+        from OCP.APIHeaderSection import APIHeaderSection_MakeHeader
+        from OCP.TCollection import TCollection_HAsciiString
+        header = APIHeaderSection_MakeHeader(writer.Writer().Model())
+        if timestamp:
+            header.SetTimeStamp(TCollection_HAsciiString(timestamp))
+        header.Apply(writer.Writer().Model())
+    except Exception:
+        if timestamp:
+            raise
+    return writer.Write(str(path)) == IFSelect.IFSelect_ReturnStatus.IFSelect_RetDone
 
 
 def _job_export(job: dict) -> dict:
@@ -126,17 +160,10 @@ def _job_export(job: dict) -> dict:
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
     timestamp = job.get("timestamp")
-    export_kwargs: dict = {}
-    # build123d >= 0.10 aceita timestamp= em export_step (saída
-    # determinística); versões sem o parâmetro escrevem o relógio no
-    # FILE_NAME — o spike (c) mede isso e reporta, sem fingir.
     try:
-        if timestamp is not None and "timestamp" in inspect.signature(export_step).parameters:
-            export_kwargs["timestamp"] = timestamp
-    except (TypeError, ValueError):
-        pass
-    try:
-        export_step(to_export, str(out_path), **export_kwargs)
+        native_material = _export_step_with_material(to_export.wrapped, out_path, material.strip(), timestamp)
+        if not native_material:
+            return _fail("job.export: STEPCAFControl_Writer.Write não retornou IFSelect_RetDone")
     except Exception as exc:  # noqa: BLE001 - falha de escrita é erro de job
         return _fail(f"job.export: export_step falhou: {exc}")
     if not out_path.is_file() or out_path.stat().st_size == 0:
@@ -159,11 +186,9 @@ def _job_export(job: dict) -> dict:
             "max": [float(v) for v in bbox.max],
             "size": [float(v) for v in bbox.size],
         },
-        "timestamp_param_used": bool(export_kwargs),
-        "notes": [
-            "material é declarado no relatório/sidecar; o STEP AP214 "
-            "emitido pelo OCCT não carrega o material no arquivo."
-        ],
+        "timestamp_param_used": bool(timestamp),
+        "material_in_step_native": True,
+        "notes": ["material gravado como representação descritiva XCAF; densidade omitida (não declarada)."],
     }
 
     dxf_path = job.get("dxf_path")
