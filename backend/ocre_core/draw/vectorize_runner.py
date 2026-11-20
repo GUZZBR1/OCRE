@@ -1,10 +1,10 @@
-"""Runner black-box do ``tools/vectorize.py`` do Draw (Fase 0).
+"""Runner black-box de ``santleme/draw-core`` ``src/draw/exporters/vectorize.py`` (Fase 0).
 
 Roda o script de vetorização do Draw como subprocesso, sem copiar o
 script para o OCRE e sem importar nada dele. O script vive no Draw
-(``tools/vectorize.py``, CLI verificada por leitura em 2026-11-05)::
+(``src/draw/exporters/vectorize.py``, CLI verificada por leitura em 2026-11-05)::
 
-    python tools/vectorize.py canvas.png --json saida.json
+    python src/draw/exporters/vectorize.py canvas.png --json saida.json
         [--out saida.svg] [--clean] [--stamps canvas_stamps.npz]
         [--primitives] [--epsilon 1.5] [--thinning zhangsuen|guohall]
         [--stats]
@@ -77,18 +77,35 @@ def normalize_primitives(primitives: list[dict]) -> tuple[list[dict], int]:
 
     Devolve ``(polylines, without_points)``. Cada polilinha é
     ``{"points_mm": [[x, y], ...], "closed": bool, "type": str}``.
-    Círculos (``cx_mm``/``cy_mm``/``r_mm``, sem pontos) e qualquer
-    primitiva sem ``points_mm``/``corners_mm`` ficam fora de
+    Linhas com ``x1_mm``/``y1_mm``/``x2_mm``/``y2_mm`` são convertidas
+    em dois pontos. Formatos legados ``points_mm`` e ``corners_mm`` são
+    preservados. Círculos (``cx_mm``/``cy_mm``/``r_mm``, sem pontos) e
+    primitivas sem um formato de pontos reconhecido ficam fora de
     ``polylines`` e contam em ``without_points`` — a conversão
     círculo -> polilinha fechada pertence a ``document.py``, não ao
     runner.
     """
+    polylines, skipped_types = _normalize_primitives_with_skipped_types(primitives)
+    return polylines, len(skipped_types)
+
+
+def _normalize_primitives_with_skipped_types(
+    primitives: list[dict],
+) -> tuple[list[dict], list[str]]:
+    """Normaliza primitivas e devolve os tipos sem geometria reconhecida."""
     polylines: list[dict] = []
-    without_points = 0
+    skipped_types: list[str] = []
     for primitive in primitives:
         points = primitive.get("points_mm") or primitive.get("corners_mm")
+        if not points and primitive.get("type") == "line":
+            endpoints = ("x1_mm", "y1_mm", "x2_mm", "y2_mm")
+            if all(key in primitive for key in endpoints):
+                points = [
+                    [primitive["x1_mm"], primitive["y1_mm"]],
+                    [primitive["x2_mm"], primitive["y2_mm"]],
+                ]
         if not points:
-            without_points += 1
+            skipped_types.append(str(primitive.get("type", "unknown")))
             continue
         polyline_type = str(primitive.get("type", "polyline"))
         closed = polyline_type in ("polygon", "rectangle") or bool(
@@ -101,7 +118,7 @@ def normalize_primitives(primitives: list[dict]) -> tuple[list[dict], int]:
                 "type": polyline_type,
             }
         )
-    return polylines, without_points
+    return polylines, skipped_types
 
 
 def run_vectorize(
@@ -119,7 +136,7 @@ def run_vectorize(
 ) -> dict:
     """Roda o vectorize do Draw sobre ``png_path`` e devolve o resultado.
 
-    ``expected_sha256`` é o hash pinado do ``tools/vectorize.py``; o
+    ``expected_sha256`` é o hash pinado do ``src/draw/exporters/vectorize.py``; o
     script é conferido antes de qualquer execução. O JSON de saída é
     escrito num diretório isolado (``output_dir`` ou um temporário, que
     é removido ao fim quando criado aqui) e lido de volta.
@@ -207,7 +224,7 @@ def run_vectorize(
                 "JSON do vectorize sem a lista 'primitives' — saída "
                 "incompatível com o formato esperado"
             )
-        polylines, without_points = normalize_primitives(primitives)
+        polylines, skipped_types = _normalize_primitives_with_skipped_types(primitives)
         return {
             "script_path": str(script_path),
             "script_sha256": actual_sha256,
@@ -222,7 +239,8 @@ def run_vectorize(
             "polylines": polylines,
             "primitives_total": len(primitives),
             "polylines_total": len(polylines),
-            "primitives_without_points": without_points,
+            "primitives_without_points": len(skipped_types),
+            "skipped_primitive_types": skipped_types,
         }
     finally:
         if own_tmpdir is not None:

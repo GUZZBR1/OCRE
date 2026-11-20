@@ -2,7 +2,7 @@
 
 Ressalva explícita: todos os testes usam a FIXTURE
 ``fixtures/fake_vectorize.py`` — um script que IMITA a CLI do
-``tools/vectorize.py`` real e devolve um payload fixo. Nenhum teste
+``src/draw/exporters/vectorize.py`` real e devolve um payload fixo. Nenhum teste
 aqui roda o vectorize real do Draw nem um PNG real; a bateria real
 G0.1/G0.2 (20 folhas) NÃO foi rodada.
 """
@@ -56,6 +56,17 @@ class NormalizeTests(unittest.TestCase):
         self.assertEqual(polylines, [])
         self.assertEqual(without, 1)
 
+    def test_line_endpoints_are_normalized_and_legacy_points_still_work(self):
+        primitives = [
+            {"type": "line", "x1_mm": 1, "y1_mm": 2, "x2_mm": 3, "y2_mm": 4},
+            {"type": "line", "points_mm": [[5, 6], [7, 8]]},
+        ]
+        polylines, without = normalize_primitives(primitives)
+        self.assertEqual([p["points_mm"] for p in polylines], [
+            [[1.0, 2.0], [3.0, 4.0]], [[5.0, 6.0], [7.0, 8.0]],
+        ])
+        self.assertEqual(without, 0)
+
 
 class RunVectorizeTests(unittest.TestCase):
     def setUp(self):
@@ -80,6 +91,8 @@ class RunVectorizeTests(unittest.TestCase):
         rect = next(p for p in result["polylines"] if p["type"] == "rectangle")
         self.assertTrue(rect["closed"])
         self.assertEqual(rect["points_mm"][0], [10.0, 30.0])
+        line = next(p for p in result["polylines"] if p["type"] == "line")
+        self.assertEqual(line["points_mm"], [[10.0, 200.0], [100.0, 200.0]])
         self.assertEqual(result["summary"]["polilinhas"], 4)
         self.assertTrue(Path(result["json_path"]).is_file())
 

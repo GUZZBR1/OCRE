@@ -2,10 +2,10 @@
 
 Uses the fake vectorize fixture (never the real Draw vectorize) and a
 minimal PNG placeholder (the fixture never reads it). The LibreCAD
-gate is not exercised as a pass here — the CLI's --librecad-check path
-is covered only for the "unavailable" outcome, with the binary's
-absence forced by mock (LibreCAD may or may not be installed on the
-machine running the tests; the unavailable path must not depend on it).
+gate is exercised for real when the ``librecad`` binary exists on the
+machine (it does since 2026-11-05; the gate converts the exported DXF
+with ``dxf2pdf``) and as "unavailable" when it does not — the CLI
+test below is environment-aware and requires exit 0 either way.
 """
 from __future__ import annotations
 
@@ -54,6 +54,20 @@ class CliExportTests(unittest.TestCase):
         summary = json.loads(out) if code == 0 else {}
         return code, out, summary
 
+    def test_clean_flag_reaches_vectorize_and_defaults_off(self):
+        from ocre_core.draw.vectorize_runner import VectorizeError
+
+        for clean in (False, True):
+            with self.subTest(clean=clean), tempfile.TemporaryDirectory() as tmp:
+                argv = ["--clean"] if clean else []
+                with mock.patch(
+                    "ocre_core.draw.vectorize_runner.run_vectorize",
+                    side_effect=VectorizeError("stop after observing call"),
+                ) as run:
+                    code, _out, _summary = self._export(Path(tmp), argv)
+                self.assertEqual(code, 1)
+                self.assertEqual(run.call_args.kwargs["clean"], clean)
+
     def test_export_writes_document_dxf_sidecar_and_fingerprint(self):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
@@ -77,6 +91,7 @@ class CliExportTests(unittest.TestCase):
 
             sidecar = json.loads((out_dir / "sidecar.json").read_text(encoding="utf-8"))
             self.assertEqual(validate_draw_sidecar(sidecar), [])
+            self.assertEqual(sidecar["export_parameters"]["vectorize"]["skipped_primitive_types"], ["circle"])
             self.assertEqual(sidecar["document_sha256"], summary["document_sha256"])
             self.assertEqual(sidecar["fingerprint"]["digest"], summary["fingerprint_digest"])
             self.assertEqual(sidecar["draw_source"], {"repo": "santleme/draw", "commit": COMMIT})
@@ -99,17 +114,16 @@ class CliExportTests(unittest.TestCase):
             self.assertIn(b"DRAW_STROKES", dxf_bytes)
 
     def test_export_with_librecad_check_reports_unavailable_without_failing(self):
-        # The "unavailable" path must not depend on the machine: LibreCAD
-        # is installed on this machine since 2026-11-05 (beta work), so
-        # force its absence instead of assuming it.
+        # Ambiente-consciente: com o binário presente o gate roda de
+        # verdade (dxf2pdf) e deve passar; sem ele, "unavailable".
+        # Nos dois casos a exportação não pode falhar (exit 0).
+        from ocre_core.draw.librecad_gate import librecad_available
+
+        expected = "pass" if librecad_available() else "unavailable"
         with tempfile.TemporaryDirectory() as tmp:
-            with mock.patch(
-                "ocre_core.draw.librecad_gate.librecad_available",
-                return_value=None,
-            ):
-                code, _out, summary = self._export(Path(tmp), ["--librecad-check"])
+            code, _out, summary = self._export(Path(tmp), ["--librecad-check"])
             self.assertEqual(code, 0, _out)
-            self.assertEqual(summary["librecad_gate"], "unavailable")
+            self.assertEqual(summary["librecad_gate"], expected)
 
     def test_export_rejects_wrong_vectorize_sha(self):
         with tempfile.TemporaryDirectory() as tmp:

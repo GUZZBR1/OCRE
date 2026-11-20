@@ -1,0 +1,5 @@
+build123d==0.13.0
+cadquery-ocp-novtk==8.0.1.1.0   # wheel OCP do build123d (OCCT 8.0.1.1)
+cadquery-ocp-proxy==8.0.1.1.0
+ocp_gordon==0.3.1
+ocpsvg==0.7.0
