@@ -14,6 +14,7 @@ falhar ou de fingir aprovação.
 """
 
 import hashlib
+import json
 import math
 import os
 import tempfile
@@ -89,6 +90,21 @@ class StepExportTests(unittest.TestCase):
         self.assertEqual(
             report["output_sha256"], hashlib.sha256(out.read_bytes()).hexdigest()
         )
+        manifest_path = Path(report["material_manifest_path"])
+        manifest = json.loads(manifest_path.read_text())
+        self.assertTrue(manifest["material_in_step_native"])
+        self.assertEqual(manifest["step"]["sha256"], report["output_sha256"])
+        self.assertEqual(manifest["material"]["value"], "PLA")
+        self.assertEqual(manifest["geometry"]["stroke_ids"], ["s-0001"])
+        loaded = step_export.load_step_material_manifest(out, document=doc)
+        self.assertEqual(loaded["material"], "PLA")
+        original = out.read_bytes()
+        out.write_bytes(original + b"\n")
+        with self.assertRaises(StepExportError):
+            step_export.load_step_material_manifest(out, document=doc)
+        out.write_bytes(original)
+        text = out.read_text(encoding="utf-8", errors="replace")
+        self.assertIn("DESCRIPTIVE_REPRESENTATION_ITEM('PLA'", text)
         self.assertAlmostEqual(
             report["volume_mm3"], EXPECTED_VOLUME_MM3,
             delta=EXPECTED_VOLUME_MM3 * VOLUME_REL_TOL,

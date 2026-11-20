@@ -30,6 +30,9 @@ class AIContext:
     paper_format: str
     sidecar: dict[str, Any] | None = None
     decisions: tuple[dict[str, Any], ...] = field(default_factory=tuple)
+    # Optional conversion diagnostics; defaults preserve existing callers.
+    stage: str | None = None
+    artifact_summaries: dict[str, dict[str, Any]] = field(default_factory=dict)
 
     def stable_strokes(self) -> list[dict[str, Any]]:
         """Stable strokes only — the only ones a model may classify.
@@ -49,6 +52,8 @@ def build_context(
     *,
     sidecar: dict[str, Any] | None = None,
     decisions: tuple[dict[str, Any], ...] = (),
+    stage: str | None = None,
+    artifact_summaries: dict[str, dict[str, Any]] | None = None,
 ) -> AIContext:
     """Pack ``document`` (deep-copied) + sidecar + decisions into a context.
 
@@ -71,4 +76,6 @@ def build_context(
         paper_format=paper["format"],
         sidecar=copy.deepcopy(sidecar) if sidecar is not None else None,
         decisions=tuple(copy.deepcopy(d) for d in decisions),
+        stage=stage,
+        artifact_summaries=copy.deepcopy(artifact_summaries or {}),
     )

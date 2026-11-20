@@ -65,3 +65,11 @@ consultado para esta atualização, a versão instalada é `4.10.3`.
 No produto, a arquitetura prevista é Core Cloud + Scientific Workers. IAM,
 fila/serviços externos, workers e motores científicos reais ainda estão
 pendentes. Esta implementação local não faz despacho real para workers.
+
+## Draw AI to CAD beta
+
+The optional human-gated AI workflow, provider injection seam, proposal
+ledger, CAD-only limits, and current integration status are documented in
+[`docs/draw-ai-cad-pipeline.md`](../docs/draw-ai-cad-pipeline.md). The AI layer
+contracts and architecture history are in
+[`docs/architecture/DRAW_AI_LAYER.md`](../docs/architecture/DRAW_AI_LAYER.md).

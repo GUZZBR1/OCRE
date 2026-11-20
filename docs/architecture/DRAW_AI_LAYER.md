@@ -1,8 +1,9 @@
-# Camada de IA — registro arquitetural (SÓ DESENHO, sem código)
+# Camada de IA — registro arquitetural e estado de implementação
 
-Data: 2026-11-05. Status: **desenho aprovado para registro; NÃO
-implementar agora**. Este documento não cria código, não muda nenhuma
-dependência e não é importado por nada da Fase 0.
+Data do desenho original: 2026-11-05. Status atual: **contratos base e
+observação/propostas implementados e fluxo beta CLI validado**. Este
+documento registra o desenho original e o estado atual, que deve prevalecer
+sobre frases históricas de “não implementar”.
 
 > Garantia explícita: **nada da Fase 0 importa ou depende desta
 > camada.** O escritor DXF (`dxf_export.py`), o runner do vectorize
@@ -199,8 +200,12 @@ para o modelo existir já está pronto:
   (classificador, coerência, material, roteador).
 - Testes em `backend/tests/draw/test_ai_scaffold.py`.
 
-O que continua faltando decidir (nada disso foi implementado): o
-modelo (próprio vs. LLM pronto), o domínio semântico (D4), a base de
-conhecimento e sua fonte, e o protocolo de correção automática
-(porta G3.2). Sem modelo registrado, nada de IA roda — o sistema
-segue só com o software determinístico.
+O provider concreto continua substituível e é injetado por adapter; não há
+provider de rede padrão. `semantics.py` produz propostas vinculadas à revisão
+e hash do documento, e `observer.py` observa DXF/STEP sem editar originais.
+Somente erro estrutural independente pode retornar `confirmed-error`; achados
+do modelo são advisories. O `beta-run` persiste propostas vinculadas a revisão
+e SHA: a primeira passagem salva o documento e propostas pendentes; a segunda
+reusa o mesmo documento e exige ato humano explícito. O provider pode ser
+omitido após a confirmação persistida. Correção automática e escrita semântica
+no documento continuam fora do contrato aprovado.

@@ -37,6 +37,7 @@ class Classification:
     label: str
     confidence: float
     rationale: str
+    stroke_ids: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -60,6 +61,7 @@ class MaterialAdvice:
     stroke_id: str
     material: str
     rationale: str
+    stroke_ids: tuple[str, ...] = ()
 
 
 @runtime_checkable
