@@ -120,6 +120,19 @@ class _FakeOcsClient:
 class BetaRunMockedTests(unittest.TestCase):
     """Chain with mocked layers: order, complete report, fail-closed."""
 
+    def test_clean_flag_reaches_vectorize_and_defaults_off(self):
+        from ocre_core.draw.vectorize_runner import VectorizeError
+
+        for clean in (False, True):
+            with self.subTest(clean=clean), tempfile.TemporaryDirectory() as tmp:
+                extra = ["--clean"] if clean else []
+                with mock.patch(
+                    "ocre_core.draw.vectorize_runner.run_vectorize",
+                    side_effect=VectorizeError("stop after observing call"),
+                ) as run:
+                    _run_cli(_base_argv(Path(tmp), extra))
+                self.assertEqual(run.call_args.kwargs["clean"], clean)
+
     def _patch_chain(self, calls: list[str], ocs_binary: str | None):
         """Patch every layer; each wrapper records its step id."""
         from ocre_core.draw.dxf_export import export_dxf

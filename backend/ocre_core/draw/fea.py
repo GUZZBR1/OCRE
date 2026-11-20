@@ -80,6 +80,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import os
 import re
 import shutil
 import struct
@@ -102,6 +103,7 @@ __all__ = [
     "build_bar_step",
     "parse_ccx_dat",
     "parse_gmsh_msh",
+    "resolve_fea_tool",
     "run_axial_case",
     "write_ccx_inp",
 ]
@@ -125,10 +127,16 @@ PRESCRIBED_UX_MM = 0.01
 RX_REF_N = 2100.0
 S11_REF_MPA = 21.0
 
-DEFAULT_GMSH_BIN = "/usr/bin/gmsh"
-DEFAULT_CCX_BIN = "/usr/bin/ccx"
+DEFAULT_GMSH_BIN = "gmsh"
+DEFAULT_CCX_BIN = "ccx"
 DEFAULT_MESH_SIZE_MM = 2.5
 DEFAULT_TIMEOUT_S = 300.0
+_CHECKOUT_ROOT = Path(__file__).resolve().parents[3]
+_LOCAL_TOOL_PATHS = {
+    DEFAULT_GMSH_BIN: Path("gmsh-4.15.2/gmsh-4.15.2-Linux64/bin/gmsh"),
+    DEFAULT_CCX_BIN: Path("ccx-2.23/CalculiX/ccx_2.23/src/ccx_2.23"),
+}
+_CCX_RUNTIME_SUBDIR = "runtime/usr/lib/x86_64-linux-gnu"
 _MAX_CAPTURE_CHARS = 8000
 # CalculiX nao aceita mais de 16 entradas por linha de .inp.
 _INP_ENTRIES_PER_LINE = 8
@@ -209,7 +217,51 @@ def _truncate(text: str, limit: int = _MAX_CAPTURE_CHARS) -> str:
     return text[:limit] + f"\n... [truncated, {len(text) - limit} chars omitted]"
 
 
-def _run(argv: list[str], cwd: Path, timeout_s: float) -> dict[str, Any]:
+def resolve_fea_tool(tool: str, binary: str | Path | None = None) -> str:
+    """Resolve explicit overrides, OCRE's local tools, then PATH."""
+    configured = binary or os.environ.get(f"{tool.upper()}_BIN")
+    if configured:
+        if isinstance(configured, Path) or os.sep in configured:
+            return str(Path(configured).expanduser().resolve())
+        found = shutil.which(configured)
+        return str(Path(found).resolve()) if found else configured
+
+    roots = [_CHECKOUT_ROOT]
+    if _CHECKOUT_ROOT.parent.name == ".worktrees":
+        roots.append(_CHECKOUT_ROOT.parent.parent)
+    for root in roots:
+        for tool_dir in (root / ".local-tools",
+                         root / "experiments/fea-reference/.local-tools"):
+            found = shutil.which(str(tool_dir / _LOCAL_TOOL_PATHS[tool]))
+            if found:
+                return str(Path(found).resolve())
+    found = shutil.which(tool)
+    # Keep the command name on failure so the subprocess records it.
+    return str(Path(found).resolve()) if found else tool
+
+
+def _ccx_runtime_env(ccx_bin: str) -> dict[str, str] | None:
+    configured = os.environ.get("CCX_LIB_DIR")
+    lib_dir = Path(configured).expanduser().resolve() if configured else None
+    if lib_dir is None:
+        for parent in Path(ccx_bin).parents:
+            if parent.parent.name == ".local-tools":
+                candidate = parent / _CCX_RUNTIME_SUBDIR
+                if (candidate / "libgfortran.so.4").is_file():
+                    lib_dir = candidate
+                break
+    if lib_dir is None:
+        return None
+    env = os.environ.copy()
+    inherited = env.get("LD_LIBRARY_PATH")
+    env["LD_LIBRARY_PATH"] = (
+        f"{lib_dir}{os.pathsep}{inherited}" if inherited else str(lib_dir)
+    )
+    return env
+
+
+def _run(argv: list[str], cwd: Path, timeout_s: float, *,
+         env: dict[str, str] | None = None) -> dict[str, Any]:
     """Subprocesso com as regras da ficha: argv lista, cwd isolado,
     timeout obrigatorio, shell=False, capture_output=True."""
     try:
@@ -218,6 +270,7 @@ def _run(argv: list[str], cwd: Path, timeout_s: float) -> dict[str, Any]:
             cwd=str(cwd),
             timeout=timeout_s,
             shell=False,
+            env=env,
             capture_output=True,
             text=True,
             errors="replace",
@@ -253,10 +306,10 @@ def _run(argv: list[str], cwd: Path, timeout_s: float) -> dict[str, Any]:
     }
 
 
-def _tool_version(binary: str, argv: list[str], timeout_s: float,
-                  cwd: Path) -> str:
+def _tool_version(argv: list[str], timeout_s: float, cwd: Path, *,
+                  env: dict[str, str] | None = None) -> str:
     """Versao de uma ferramenta externa (para o pin do sidecar)."""
-    result = _run(argv, cwd, timeout_s)
+    result = _run(argv, cwd, timeout_s, env=env)
     text = (result.get("stdout") or "") + (result.get("stderr") or "")
     return text.strip().splitlines()[0].strip() if text.strip() else "unknown"
 
@@ -271,7 +324,7 @@ Box(1) = {{0, 0, 0, {length:g}, {width:g}, {height:g}}};
 """
 
 
-def build_bar_step(workdir: str | Path, *, gmsh_bin: str = DEFAULT_GMSH_BIN,
+def build_bar_step(workdir: str | Path, *, gmsh_bin: str | Path | None = None,
                    length_mm: float = BAR_LENGTH_MM,
                    width_mm: float = BAR_WIDTH_MM,
                    height_mm: float = BAR_HEIGHT_MM,
@@ -284,7 +337,8 @@ def build_bar_step(workdir: str | Path, *, gmsh_bin: str = DEFAULT_GMSH_BIN,
     vem do Gmsh, nao de um CAD externo. Retorna dict com
     ``ok``/``step_path``/``failure``.
     """
-    workdir = Path(workdir)
+    gmsh_bin = resolve_fea_tool(DEFAULT_GMSH_BIN, gmsh_bin)
+    workdir = Path(workdir).resolve()
     workdir.mkdir(parents=True, exist_ok=True)
     geo_path = workdir / "bar.geo"
     step_path = workdir / "bar.step"
@@ -650,8 +704,8 @@ def run_axial_case(step_path: str | Path, workdir: str | Path, *,
                    spec: AxialCaseSpec | None = None,
                    doc_id: str | None = None,
                    document_sha256: str | None = None,
-                   gmsh_bin: str = DEFAULT_GMSH_BIN,
-                   ccx_bin: str = DEFAULT_CCX_BIN,
+                   gmsh_bin: str | Path | None = None,
+                   ccx_bin: str | Path | None = None,
                    mesh_size_mm: float | None = None) -> FeaResult:
     """Roda o caso axial de referencia (gate G4.1). Ver docstring do modulo.
 
@@ -662,7 +716,7 @@ def run_axial_case(step_path: str | Path, workdir: str | Path, *,
     ``draw.paper.v1`` quando houver; sem documento, o sidecar usa o
     sha do STEP e registra a substituicao.
     """
-    workdir = Path(workdir)
+    workdir = Path(workdir).resolve()
     workdir.mkdir(parents=True, exist_ok=True)
     if spec is None:
         spec = AxialCaseSpec(step_path=step_path)
@@ -685,6 +739,8 @@ def run_axial_case(step_path: str | Path, workdir: str | Path, *,
             f"blocked: incomplete case -- {issue}" for issue in issues]
         return result
 
+    gmsh_bin = resolve_fea_tool(DEFAULT_GMSH_BIN, gmsh_bin)
+    ccx_bin = resolve_fea_tool(DEFAULT_CCX_BIN, ccx_bin)
     step_src = Path(step_path)
     step_sha = _sha256_file(step_src)
     input_step = workdir / "input.step"
@@ -739,7 +795,8 @@ def run_axial_case(step_path: str | Path, workdir: str | Path, *,
         f".inp written by ocre_core.draw.fea (own writer, not Gmsh .inp)")
 
     # --- CalculiX. ---
-    ccx = _run([ccx_bin, "-i", "job"], workdir, spec.timeout_ccx_s)
+    ccx_env = _ccx_runtime_env(ccx_bin)
+    ccx = _run([ccx_bin, "-i", "job"], workdir, spec.timeout_ccx_s, env=ccx_env)
     dat_path = workdir / "job.dat"
     sta_path = workdir / "job.sta"
     frd_path = workdir / "job.frd"
@@ -829,9 +886,8 @@ def run_axial_case(step_path: str | Path, workdir: str | Path, *,
         "gate_tolerance_pct": GATE_TOLERANCE_PCT,
         "fea_version": FEA_VERSION,
     }
-    gmsh_version = _tool_version(gmsh_bin, [gmsh_bin, "--version"], 30.0,
-                                 workdir)
-    ccx_version = _tool_version(ccx_bin, [ccx_bin, "-v"], 30.0, workdir)
+    gmsh_version = _tool_version([gmsh_bin, "--version"], 30.0, workdir)
+    ccx_version = _tool_version([ccx_bin, "-v"], 30.0, workdir, env=ccx_env)
     fea_file = Path(__file__).resolve()
     derived: list[dict[str, Any]] = []
     if "frd" in result["artifacts"]:

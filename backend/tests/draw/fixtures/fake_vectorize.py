@@ -2,7 +2,7 @@
 """FIXTURE DE TESTE — NÃO É O vectorize REAL DO DRAW.
 
 Imita apenas a interface de linha de comando de
-``tools/vectorize.py`` (``input.png --json out.json [--out out.svg]``)
+``src/draw/exporters/vectorize.py`` (``input.png --json out.json [--out out.svg]``)
 e devolve um payload fixo no mesmo formato
 (``{"summary": {...}, "primitives": [...]}``), para testar o runner
 sem depender do Draw, do OpenCV ou de um PNG real.
@@ -12,7 +12,7 @@ Primitivas fixas (em mm, y-down, como o vectorize real emite):
 - uma polilinha aberta (``points_mm``),
 - um círculo (``cx_mm``/``cy_mm``/``r_mm``, SEM pontos — exercita o
   caminho ``primitives_without_points`` do runner),
-- uma linha (``points_mm``).
+- uma linha (``x1_mm``/``y1_mm``/``x2_mm``/``y2_mm``).
 
 Uso: ``python fake_vectorize.py canvas.png --json saida.json [--out saida.svg]``
 """
@@ -48,7 +48,10 @@ PRIMITIVES = [
     },
     {
         "type": "line",
-        "points_mm": [[10.0, 200.0], [100.0, 200.0]],
+        "x1_mm": 10.0,
+        "y1_mm": 200.0,
+        "x2_mm": 100.0,
+        "y2_mm": 200.0,
         "closed": False,
     },
 ]

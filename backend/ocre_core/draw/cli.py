@@ -41,7 +41,8 @@ Fingerprint inputs (DRAW-AF/1, 10 fields) — no silent defaults:
   from the CLI flags of this run; it is written out verbatim in
   ``fingerprint.json`` so an auditor can see exactly what was hashed.
 - Field 7 (validator) pins ``validator_draw.py`` by its file SHA-256.
-- Field 8 (adapters) pins the vectorize script (SHA given on the
+- Field 8 (adapters) pins the vectorize script from ``santleme/draw-core``
+  (``src/draw/exporters/vectorize.py``; SHA given on the
   command line, verified before running) and the DXF writer
   (``dxf_export.py`` by file SHA-256).
 - Field 9 (unit_policy) is the pinned ``mm`` policy (version 0.1.0).
@@ -167,7 +168,7 @@ def _build_parser() -> argparse.ArgumentParser:
     exp = sub.add_parser("export", help="vectorize a PNG and export DXF + sidecar + fingerprint")
     exp.add_argument("--png", required=True, help="input canvas PNG")
     exp.add_argument("--vectorize-script", required=True,
-                     help="path to Draw tools/vectorize.py (never copied into OCRE)")
+                     help="path to santleme/draw-core src/draw/exporters/vectorize.py (never copied into OCRE)")
     exp.add_argument("--vectorize-sha256", required=True,
                      help="pinned SHA-256 of the vectorize script (verified before running)")
     exp.add_argument("--out-dir", required=True, help="output directory for the derivatives")
@@ -189,6 +190,8 @@ def _build_parser() -> argparse.ArgumentParser:
     exp.add_argument("--doc-id", default=None, help="document UUID v4 (generated if omitted)")
     exp.add_argument("--timeout-s", type=float, default=300.0,
                      help="vectorize subprocess timeout in seconds")
+    exp.add_argument("--clean", action="store_true",
+                     help="request clean vectorization")
     exp.add_argument("--epsilon", type=float, default=None)
     exp.add_argument("--thinning", default=None)
     exp.add_argument("--librecad-check", action="store_true",
@@ -223,7 +226,7 @@ def _build_parser() -> argparse.ArgumentParser:
              "STEP -> FEA -> physics -> viz/PDF)")
     beta.add_argument("--png", required=True, help="input canvas PNG")
     beta.add_argument("--vectorize-script", required=True,
-                      help="path to Draw tools/vectorize.py (never copied "
+                      help="path to santleme/draw-core src/draw/exporters/vectorize.py (never copied "
                            "into OCRE)")
     beta.add_argument("--vectorize-sha256", required=True,
                       help="pinned SHA-256 of the vectorize script "
@@ -236,6 +239,8 @@ def _build_parser() -> argparse.ArgumentParser:
                       help="Draw repo the artifacts came from")
     beta.add_argument("--draw-commit", required=True,
                       help="pinned Draw revision, full 40-hex git SHA")
+    beta.add_argument("--clean", action="store_true",
+                      help="request clean vectorization")
     beta.add_argument("--thickness-mm", type=float, default=None,
                       help="DECLARED extrusion thickness in mm (required; "
                            "missing blocks the job, never estimated)")
@@ -301,6 +306,7 @@ def _cmd_export(args: argparse.Namespace) -> int:
             args.vectorize_sha256,
             output_dir=None,  # temp dir, cleaned up; only polylines are kept
             timeout_s=args.timeout_s,
+            clean=args.clean,
             epsilon=args.epsilon,
             thinning=args.thinning,
         )
@@ -309,12 +315,6 @@ def _cmd_export(args: argparse.Namespace) -> int:
         return 1
 
     polylines = vectorized["polylines"]
-    skipped_primitives = [
-        {"type": str(p.get("type", "unknown"))}
-        for p in vectorized["primitives"]
-        if not (p.get("points_mm") or p.get("corners_mm"))
-    ]
-
     # Build the document (master) from the vectorizer polylines.
     doc = new_document(
         {"repo": args.draw_repo, "commit": args.draw_commit, "origin": args.origin},
@@ -363,7 +363,7 @@ def _cmd_export(args: argparse.Namespace) -> int:
             "primitives_total": vectorized["primitives_total"],
             "polylines_total": vectorized["polylines_total"],
             "primitives_without_points": vectorized["primitives_without_points"],
-            "skipped_primitive_types": [s["type"] for s in skipped_primitives],
+            "skipped_primitive_types": vectorized["skipped_primitive_types"],
         },
     }
 
@@ -621,6 +621,7 @@ def _beta_step_export(ctx: dict[str, Any]) -> dict[str, Any]:
         draw_config=args.draw_config,
         doc_id=None,
         timeout_s=args.timeout_s,
+        clean=args.clean,
         epsilon=None,
         thinning=None,
         librecad_check=True,
@@ -951,7 +952,7 @@ def _beta_gmsh_surface_stl(
     *,
     mesh_size_mm: float = 2.5,
     timeout_s: float = 300.0,
-    gmsh_bin: str = "/usr/bin/gmsh",
+    gmsh_bin: str | None = None,
 ) -> dict[str, Any]:
     """Full closed surface triangulation of a STEP (Gmsh, subprocess).
 
@@ -961,9 +962,9 @@ def _beta_gmsh_surface_stl(
     the viewer ``.glb``. Same subprocess rules as the FEA module:
     argv list, isolated cwd, timeout, ``shell=False``.
     """
-    from .fea import DEFAULT_GMSH_BIN, DEFAULT_MESH_SIZE_MM
+    from .fea import DEFAULT_GMSH_BIN, DEFAULT_MESH_SIZE_MM, resolve_fea_tool
 
-    gmsh_bin = gmsh_bin or DEFAULT_GMSH_BIN
+    gmsh_bin = resolve_fea_tool(DEFAULT_GMSH_BIN, gmsh_bin)
     mesh_size_mm = mesh_size_mm or DEFAULT_MESH_SIZE_MM
     out_stl = Path(out_stl)
     out_stl.parent.mkdir(parents=True, exist_ok=True)

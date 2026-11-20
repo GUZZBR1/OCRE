@@ -16,6 +16,7 @@ import tempfile
 import unittest
 from contextlib import redirect_stdout
 from pathlib import Path
+from unittest import mock
 
 from ocre_core.draw.cli import main
 from ocre_core.draw.fingerprint import parse_encoded
@@ -53,6 +54,20 @@ class CliExportTests(unittest.TestCase):
         summary = json.loads(out) if code == 0 else {}
         return code, out, summary
 
+    def test_clean_flag_reaches_vectorize_and_defaults_off(self):
+        from ocre_core.draw.vectorize_runner import VectorizeError
+
+        for clean in (False, True):
+            with self.subTest(clean=clean), tempfile.TemporaryDirectory() as tmp:
+                argv = ["--clean"] if clean else []
+                with mock.patch(
+                    "ocre_core.draw.vectorize_runner.run_vectorize",
+                    side_effect=VectorizeError("stop after observing call"),
+                ) as run:
+                    code, _out, _summary = self._export(Path(tmp), argv)
+                self.assertEqual(code, 1)
+                self.assertEqual(run.call_args.kwargs["clean"], clean)
+
     def test_export_writes_document_dxf_sidecar_and_fingerprint(self):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
@@ -76,6 +91,7 @@ class CliExportTests(unittest.TestCase):
 
             sidecar = json.loads((out_dir / "sidecar.json").read_text(encoding="utf-8"))
             self.assertEqual(validate_draw_sidecar(sidecar), [])
+            self.assertEqual(sidecar["export_parameters"]["vectorize"]["skipped_primitive_types"], ["circle"])
             self.assertEqual(sidecar["document_sha256"], summary["document_sha256"])
             self.assertEqual(sidecar["fingerprint"]["digest"], summary["fingerprint_digest"])
             self.assertEqual(sidecar["draw_source"], {"repo": "santleme/draw", "commit": COMMIT})

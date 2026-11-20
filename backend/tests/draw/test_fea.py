@@ -1,7 +1,7 @@
 """Testes do caso axial FEA (gate G4.1) -- Gmsh + CalculiX de verdade.
 
-O teste do gate roda os binarios reais (``/usr/bin/gmsh`` e
-``/usr/bin/ccx``): se o ambiente nao rodar, o teste FALHA
+O teste do gate roda os binarios reais (Gmsh e CalculiX resolvidos
+pelo ambiente do projeto): se o ambiente nao rodar, o teste FALHA
 honestamente -- nada aqui e marcado como passado sem rodar. Os
 caminhos de erro usam STUBs executaveis (mesmo padrao de
 ``test_librecad_gate.py``). O STEP da barra de referencia e gerado
@@ -9,11 +9,15 @@ pelo Gmsh/OCC a partir de um Box primitivo (``build_bar_step``) --
 declarado no modulo: nao ha build123d neste venv.
 """
 
+import hashlib
 import os
 import stat
+import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
+from ocre_core.draw import fea
 from ocre_core.draw.fea import (
     AXIAL_CASE_ID,
     GATE_ID,
@@ -72,6 +76,39 @@ def _bar_step(tmp: Path) -> Path:
     return Path(built["step_path"])
 
 
+class TestFeaToolResolution(unittest.TestCase):
+    def test_worktree_finds_local_tools_and_limits_runtime_to_ccx(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            checkout = root / ".worktrees/beta"
+            local = root / "experiments/fea-reference/.local-tools"
+            ccx_dir = local / "ccx-2.23"
+            library = ccx_dir / "runtime/usr/lib/x86_64-linux-gnu"
+            library.mkdir(parents=True)
+            (library / "libgfortran.so.4").touch()
+            source = ccx_dir / "CalculiX/ccx_2.23/src"
+            source.mkdir(parents=True)
+            ccx = _make_stub(source, "ccx_2.23", "#!/bin/sh\n")
+            system_bin = root / "system-bin"
+            system_bin.mkdir()
+            system_ccx = _make_stub(system_bin, "ccx", "#!/bin/sh\n")
+            gmsh = _make_stub(system_bin, "gmsh", "#!/bin/sh\n")
+            with mock.patch.object(fea, "_CHECKOUT_ROOT", checkout), mock.patch.dict(
+                os.environ, {"PATH": str(system_bin), "LD_LIBRARY_PATH": "/existing"},
+                clear=True,
+            ):
+                self.assertEqual(fea.resolve_fea_tool("ccx"), str(ccx))
+                self.assertEqual(fea.resolve_fea_tool("gmsh"), str(gmsh))
+                runtime = fea._ccx_runtime_env(str(ccx))
+                self.assertEqual(runtime["LD_LIBRARY_PATH"], f"{library}:/existing")
+                self.assertEqual(os.environ["LD_LIBRARY_PATH"], "/existing")
+                self.assertIsNone(fea._ccx_runtime_env(str(system_ccx)))
+
+                os.environ["CCX_BIN"] = "ccx"
+                self.assertEqual(fea.resolve_fea_tool("ccx"), str(system_ccx))
+                self.assertEqual(fea.resolve_fea_tool("ccx", ccx), str(ccx))
+
+
 class TestAxialGateReal(unittest.TestCase):
     """Gate G4.1 de verdade: Gmsh + ccx reais, Rx/S11 dentro de 1%."""
 
@@ -107,6 +144,12 @@ class TestAxialGateReal(unittest.TestCase):
             # Sidecar valido e fingerprint com o dominio certo.
             self.assertEqual(
                 validate_draw_sidecar(result["sidecar"]), [])
+            adapters = result["sidecar"]["adapters"]
+            for tool, adapter in zip(("gmsh", "ccx"), adapters):
+                with open(fea.resolve_fea_tool(tool), "rb") as binary:
+                    self.assertEqual(adapter["binary_sha256"],
+                                     hashlib.file_digest(binary, "sha256").hexdigest())
+                self.assertNotEqual(adapter["version"], "unknown")
             self.assertEqual(
                 result["fingerprint"]["domain"],
                 "DRAW:PAPER-APPROVAL:FINGERPRINT")
