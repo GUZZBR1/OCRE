@@ -15,7 +15,7 @@ import stat
 from datetime import datetime
 from pathlib import Path, PurePosixPath
 from typing import Any, Mapping
-from urllib.parse import unquote, urlsplit
+from urllib.parse import urlsplit
 
 from jsonschema import Draft202012Validator, FormatChecker
 
@@ -28,7 +28,6 @@ SCHEMAS = {
     "bundle": ("0.2.0", "input-bundle-0.2.0.schema.json"),
     "groups": ("0.2.0", "mesh-group-manifest-0.2.0.schema.json"),
 }
-SHA256_RE = re.compile(r"^[a-f0-9]{64}$")
 
 
 class StrictJSONError(ValueError):
@@ -213,8 +212,7 @@ def _uri_path(uri: Any) -> PurePosixPath:
     parts = urlsplit(uri)
     if parts.scheme or parts.netloc or parts.query or parts.fragment or uri.startswith("/"):
         raise ValueError("URI must not contain scheme, authority, query, fragment, or absolute path")
-    decoded = unquote(uri)
-    segments = decoded.split("/")
+    segments = uri.split("/")
     if any(segment in ("", ".", "..") for segment in segments):
         raise ValueError("URI must use normalized path segments without dot traversal")
     return PurePosixPath(*segments)
@@ -270,7 +268,7 @@ def _semantic(eir: dict[str, Any], bundle: dict[str, Any], groups: dict[str, Any
     geometries = _unique_index(eir.get("geometry"), "geometry_id", "geometry", diagnostics, "/geometry")
     materials = _unique_index(eir.get("materials"), "material_id", "material", diagnostics, "/materials")
     frames = _unique_index(eir.get("frames"), "frame_id", "frame", diagnostics, "/frames")
-    cases = _unique_index(eir.get("simulation_cases"), "case_id", "case", diagnostics, "/simulation_cases")
+    _unique_index(eir.get("simulation_cases"), "case_id", "case", diagnostics, "/simulation_cases")
     artifacts = _unique_index(bundle.get("artifacts"), "artifact_id", "artifact", diagnostics, "/artifacts")
     if bundle.get("eir_artifact_id") not in artifacts:
         _add(diagnostics, "semantic", "/eir_artifact_id", "unresolved_artifact", "bundle EIR artifact id does not resolve")
@@ -300,12 +298,14 @@ def _semantic(eir: dict[str, Any], bundle: dict[str, Any], groups: dict[str, Any
                     break
     if frame_items and len(roots) != 1:
         _add(diagnostics, "semantic", "/frames", "frame_root_count", "frame graph must have exactly one root")
+    profile = json.loads((PROFILE_DIR / "structural.axial_bar.v1.json").read_text(encoding="utf-8"))
+    unit_profile = json.loads((PROFILE_DIR / "ucum.structural_axial.v1.json").read_text(encoding="utf-8"))
     for i, frame in enumerate(frame_items if isinstance(frame_items, list) else []):
         if isinstance(frame, dict):
             translation = frame.get("translation")
             if isinstance(translation, dict):
                 _check_unit(translation.get("unit"), "length", f"/frames/{i}/translation/unit", diagnostics,
-                            json.loads((PROFILE_DIR / "ucum.structural_axial.v1.json").read_text(encoding="utf-8")))
+                            unit_profile)
 
     for i, frame in enumerate(frame_items if isinstance(frame_items, list) else []):
         if not isinstance(frame, dict): continue
@@ -317,8 +317,6 @@ def _semantic(eir: dict[str, Any], bundle: dict[str, Any], groups: dict[str, Any
             if not math.isfinite(norm) or abs(norm - 1.0) > 1e-6:
                 _add(diagnostics, "semantic", f"/frames/{i}/rotation_xyzw", "invalid_quaternion_norm", "quaternion norm must be within 1e-6 of one")
 
-    profile = json.loads((PROFILE_DIR / "structural.axial_bar.v1.json").read_text(encoding="utf-8"))
-    unit_profile = json.loads((PROFILE_DIR / "ucum.structural_axial.v1.json").read_text(encoding="utf-8"))
     for i, geometry in enumerate(eir.get("geometry", []) if isinstance(eir.get("geometry"), list) else []):
         if not isinstance(geometry, dict): continue
         if geometry.get("frame_id") is not None and geometry.get("frame_id") not in frames:
@@ -599,10 +597,8 @@ def validate(eir: Any, bundle: Any, group_manifest: Any | None = None, *,
         except (TypeError, KeyError, AttributeError) as exc:
             _add(diagnostics, "semantic", "", "invalid_document_shape", f"semantic evaluation could not proceed: {type(exc).__name__}")
     diagnostics.sort(key=lambda d: (d.stage, d.pointer, d.code, d.message, d.severity))
-    blocking = any(d.severity == "error" for d in diagnostics)
     incomplete_codes = {"group_manifest_unavailable", "bundle_root_unavailable", "adapter_capabilities_unavailable",
-                        "approval_fingerprint_unavailable", "document_incomplete", "missing_artifact_hash",
-                        "adapter_capabilities_unavailable"}
+                        "approval_fingerprint_unavailable", "document_incomplete", "missing_artifact_hash"}
     invalid = any(d.severity == "error" and d.code not in incomplete_codes for d in diagnostics)
     incomplete = any(d.code in incomplete_codes for d in diagnostics)
     status = "invalid" if invalid else "incomplete" if incomplete else "valid"

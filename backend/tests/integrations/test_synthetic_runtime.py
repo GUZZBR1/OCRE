@@ -12,7 +12,7 @@ from ocre_core.application.services import (
 from ocre_core.integrations.synthetic_runtime import SyntheticRuntime
 from ocre_core.integrations.synthetic_worker import SyntheticOutcome
 from ocre_core.jobs import JobState
-from ocre_core.persistence.jobs import ExecutionSubmitted, JobSnapshot, OutboxMessage
+from ocre_core.persistence.jobs import ExecutionSubmitted, JobSnapshot
 from ocre_core.persistence.sqlite import SQLiteJobStore
 from ocre_core.persistence.sync import SQLiteSyncStore
 
@@ -69,6 +69,17 @@ def setup_runtime(
         for tenant, result in submitted.items()
     }
     return app, store, submitted, runtimes
+
+
+def restart_runtime(store, tmp_path, *, tenant_id, job_id, outcome):
+    return SyntheticRuntime(
+        store,
+        tenant_id=tenant_id,
+        job_id=job_id,
+        consumer_database=tmp_path / f"consumer-{tenant_id}.db",
+        outcome=outcome,
+        clock=lambda: NOW,
+    )
 
 
 def assert_monotonic_single_terminal(store, tenant, job_id, terminal):
@@ -188,14 +199,7 @@ def test_restart_after_worker_commit_resumes_from_persisted_state(
         runtimes[tenant].dispatch()
     assert store.get_snapshot(job_id, tenant_id=tenant).state is crash_state
 
-    restarted = SyntheticRuntime(
-        store,
-        tenant_id=tenant,
-        job_id=job_id,
-        consumer_database=tmp_path / "consumer-tenant-a.db",
-        outcome=outcome,
-        clock=lambda: NOW,
-    )
+    restarted = restart_runtime(store, tmp_path, tenant_id=tenant, job_id=job_id, outcome=outcome)
     assert restarted.recover_abandoned() == 0
     drain(restarted)
     assert_monotonic_single_terminal(store, tenant, job_id, terminal)
@@ -210,14 +214,7 @@ def test_duplicate_callback_and_publish_before_ack_do_not_duplicate_transitions(
 
     assert runtime.deliver(original) is True
     event_count = len(store.read_events(tenant_id="tenant-a", job_id=job_id, limit=50))
-    restarted = SyntheticRuntime(
-        store,
-        tenant_id="tenant-a",
-        job_id=job_id,
-        consumer_database=tmp_path / "consumer-tenant-a.db",
-        outcome=SyntheticOutcome.SUCCEEDED,
-        clock=lambda: NOW,
-    )
+    restarted = restart_runtime(store, tmp_path, tenant_id="tenant-a", job_id=job_id, outcome=SyntheticOutcome.SUCCEEDED)
     assert restarted.deliver(original) is False
     drain(restarted)
     assert len(store.read_events(tenant_id="tenant-a", job_id=job_id, limit=50)) == event_count
@@ -239,14 +236,7 @@ def test_process_death_after_terminal_commit_recovers_consumer_claim_and_redeliv
         runtimes[tenant].dispatch()
     assert store.get_snapshot(job_id, tenant_id=tenant).state is JobState.SUCCEEDED
 
-    restarted = SyntheticRuntime(
-        store,
-        tenant_id=tenant,
-        job_id=job_id,
-        consumer_database=tmp_path / "consumer-tenant-a.db",
-        outcome=SyntheticOutcome.SUCCEEDED,
-        clock=lambda: NOW,
-    )
+    restarted = restart_runtime(store, tmp_path, tenant_id=tenant, job_id=job_id, outcome=SyntheticOutcome.SUCCEEDED)
     assert restarted.recover_abandoned() == 1
     drain(restarted)
     assert_monotonic_single_terminal(store, tenant, job_id, JobState.SUCCEEDED)

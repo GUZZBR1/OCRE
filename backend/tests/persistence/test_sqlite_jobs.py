@@ -1,3 +1,4 @@
+import sqlite3
 from datetime import datetime, timezone
 from dataclasses import replace
 from concurrent.futures import ThreadPoolExecutor
@@ -129,7 +130,6 @@ def test_identical_job_ids_are_tenant_scoped_for_snapshots_and_event_replay(tmp_
     assert [item.event.event_id for item in tenant_b_events] == ["tenant-b-event"]
 
 def test_consumer_failure_does_not_ack_and_can_resume(tmp_path):
-    from ocre_core.persistence.jobs import OutboxMessage
     message=OutboxMessage("m-retry","j","e","t",b"")
     def fail(_): raise RuntimeError("consumer interrupted")
     with pytest.raises(RuntimeError): FakeMessageConsumer(tmp_path/"consumer.db",fail).consume(message)
@@ -138,10 +138,9 @@ def test_consumer_failure_does_not_ack_and_can_resume(tmp_path):
     assert handled == [message]
 
 def test_consumer_recovers_abandoned_claim_after_restart(tmp_path):
-    from ocre_core.persistence.jobs import OutboxMessage
     message=OutboxMessage("m-crash","j","e","t",b"")
     db=tmp_path/"consumer.db"
-    with __import__("sqlite3").connect(db) as conn:
+    with sqlite3.connect(db) as conn:
         conn.execute("CREATE TABLE consumed(message_id TEXT PRIMARY KEY, status TEXT NOT NULL)")
         conn.execute("INSERT INTO consumed VALUES(?,'processing')",(message.message_id,))
     handled=[]

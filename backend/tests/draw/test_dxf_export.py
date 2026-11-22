@@ -7,14 +7,12 @@ ela é um passo posterior, fora deste módulo.
 """
 
 import hashlib
-import math
 import tempfile
 import unittest
 from pathlib import Path
 
 import ezdxf
 
-from ocre_core.draw import dxf_export
 from ocre_core.draw.dxf_export import (
     APPID,
     LAYER,

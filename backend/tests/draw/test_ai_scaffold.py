@@ -20,7 +20,6 @@ from ocre_core.draw.ai import (
     Incoherence,
     ModelNotRegisteredError,
     ModelRegistry,
-    Proposal,
     apply_proposal,
     build_context,
     confirm,

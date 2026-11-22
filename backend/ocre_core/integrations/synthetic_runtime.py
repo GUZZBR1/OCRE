@@ -96,7 +96,6 @@ class SyntheticRuntime:
         before_transition: Callable[[object], None] | None = None,
         after_transition: Callable[[object], None] | None = None,
     ):
-        self.store = store
         self.tenant_id = tenant_id
         self.job_id = job_id
         self.outcome = outcome

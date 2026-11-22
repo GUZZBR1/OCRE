@@ -655,7 +655,6 @@ def to_glb(
     if scale_factor != 1.0:
         mesh.apply_scale(scale_factor)
 
-    color_0 = False
     field_range = None
     if field_values is not None:
         values = np.asarray(field_values, dtype=float)
@@ -674,7 +673,6 @@ def to_glb(
         norm = (values - lo) / (hi - lo) if hi > lo else np.zeros_like(values)
         rgba = (cmap(norm) * 255).astype(np.uint8)
         mesh.visual.vertex_colors = rgba
-        color_0 = True
         field_range = [lo, hi]
 
     out_glb = Path(out_glb)

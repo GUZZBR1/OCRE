@@ -2,18 +2,10 @@
 from __future__ import annotations
 
 import sqlite3
-from dataclasses import dataclass
 
 from ocre_core.sync import BatchReceipt, SyncBatch, SyncBatchIdentityConflict, SyncConflict, SyncReplay, SyncReady, evaluate_sync_batch
 from .sqlite import PersistenceConflict
 from . import codec
-
-
-@dataclass(frozen=True)
-class SyncCommit:
-    receipt: BatchReceipt
-    revision_snapshot: bytes
-    operations: tuple
 
 
 class SQLiteSyncStore:

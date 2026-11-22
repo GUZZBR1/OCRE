@@ -43,12 +43,12 @@ import subprocess
 import sys
 import tempfile
 from pathlib import Path
-from typing import Any
 
 __all__ = [
     "DEFAULT_TIMEOUT_S",
     "VectorizeError",
     "sha256_file",
+    "sha256_bytes",
     "run_vectorize",
     "normalize_primitives",
 ]
@@ -70,6 +70,10 @@ def sha256_file(path: str | Path) -> str:
         for chunk in iter(lambda: handle.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def sha256_bytes(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()
 
 
 def normalize_primitives(primitives: list[dict]) -> tuple[list[dict], int]:

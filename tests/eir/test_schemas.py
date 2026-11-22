@@ -21,7 +21,6 @@ class EirSchemaTests(unittest.TestCase):
         document = load_json(EXAMPLES / example_name)
         Draft202012Validator.check_schema(schema)
         Draft202012Validator(schema).validate(document)
-        return schema, document
 
     def test_all_three_schemas_and_positive_examples(self):
         self.check_document("0.2.0.schema.json", "eir.json")

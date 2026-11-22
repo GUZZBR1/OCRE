@@ -15,8 +15,6 @@ falhar ou de fingir aprovação.
 
 import hashlib
 import json
-import math
-import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -24,7 +22,6 @@ from pathlib import Path
 from ocre_core.draw import step_export
 from ocre_core.draw.step_export import (
     StepExportError,
-    StepWorkerError,
     document_to_step,
     export_dxf_ac1015,
     oracle_step,

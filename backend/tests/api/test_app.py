@@ -16,6 +16,15 @@ class Blocked:
         return PreflightReport("incomplete", "blocked", ({"code": "approval_fingerprint_unavailable"},))
 
 
+class Ready:
+    def __init__(self):
+        self.calls = 0
+
+    def evaluate(self, _request):
+        self.calls += 1
+        return PreflightReport("valid", "ready")
+
+
 def test_local_transport_injects_principal_and_exposes_only_six_operations(tmp_path):
     principal = Principal("tenant-a", "actor-a")
     service = OCREApplication(
@@ -90,15 +99,6 @@ def test_http_sync_replay_returns_original_receipt_and_rejects_reused_identity(t
 
 def test_cancel_accepts_empty_body_and_job_submit_rejects_non_strict_json_before_preflight(tmp_path):
     principal = Principal("tenant-a", "actor-a")
-
-    class Ready:
-        def __init__(self):
-            self.calls = 0
-
-        def evaluate(self, _request):
-            self.calls += 1
-            return PreflightReport("valid", "ready")
-
     preflight = Ready()
     service = OCREApplication(
         sync_store=SQLiteSyncStore(tmp_path / "sync.db"),
@@ -135,11 +135,6 @@ def test_cancel_accepts_empty_body_and_job_submit_rejects_non_strict_json_before
 
 def test_http_job_submit_cancel_and_event_replay_are_idempotent(tmp_path):
     principal = Principal("tenant-a", "actor-a")
-
-    class Ready:
-        def evaluate(self, _request):
-            return PreflightReport("valid", "ready")
-
     service = OCREApplication(
         sync_store=SQLiteSyncStore(tmp_path / "sync.db"),
         job_store=SQLiteJobStore(tmp_path / "jobs.db"),

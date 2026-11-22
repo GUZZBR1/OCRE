@@ -11,7 +11,6 @@ prova que o LibreCAD real abre um DXF; o gate real (10/10) só existe
 na bateria G0.2, ainda não rodada.
 """
 
-import os
 import stat
 import tempfile
 import unittest

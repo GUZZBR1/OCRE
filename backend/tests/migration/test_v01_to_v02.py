@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 from jsonschema import Draft202012Validator
 
-from ocre_core.migration import MigrationInputError, migrate_v01_to_v02, validate_migration_draft
+from ocre_core.migration import MigrationInputError, migrate_v01_to_v02
 
 
 ROOT = Path(__file__).resolve().parents[3]
