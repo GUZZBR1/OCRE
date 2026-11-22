@@ -11,3 +11,18 @@ __pycache__/
 .external/
 
 .worktrees/
+
+# Python
+*.py[cod]
+.pytest_cache/
+
+# Node / frontend build artifacts
+node_modules/
+dist/
+.test-dist/
+
+# Local agent/tool state
+.omc/
+.omx/
+**/.omc/
+**/.omx/

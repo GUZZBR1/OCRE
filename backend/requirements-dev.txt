@@ -3,3 +3,4 @@
 # TestClient is provided by FastAPI/Starlette; pytest executes the suite.
 httpx2==2.15.1
 pytest==9.2.0
+pyflakes==3.4.0

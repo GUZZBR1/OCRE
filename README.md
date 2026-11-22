@@ -46,6 +46,8 @@ Próxima ordem: integrar OCRE-AF/1 ao contexto de aprovação sem alterar o cont
 
 ## Documentação
 
+Execute toda a suíte local com `backend/.venv/bin/python -m pytest -q` a partir da raiz; para rodar apenas EIR, use `backend/.venv/bin/python -m pytest -q tests/eir`.
+
 - [Contexto e memória do projeto](docs/PROJECT_CONTEXT.md): arquitetura, integrações, roadmap, decisões e pendências.
 - [Arquitetura de integração](docs/architecture/INTEGRATION_ARCHITECTURE.md): viabilidade, tipos de adaptadores, contratos, limites e fases.
 - [Verificação e validação estrutural](docs/architecture/STRUCTURAL_VALIDATION_ARCHITECTURE.md): gates e evidências para a prova Gmsh/CalculiX.
@@ -53,4 +55,7 @@ Próxima ordem: integrar OCRE-AF/1 ao contexto de aprovação sem alterar o cont
 - [Schemas EIR](schemas/eir/README.md): schemas v0.1 experimentais e v0.2 congelados; relações semânticas e prontidão dependem do validador da aplicação.
 - [Arquitetura de validação do EIR](docs/architecture/EIR_VALIDATION_ARCHITECTURE.md): pipeline determinístico, relatórios, segurança de bundle, readiness e decisões ainda abertas.
 - [Contrato EIR v0.2](docs/architecture/EIR_V02_CONTRACT.md): contrato congelado, fingerprint `OCRE-AF/1`, migração explícita e três schemas travados por digest; a validação semântica local existe, mas a prontidão permanece bloqueada enquanto OCRE-AF/1 não estiver ligado.
+- [Arquitetura de importação STEP](docs/architecture/CAD_STEP_IMPORT_ARCHITECTURE.md): escopo e questões da futura importação CAD.
+- [Contrato de sincronização de projetos](docs/architecture/PROJECT_SYNC_CONTRACT.md): contrato proposto para sincronização e revisões.
+- [Contrato de runtime dos workers/adaptadores](docs/architecture/WORKER_ADAPTER_RUNTIME_CONTRACT.md): limites e ciclo de execução propostos para workers.
 - [Regras do repositório](AGENTS.md): instruções de trabalho específicas do projeto.
