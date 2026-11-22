@@ -25,7 +25,6 @@ SCHEMA_DIR = ROOT / "schemas" / "eir"
 TOOL_ID = "ocre.eir-migrator"
 TOOL_VERSION = "0.1.0"
 REPORT_VERSION = "0.1.0"
-_SHA = re.compile(r"^[a-f0-9]{64}$")
 
 
 class MigrationInputError(ValueError):
@@ -281,7 +280,7 @@ def migrate_v01_to_v02(
             pointer.startswith("/migration/") and pointer != "/migration/report_artifact_id"
         ):
             raise MigrationInputError(f"resolution cannot alter migration provenance or draft state: {pointer}")
-        if not isinstance(resolution, Mapping) or not {"value", "reason", "actor"} <= set(resolution):
+        if not {"value", "reason", "actor"} <= set(resolution):
             raise MigrationInputError(f"resolution {pointer!r} requires value, reason and actor")
         if not isinstance(resolution["reason"], str) or not resolution["reason"].strip():
             raise MigrationInputError(f"resolution {pointer!r} requires a non-empty reason")

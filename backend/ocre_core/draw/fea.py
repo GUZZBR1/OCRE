@@ -78,20 +78,18 @@ excecao por falha do caso; so erros de programacao levantam):
 from __future__ import annotations
 
 import hashlib
-import json
 import math
 import os
-import re
 import shutil
-import struct
 import subprocess
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 from .fingerprint import DOMAIN as _FINGERPRINT_DOMAIN
 from .fingerprint import jcs as _jcs
-from .sidecar import SIDECAR_VERSION, build_draw_sidecar
+from .sidecar import build_draw_sidecar
+from .vectorize_runner import sha256_bytes as _sha256_bytes, sha256_file as _sha256_file
 
 __all__ = [
     "AXIAL_CASE_ID",
@@ -197,18 +195,6 @@ class AxialCaseSpec:
 
 # Alias de leitura: o resumo do caso e um dict simples e JSON-serializavel.
 FeaResult = dict
-
-
-def _sha256_file(path: str | Path) -> str:
-    digest = hashlib.sha256()
-    with open(path, "rb") as handle:
-        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
-
-
-def _sha256_bytes(data: bytes) -> str:
-    return hashlib.sha256(data).hexdigest()
 
 
 def _truncate(text: str, limit: int = _MAX_CAPTURE_CHARS) -> str:

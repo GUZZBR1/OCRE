@@ -25,7 +25,6 @@ from typing import Any
 from .paper import DEFAULT_SPEC, PaperSpec, resolve_paper
 from .validator_draw import (
     SCHEMA_NAME,
-    SCHEMA_VERSION,
     StrictJSONError,
     bundled_schema_sha256,
 )

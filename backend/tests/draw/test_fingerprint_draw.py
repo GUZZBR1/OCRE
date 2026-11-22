@@ -3,16 +3,9 @@ from __future__ import annotations
 
 import copy
 import hashlib
-import struct
-import sys
 import unittest
-from pathlib import Path
 
-BACKEND = Path(__file__).resolve().parents[2]
-if str(BACKEND) not in sys.path:
-    sys.path.insert(0, str(BACKEND))
-
-from ocre_core.draw.fingerprint import (  # noqa: E402
+from ocre_core.draw.fingerprint import (
     DOMAIN,
     FIELD_NAMES,
     DrawApprovalFingerprint,

@@ -173,14 +173,13 @@ class ApprovalFingerprintFramingTests(unittest.TestCase):
                     else:
                         item[0]["schema_version" if current_id == 4 else "version"] += "x"
                     changed.append((current_id, value_type, jcs(item)))
-            else:
-                if field_id in (3, 6, 7, 9):
-                    item = json.loads(next(payload for i, _, payload in self.records if i == field_id))
-                    if field_id == 6:
-                        item["fingerprint_test_change"] = True
-                    else:
-                        item["version"] += "x"
-                    changed.append((field_id, 0x03, jcs(item)))
+            if field_id in (3, 6, 7, 9):
+                item = json.loads(next(payload for i, _, payload in self.records if i == field_id))
+                if field_id == 6:
+                    item["fingerprint_test_change"] = True
+                else:
+                    item["version"] += "x"
+                changed.append((field_id, 0x03, jcs(item)))
             self.assertNotEqual(fingerprint(changed)[0], expected)
 
     def test_set_collections_are_sorted_and_duplicates_or_bad_hashes_rejected(self):

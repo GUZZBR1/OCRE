@@ -6,8 +6,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
-from .jobs import (AdapterExecutionSnapshot, CommitReceipt, ExecutionSubmitted,
-                  IdempotencyConflict, IdempotencyRecord, JobSnapshot,
+from .jobs import (AdapterExecutionSnapshot, CommitReceipt,
+                  IdempotencyConflict, JobSnapshot,
                   JobPersistencePort, OutboxMessage)
 from . import codec
 from ocre_core.jobs import ADAPTER_TERMINAL_STATES, TERMINAL_STATES
@@ -58,7 +58,7 @@ class SQLiteJobStore(JobPersistencePort):
             return CommitReceipt(receipt.snapshot, receipt.event, True)
         return None
 
-    def _commit(self, *, snapshot, event, expected_sequence, idempotency, outbox, extra_snapshots=()):
+    def _commit(self, *, snapshot, event, expected_sequence, idempotency, outbox):
         if event.sequence != expected_sequence + 1 or snapshot.sequence != event.sequence:
             raise ValueError("snapshot/event sequence mismatch")
         agg_id = snapshot.job_id if isinstance(snapshot, JobSnapshot) else snapshot.execution_id
@@ -151,7 +151,7 @@ class SQLiteJobStore(JobPersistencePort):
 
     def pending_outbox(self, limit=100):
         with self._connect() as db: rows=db.execute("SELECT message_id,tenant,aggregate_id,event_id,topic,body FROM outbox WHERE delivered=0 ORDER BY rowid LIMIT ?",(limit,)).fetchall()
-        return tuple(OutboxMessage(*row[:1], *row[2:5], row[5]) for row in rows)
+        return tuple(OutboxMessage(row[0], *row[2:]) for row in rows)
 
     def mark_delivered(self, message_id):
         with self._connect() as db: return db.execute("UPDATE outbox SET delivered=1 WHERE message_id=?",(message_id,)).rowcount == 1

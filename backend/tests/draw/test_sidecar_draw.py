@@ -3,15 +3,9 @@ from __future__ import annotations
 
 import copy
 import hashlib
-import sys
 import unittest
-from pathlib import Path
 
-BACKEND = Path(__file__).resolve().parents[2]
-if str(BACKEND) not in sys.path:
-    sys.path.insert(0, str(BACKEND))
-
-from ocre_core.draw.sidecar import (  # noqa: E402
+from ocre_core.draw.sidecar import (
     DRAW_ORIGINS,
     SIDECAR_VERSION,
     build_draw_sidecar,

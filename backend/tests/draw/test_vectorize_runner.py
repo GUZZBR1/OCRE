@@ -8,7 +8,6 @@ G0.1/G0.2 (20 folhas) NÃO foi rodada.
 """
 
 import hashlib
-import sys
 import tempfile
 import unittest
 from pathlib import Path

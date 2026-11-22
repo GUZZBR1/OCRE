@@ -17,7 +17,6 @@ export type LocalFixture = {
     synthetic: true;
     source: 'bundled-local-fixture';
     validationStatus: 'not-validated';
-    displayName: string;
     displacementScale: number;
     units: { length: 'mm'; displacement: 'mm'; stress: 'MPa' };
   };
@@ -32,7 +31,6 @@ export const fixture: LocalFixture = {
     synthetic: true,
     source: 'bundled-local-fixture',
     validationStatus: 'not-validated',
-    displayName: 'Viga demonstrativa',
     displacementScale: 30,
     units: { length: 'mm', displacement: 'mm', stress: 'MPa' },
   },

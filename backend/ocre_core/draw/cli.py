@@ -59,7 +59,6 @@ either — ``--origin`` is required and must be one of the three
 from __future__ import annotations
 
 import argparse
-import hashlib
 import io
 import json
 import os
@@ -92,6 +91,7 @@ from .validator_draw import (
     validate_draw_document,
     validate_draw_document_or_raise,
 )
+from .vectorize_runner import sha256_bytes as _sha256_bytes, sha256_file as _sha256_file
 
 __all__ = ["main"]
 
@@ -102,18 +102,6 @@ UNIT_POLICY_VERSION = "0.1.0"
 DXF_ADAPTER_VERSION = "0.1.0"
 _HEX40_RE = re.compile(r"^[0-9a-f]{40}$")
 _ORIGINS = ("fork-session-v2", "upstream-vectorize", "upstream-canvas-png")
-
-
-def _sha256_file(path: str | Path) -> str:
-    digest = hashlib.sha256()
-    with open(path, "rb") as handle:
-        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
-
-
-def _sha256_bytes(data: bytes) -> str:
-    return hashlib.sha256(data).hexdigest()
 
 
 def _canonical_bytes(value: Any) -> bytes:
@@ -1373,7 +1361,7 @@ def _cmd_beta_run(args: argparse.Namespace) -> int:
             return True
         try:
             from dataclasses import asdict
-            from .ai.proposals import Proposal, confirm, reject
+            from .ai.proposals import PROPOSAL_STATES, Proposal, confirm, reject
             from .ai.semantics import analyze, material_for_step
             digest = document_sha256(doc)
             ledger = (
@@ -1417,7 +1405,7 @@ def _cmd_beta_run(args: argparse.Namespace) -> int:
                         raise ValueError(
                             f"proposal {proposal.proposal_id} document revision/hash mismatch"
                         )
-                    if proposal.state not in {"pending", "confirmed", "rejected"}:
+                    if proposal.state not in PROPOSAL_STATES:
                         raise ValueError(f"invalid state for proposal {proposal.proposal_id}")
                     proposals_by_id[proposal.proposal_id] = proposal
                 known = set(proposals_by_id)
@@ -1554,18 +1542,6 @@ def _cmd_beta_run(args: argparse.Namespace) -> int:
         if path.relative_to(out_dir).parts[0] in published and path.is_file()
     ]
     return _finish()
-
-
-def _cmd_validate(args: argparse.Namespace) -> int:
-    path = Path(args.document)
-    try:
-        raw = path.read_bytes()
-    except OSError as exc:
-        print(f"error: cannot read document: {exc}", file=sys.stderr)
-        return 2
-    report = validate_draw_document(raw)
-    print(json.dumps(report.as_dict(), sort_keys=True, indent=2))
-    return 0 if report.valid else 1
 
 
 def main(argv: list[str] | None = None) -> int:

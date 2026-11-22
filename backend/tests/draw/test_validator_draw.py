@@ -1,4 +1,3 @@
-import copy
 import unittest
 
 from ocre_core.draw.document import (
@@ -259,8 +258,6 @@ class PreviousRevisionTests(unittest.TestCase):
 
 class CustomSchemaTests(unittest.TestCase):
     def test_supplied_schema_uses_canonical_digest(self):
-        import json
-
         from ocre_core.draw.validator_draw import _canonical_bytes, load_bundled_schema
 
         schema, _, _ = load_bundled_schema()

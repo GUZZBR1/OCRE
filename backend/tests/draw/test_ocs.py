@@ -27,7 +27,6 @@ from ocre_core.draw.ocs import (
     OcsUnavailableError,
     find_ocs_binary,
     launch_headless,
-    resolve_token,
     stop_server,
 )
 

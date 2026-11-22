@@ -36,19 +36,13 @@ SCHEMA_VERSION = "0.1.0"
 SCHEMA_NAME = "draw.paper.v1"
 
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
-UUID_V4_RE = re.compile(
-    r"^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
-)
 
 # Default paper (A4) — the paper policy lives in ``paper.py`` (D3); these
 # names stay as backward-compatible aliases for the default spec only.
 # The semantic checks below read the paper from the document itself, so
 # a document on another sheet is judged against ITS sheet, not A4.
 PAPER_WIDTH_MM = DEFAULT_SPEC.width_mm
-PAPER_EFFECTIVE_WIDTH_MM = DEFAULT_SPEC.effective_width_mm
 PAPER_EFFECTIVE_HEIGHT_MM = DEFAULT_SPEC.effective_height_mm
-CANVAS_WIDTH_PX = DEFAULT_SPEC.canvas_width_px
-CANVAS_HEIGHT_PX = DEFAULT_SPEC.canvas_height_px
 # A scale is consistent with the paper when it maps the canvas onto the
 # effective sheet within 0.01 mm on each axis.
 SCALE_TOLERANCE_MM = 0.01

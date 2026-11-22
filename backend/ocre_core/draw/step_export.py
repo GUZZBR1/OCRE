@@ -76,8 +76,8 @@ ORACLE_UNAVAILABLE = "unavailable"
 MATERIAL_MANIFEST_SCHEMA = "ocre.step-material-manifest.v1"
 
 
-def _document_sha256(document: dict) -> str:
-    return document_sha256(document)
+class StepExportError(ValueError):
+    """Documento/parâmetros inválidos para exportação STEP (fail-closed)."""
 
 
 def load_step_material_manifest(step_path: str | Path, *, document: dict | None = None) -> dict:
@@ -97,7 +97,7 @@ def load_step_material_manifest(step_path: str | Path, *, document: dict | None 
         if not isinstance(material.get("value"), str) or not material["value"].strip():
             raise StepExportError("material ausente no manifesto")
         if document is not None:
-            if source.get("document_sha256") != _document_sha256(document):
+            if source.get("document_sha256") != document_sha256(document):
                 raise StepExportError("document_sha256 não corresponde ao documento fornecido")
             expected_ids = [s.get("stroke_id") for s in document.get("strokes", []) if isinstance(s, dict) and s.get("status") == "stable" and s.get("closed")]
             if ids != expected_ids:
@@ -107,8 +107,6 @@ def load_step_material_manifest(step_path: str | Path, *, document: dict | None 
         raise
     except (OSError, ValueError, KeyError, TypeError, AttributeError) as exc:
         raise StepExportError(f"manifesto STEP inválido ou ilegível: {manifest_path}") from exc
-class StepExportError(ValueError):
-    """Documento/parâmetros inválidos para exportação STEP (fail-closed)."""
 
 
 class StepWorkerError(RuntimeError):
@@ -409,7 +407,7 @@ def document_to_step(
         "document": {
             "doc_id": document.get("doc_id"),
             "revision": document.get("revision"),
-            "document_sha256": _document_sha256(document),
+            "document_sha256": document_sha256(document),
         },
         "geometry": {
             "stroke_ids": stroke_ids,

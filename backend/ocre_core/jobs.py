@@ -231,11 +231,6 @@ def transition_adapter_execution(
         raise ConcurrentJobUpdate(
             f"expected execution sequence {expected_sequence}, found {current_sequence}"
         )
-    if current_state == AdapterExecutionState.COLLECTING and target_state in {
-        AdapterExecutionState.CANCEL_REQUESTED,
-        AdapterExecutionState.CANCELLED,
-    }:
-        raise CancellationUnsupportedInPhase("cancellation_unsupported_in_phase")
     _validate_transition(
         current_state=current_state,
         target_state=target_state,
@@ -292,12 +287,6 @@ def _validate_cancellation_evidence(
         is not CancellationEvidenceKind.PROCESS_TERMINATED_BY_CANCELLATION
     ):
         raise InvalidJobTransition("cancellation evidence does not match request phase")
-    valid_kinds = {
-        CancellationEvidenceKind.WORKER_START_PREVENTED,
-        CancellationEvidenceKind.PROCESS_TERMINATED_BY_CANCELLATION,
-    }
-    if evidence.kind not in valid_kinds:
-        raise InvalidJobTransition("unsupported cancellation evidence")
     if evidence.observed_at.tzinfo is None or evidence.observed_at.utcoffset() is None:
         raise ValueError("cancellation evidence timestamp must be timezone-aware")
 

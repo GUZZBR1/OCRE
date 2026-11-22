@@ -69,7 +69,7 @@ def _sha256(path: Path) -> str:
 
 def _export_step_with_material(shape, path: Path, material: str, timestamp: str | None) -> bool:
     """Write a STEP with a descriptive XCAF material label (no density)."""
-    from OCP import IFSelect, Message, STEPCAFControl, STEPControl
+    from OCP import IFSelect, Message, STEPControl
     from OCP.STEPCAFControl import STEPCAFControl_Writer
     from OCP.TCollection import TCollection_ExtendedString, TCollection_HAsciiString
     from OCP.XCAFDoc import XCAFDoc_DocumentTool
@@ -91,7 +91,6 @@ def _export_step_with_material(shape, path: Path, material: str, timestamp: str 
         raise RuntimeError("STEPCAFControl_Writer.Transfer falhou")
     try:
         from OCP.APIHeaderSection import APIHeaderSection_MakeHeader
-        from OCP.TCollection import TCollection_HAsciiString
         header = APIHeaderSection_MakeHeader(writer.Writer().Model())
         if timestamp:
             header.SetTimeStamp(TCollection_HAsciiString(timestamp))
@@ -103,7 +102,7 @@ def _export_step_with_material(shape, path: Path, material: str, timestamp: str 
 
 
 def _job_export(job: dict) -> dict:
-    from build123d import Polyline, export_step, extrude, make_face
+    from build123d import Polyline, extrude, make_face
 
     profiles = job.get("profiles")
     thickness = job.get("thickness_mm")

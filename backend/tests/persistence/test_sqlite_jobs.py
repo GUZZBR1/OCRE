@@ -1,3 +1,4 @@
+import sqlite3
 from datetime import datetime, timezone
 from dataclasses import replace
 from concurrent.futures import ThreadPoolExecutor
@@ -45,7 +46,7 @@ def test_create_execution_is_atomic_and_replayable(tmp_path):
     assert store.create_execution(job_snapshot=job,execution_snapshot=execution,submitted_event=event,idempotency=idem,outbox=outbox).event==event
     assert store.create_execution(job_snapshot=job,execution_snapshot=execution,submitted_event=event,idempotency=idem,outbox=outbox).replayed
     assert store.get_execution_snapshot("x", tenant_id="default").state.value=="queued"
-    with pytest.raises(Exception):
+    with pytest.raises(sqlite3.IntegrityError):
         store.create_execution(job_snapshot=JobSnapshot("j",JobState.QUEUED,1,NOW),execution_snapshot=AdapterExecutionSnapshot("x2","j",execution.state,1,NOW),submitted_event=ExecutionSubmitted("j","x2","submit-2",1,NOW),idempotency=IdempotencyRecord("default","submit","key2","fp","j"),outbox=OutboxMessage("m2","j","submit-2","jobs",b""))
     assert store.get_execution_snapshot("x2", tenant_id="default") is None
 
@@ -129,7 +130,6 @@ def test_identical_job_ids_are_tenant_scoped_for_snapshots_and_event_replay(tmp_
     assert [item.event.event_id for item in tenant_b_events] == ["tenant-b-event"]
 
 def test_consumer_failure_does_not_ack_and_can_resume(tmp_path):
-    from ocre_core.persistence.jobs import OutboxMessage
     message=OutboxMessage("m-retry","j","e","t",b"")
     def fail(_): raise RuntimeError("consumer interrupted")
     with pytest.raises(RuntimeError): FakeMessageConsumer(tmp_path/"consumer.db",fail).consume(message)
@@ -138,10 +138,9 @@ def test_consumer_failure_does_not_ack_and_can_resume(tmp_path):
     assert handled == [message]
 
 def test_consumer_recovers_abandoned_claim_after_restart(tmp_path):
-    from ocre_core.persistence.jobs import OutboxMessage
     message=OutboxMessage("m-crash","j","e","t",b"")
     db=tmp_path/"consumer.db"
-    with __import__("sqlite3").connect(db) as conn:
+    with sqlite3.connect(db) as conn:
         conn.execute("CREATE TABLE consumed(message_id TEXT PRIMARY KEY, status TEXT NOT NULL)")
         conn.execute("INSERT INTO consumed VALUES(?,'processing')",(message.message_id,))
     handled=[]

@@ -2,16 +2,11 @@ from __future__ import annotations
 
 import hashlib
 import json
-import sys
 from pathlib import Path
 
 import pytest
 
-BACKEND = Path(__file__).resolve().parents[2]
-if str(BACKEND) not in sys.path:
-    sys.path.insert(0, str(BACKEND))
-
-from ocre_core.provenance.sidecar import (  # noqa: E402
+from ocre_core.provenance.sidecar import (
     audit_sidecar,
     build_sidecar,
 )

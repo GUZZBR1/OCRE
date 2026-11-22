@@ -73,3 +73,5 @@ ledger, CAD-only limits, and current integration status are documented in
 [`docs/draw-ai-cad-pipeline.md`](../docs/draw-ai-cad-pipeline.md). The AI layer
 contracts and architecture history are in
 [`docs/architecture/DRAW_AI_LAYER.md`](../docs/architecture/DRAW_AI_LAYER.md).
+
+Verificação local de imports: `.venv/bin/python -m pyflakes ocre_core tests`.
