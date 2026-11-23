@@ -665,6 +665,42 @@ class BetaRunMockedTests(unittest.TestCase):
             self.assertIn("engine segfault", physics["error"])
             self.assertTrue((out_dir / "beta-report.json").is_file())
 
+    def test_vectorize_pythonpath_without_module_blocks_preflight(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            out_dir = Path(tmp) / "out"
+            code, out = _run_cli(_base_argv(
+                out_dir, ["--vectorize-pythonpath", "/qualquer/src"]))
+            report = json.loads(out)
+        self.assertEqual(code, 2, out)
+        self.assertEqual(report["status"], "blocked")
+        self.assertIn("--vectorize-pythonpath",
+                      report["steps"][0]["error"])
+
+    def test_vectorize_module_flags_reach_run_vectorize_and_report(self):
+        # beta-run repassa as flags via _beta_step_export e registra
+        # os parâmetros de invocação no relatório.
+        from ocre_core.draw.vectorize_runner import VectorizeError
+
+        with tempfile.TemporaryDirectory() as tmp:
+            out_dir = Path(tmp) / "out"
+            with mock.patch(
+                "ocre_core.draw.vectorize_runner.run_vectorize",
+                side_effect=VectorizeError("stop after observing call"),
+            ) as run:
+                code, out = _run_cli(_base_argv(out_dir, [
+                    "--vectorize-module", "draw.exporters.vectorize",
+                    "--vectorize-pythonpath", "/draw/draw-core/src",
+                ]))
+        self.assertEqual(
+            run.call_args.kwargs["module"], "draw.exporters.vectorize")
+        self.assertEqual(
+            run.call_args.kwargs["pythonpath"], "/draw/draw-core/src")
+        report = json.loads(out)
+        self.assertEqual(
+            report["params"]["vectorize_module"], "draw.exporters.vectorize")
+        self.assertEqual(
+            report["params"]["vectorize_pythonpath"], "/draw/draw-core/src")
+
     def test_fmu_gate_reports_not_triggered_without_fmu(self):
         from ocre_core.draw.fmu_gate import validate_fmu
 

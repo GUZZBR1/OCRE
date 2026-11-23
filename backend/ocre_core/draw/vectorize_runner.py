@@ -2,7 +2,22 @@
 
 Roda o script de vetorização do Draw como subprocesso, sem copiar o
 script para o OCRE e sem importar nada dele. O script vive no Draw
-(``src/draw/exporters/vectorize.py``, CLI verificada por leitura em 2026-11-05)::
+(``src/draw/exporters/vectorize.py``, CLI verificada por leitura em 2026-11-05).
+Dois modos de invocação, mesmos argumentos e mesmas garantias:
+
+- **arquivo** (default): ``python src/draw/exporters/vectorize.py ...`` —
+  válido para a revisão pinada (self-contained, sha 5f0dad51);
+- **módulo** (``module=``): ``PYTHONPATH=<clone>/src python -m
+  draw.exporters.vectorize ...`` — exigido pelo HEAD do draw-core, onde
+  o vectorize usa imports relativos de pacote (``from .export_vectors
+  import ...``) e a execução direta quebra com ImportError. O
+  ``pythonpath`` é resolvido para caminho absoluto e injetado no env do
+  subprocesso, à frente do PYTHONPATH herdado; ``pythonpath`` sem
+  ``module`` é recusado (não teria efeito — fail-closed).
+
+Nos dois modos o sha256 conferido antes de rodar é o do ARQUIVO
+``.py`` passado em ``script_path`` — o pin continua sendo do arquivo,
+mesmo quando a invocação é por módulo::
 
     python src/draw/exporters/vectorize.py canvas.png --json saida.json
         [--out saida.svg] [--clean] [--stamps canvas_stamps.npz]
@@ -44,6 +59,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import os
 import subprocess
 import sys
 import tempfile
@@ -238,6 +254,20 @@ def _normalize_primitives_with_skipped_types(
     return polylines, skipped_types
 
 
+def _resolve_pythonpath(pythonpath: str | Path) -> str:
+    """Resolve cada entrada de ``pythonpath`` para caminho absoluto.
+
+    Aceita uma entrada única ou várias separadas por ``os.pathsep``.
+    A resolução acontece aqui (cwd do chamador), nunca dentro do
+    subprocesso — o cwd isolado tornaria uma entrada relativa ambígua.
+    """
+    return os.pathsep.join(
+        str(Path(part).resolve())
+        for part in str(pythonpath).split(os.pathsep)
+        if part
+    )
+
+
 def run_vectorize(
     png_path: str | Path,
     script_path: str | Path,
@@ -251,14 +281,29 @@ def run_vectorize(
     epsilon: float | None = None,
     thinning: str | None = None,
     paper_mm: tuple[float, float] | None = None,
+    module: str | None = None,
+    pythonpath: str | Path | None = None,
 ) -> dict:
     """Roda o vectorize do Draw sobre ``png_path`` e devolve o resultado.
 
     ``expected_sha256`` é o hash pinado do ``src/draw/exporters/vectorize.py``; o
-    script é conferido antes de qualquer execução. O JSON de saída é
-    escrito num diretório isolado (``output_dir`` ou um temporário, que
-    é removido ao fim quando criado aqui) e lido de volta.
+    script é conferido antes de qualquer execução, nos dois modos de
+    invocação. O JSON de saída é escrito num diretório isolado
+    (``output_dir`` ou um temporário, que é removido ao fim quando
+    criado aqui) e lido de volta.
+
+    Sem ``module`` o vectorize roda como arquivo
+    (``python <script_path> ...``). Com ``module`` a invocação vira
+    ``python -m <module> ...`` e ``pythonpath`` — resolvido para
+    caminho absoluto — é injetado no PYTHONPATH do subprocesso, à
+    frente do PYTHONPATH herdado; ``pythonpath`` sem ``module`` é
+    recusado (fail-closed, não teria efeito).
     """
+    if pythonpath is not None and module is None:
+        raise VectorizeError(
+            "pythonpath sem module não faz sentido: o PYTHONPATH só é "
+            "injetado na invocação por módulo (python -m); recusado"
+        )
     png_path = Path(png_path).resolve()
     script_path = Path(script_path).resolve()
     if stamps_path is not None:
@@ -285,9 +330,12 @@ def run_vectorize(
     try:
         json_path = out_dir / "vectorize.json"
         svg_path = out_dir / "vectorize.svg"
-        command = [
-            sys.executable,
-            str(script_path),
+        command = [sys.executable]
+        if module is not None:
+            command += ["-m", module]
+        else:
+            command.append(str(script_path))
+        command += [
             str(png_path),
             "--json",
             str(json_path),
@@ -310,6 +358,16 @@ def run_vectorize(
         if extra_args:
             command += list(extra_args)
 
+        env: dict[str, str] | None = None
+        if pythonpath is not None:
+            env = dict(os.environ)
+            existing_pythonpath = env.get("PYTHONPATH")
+            env["PYTHONPATH"] = (
+                _resolve_pythonpath(pythonpath)
+                + (os.pathsep + existing_pythonpath
+                   if existing_pythonpath else "")
+            )
+
         try:
             completed = subprocess.run(
                 command,
@@ -319,6 +377,7 @@ def run_vectorize(
                 timeout=timeout_s,
                 shell=False,
                 check=False,
+                env=env,
             )
         except subprocess.TimeoutExpired as exc:
             raise VectorizeError(

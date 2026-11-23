@@ -9,9 +9,14 @@ G0.1/G0.2 (20 folhas) NÃO foi rodada.
 
 import hashlib
 import math
+import os
+import shutil
+import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from ocre_core.draw.vectorize_runner import (
     VectorizeError,
@@ -271,6 +276,105 @@ class RunVectorizeTests(unittest.TestCase):
         result = run_vectorize(self.png, FAKE, self.fake_sha, out_dir)
         self.assertTrue(out_dir.is_dir())
         self.assertEqual(result["polylines_total"], 5)
+
+
+class RunVectorizeModuleModeTests(unittest.TestCase):
+    """Modo módulo (``python -m``): o fake copiado para um diretório
+    vira um módulo importável — ``-m`` só o encontra via PYTHONPATH,
+    provando os dois mecanismos de uma vez."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.tmp = Path(self._tmp.name)
+        self.png = fake_png(self.tmp)
+        self.fake_sha = sha256_file(FAKE)
+        self.mod_dir = self.tmp / "pkg"
+        self.mod_dir.mkdir()
+        shutil.copyfile(FAKE, self.mod_dir / "fake_vectorize_mod.py")
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def test_module_mode_invokes_dash_m_and_injects_pythonpath(self):
+        with mock.patch("subprocess.run", wraps=subprocess.run) as run:
+            result = run_vectorize(
+                self.png, FAKE, self.fake_sha, self.tmp / "out",
+                module="fake_vectorize_mod", pythonpath=self.mod_dir,
+            )
+        self.assertEqual(result["returncode"], 0)
+        self.assertEqual(result["polylines_total"], 5)
+        command = run.call_args.args[0]
+        self.assertEqual(
+            command[:3],
+            [sys.executable, "-m", "fake_vectorize_mod"],
+        )
+        env = run.call_args.kwargs["env"]
+        # A entrada injetada vem à frente de qualquer PYTHONPATH herdada.
+        self.assertEqual(
+            env["PYTHONPATH"].split(os.pathsep)[0],
+            str(self.mod_dir.resolve()),
+        )
+
+    def test_module_mode_prepends_pythonpath_to_the_inherited_one(self):
+        with mock.patch.dict(
+            os.environ, {"PYTHONPATH": "/preexistente"}
+        ), mock.patch("subprocess.run", wraps=subprocess.run) as run:
+            run_vectorize(
+                self.png, FAKE, self.fake_sha, self.tmp / "out",
+                module="fake_vectorize_mod", pythonpath=self.mod_dir,
+            )
+        env = run.call_args.kwargs["env"]
+        self.assertEqual(
+            env["PYTHONPATH"],
+            str(self.mod_dir.resolve()) + os.pathsep + "/preexistente",
+        )
+
+    def test_module_mode_without_pythonpath_inherits_env(self):
+        # Sem pythonpath o runner não constrói env: o subprocesso herda
+        # o ambiente (pacote instalado, ou PYTHONPATH do chamador —
+        # aqui, o diretório do fake) como no modo arquivo.
+        with mock.patch.dict(
+            os.environ, {"PYTHONPATH": str(FAKE.parent)}
+        ), mock.patch("subprocess.run", wraps=subprocess.run) as run:
+            result = run_vectorize(
+                self.png, FAKE, self.fake_sha, self.tmp / "out",
+                module="fake_vectorize",
+            )
+        self.assertEqual(result["returncode"], 0)
+        self.assertIsNone(run.call_args.kwargs["env"])
+
+    def test_module_mode_still_verifies_script_sha256(self):
+        # O pin continua sendo do ARQUIVO .py — divergência recusa antes
+        # de rodar, mesmo na invocação por módulo.
+        with self.assertRaises(VectorizeError):
+            run_vectorize(
+                self.png, FAKE, "0" * 64, self.tmp / "out",
+                module="fake_vectorize_mod", pythonpath=self.mod_dir,
+            )
+
+    def test_module_mode_keeps_cwd_in_the_isolated_output_dir(self):
+        with mock.patch("subprocess.run", wraps=subprocess.run) as run:
+            run_vectorize(
+                self.png, FAKE, self.fake_sha, self.tmp / "out",
+                module="fake_vectorize_mod", pythonpath=self.mod_dir,
+            )
+        self.assertEqual(
+            run.call_args.kwargs["cwd"], str(self.tmp / "out"))
+
+    def test_pythonpath_without_module_is_refused(self):
+        with self.assertRaises(VectorizeError):
+            run_vectorize(
+                self.png, FAKE, self.fake_sha, self.tmp / "out",
+                pythonpath=self.mod_dir,
+            )
+
+    def test_file_mode_command_and_env_are_unchanged(self):
+        with mock.patch("subprocess.run", wraps=subprocess.run) as run:
+            run_vectorize(self.png, FAKE, self.fake_sha, self.tmp / "out")
+        command = run.call_args.args[0]
+        self.assertEqual(command[:2], [sys.executable, str(FAKE.resolve())])
+        self.assertNotIn("-m", command)
+        self.assertIsNone(run.call_args.kwargs["env"])
 
 
 if __name__ == "__main__":
