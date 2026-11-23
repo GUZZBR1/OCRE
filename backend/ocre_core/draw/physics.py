@@ -260,11 +260,23 @@ def bar_mjcf(params: BarParams, drop_gap_m: float = DEFAULT_DROP_GAP_M) -> str:
 # Envelope de carga
 # ---------------------------------------------------------------------------
 
-def envelope_from_series(series: list[dict[str, float]]) -> dict[str, Any]:
+def envelope_from_series(
+    series: list[dict[str, float]], *, step_dt_s: float | None = None
+) -> dict[str, Any]:
     """Envelope a partir da série temporal de força normal (N).
 
     ``series``: [{"t_s": float, "f_normal_N": float}, ...] com tempo
-    monotônico. Devolve f_max, instante do pico, RMS, p95 e contagens.
+    monotônico. Devolve f_max, instante do pico, RMS, p95, impulso
+    (∫F dt — transferência de momentum, robusta às rigidezes de
+    contato distintas dos engines, ao contrário do pico instantâneo)
+    e contagens.
+
+    O impulso honra a convenção da série: com ``step_dt_s`` declarado
+    (runners do beta — uma amostra por passo executado, lida ao fim
+    do passo) o impulso é a soma retangular ``Σ f_i·step_dt_s`` e cada
+    passo conta uma vez, sem viés de borda que dependeria do timestep;
+    sem ele, a série é tratada como amostras instantâneas e integrada
+    pela regra trapezoidal.
     """
     if not series:
         raise PhysicsModelError("série de força vazia: sem envelope")
@@ -278,19 +290,48 @@ def envelope_from_series(series: list[dict[str, float]]) -> dict[str, Any]:
         raise PhysicsModelError("tempo da série não é monotônico")
     if any(f < 0 for f in forces):
         raise PhysicsModelError("força normal negativa na série")
+    if step_dt_s is not None and (
+        not isinstance(step_dt_s, (int, float))
+        or isinstance(step_dt_s, bool)
+        or not math.isfinite(float(step_dt_s))
+        or float(step_dt_s) <= 0
+    ):
+        raise PhysicsModelError(
+            f"step_dt_s deve ser positivo e finito: {step_dt_s!r}"
+        )
     peak_idx = max(range(len(forces)), key=lambda i: forces[i])
     ordered = sorted(forces)
     p95_idx = min(len(ordered) - 1, int(math.ceil(0.95 * len(ordered))) - 1)
     rms = math.sqrt(sum(f * f for f in forces) / len(forces))
+    if step_dt_s is None:
+        impulse = sum(
+            0.5 * (forces[i] + forces[i + 1]) * (times[i + 1] - times[i])
+            for i in range(len(forces) - 1)
+        )
+    else:
+        impulse = sum(forces) * float(step_dt_s)
     return {
         "f_max_N": forces[peak_idx],
         "t_peak_s": times[peak_idx],
         "rms_N": rms,
         "p95_N": ordered[p95_idx],
+        "impulse_Ns": impulse,
         "n_steps": len(series),
         "n_contact_steps": sum(1 for f in forces if f > 0),
         "duration_s": times[-1] - times[0],
     }
+
+
+def _impulse_per_step(series: list[dict[str, float]], timestep_s: float) -> float:
+    """Impulso de uma série POR-PASSO: soma retangular ``f·Δt``.
+
+    Difere da regra trapezoidal de ``envelope_from_series``, que serve a
+    amostras pontuais: aqui cada amostra é a força do passo inteiro
+    recém-executado, inclusive o último — que ainda carrega a força de
+    apoio. A trapezoidal subestimaria ``0.5·Δt``, um erro proporcional
+    ao timestep e portanto distinto entre engines (240 Hz vs 1 kHz).
+    """
+    return sum(float(s["f_normal_N"]) for s in series) * timestep_s
 
 
 def compare_envelopes(
@@ -302,7 +343,7 @@ def compare_envelopes(
     do usuário (L4). Só reporta os números.
     """
     out: dict[str, Any] = {"reference": "mujoco"}
-    for key in ("f_max_N", "rms_N", "p95_N"):
+    for key in ("f_max_N", "rms_N", "p95_N", "impulse_Ns"):
         ref = float(mujoco_envelope[key])
         val = float(pybullet_envelope[key])
         out[f"divergence_{key}"] = abs(val - ref) / ref if ref else float("nan")
@@ -436,6 +477,9 @@ def run_pybullet_case(
     finally:
         p.disconnect(client)
     envelope = envelope_from_series(series)
+    # Série por-passo (uma amostra por step executado): o impulso é a
+    # soma retangular, não a trapezoidal de amostras pontuais.
+    envelope["impulse_Ns"] = _impulse_per_step(series, timestep)
     return {
         "engine": "pybullet",
         "version": _engine_version("pybullet"),
@@ -500,6 +544,9 @@ def run_mujoco_case(
                     peak_point = [float(v) for v in contact.pos]
         series.append({"t_s": step * timestep, "f_normal_N": total})
     envelope = envelope_from_series(series)
+    # Série por-passo (uma amostra por step executado): o impulso é a
+    # soma retangular, não a trapezoidal de amostras pontuais.
+    envelope["impulse_Ns"] = _impulse_per_step(series, timestep)
     return {
         "engine": "mujoco",
         "version": _engine_version("mujoco"),
