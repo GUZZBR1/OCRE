@@ -239,6 +239,37 @@ class FindVectorizePythonTests(unittest.TestCase):
         self.assertEqual(result, Path(os.path.abspath(link)))
         self.assertNotEqual(result, Path(os.path.realpath(link)))
 
+    def test_dotdot_after_directory_symlink_is_not_collapsed(self):
+        # sub/link_dir -> target_dir: sub/link_dir/../real_bin/python resolve
+        # pelo kernel para self.tmp/real_bin/python, NÃO sub/real_bin/python.
+        # os.path.abspath() colapsaria textualmente para um caminho inexistente.
+        real_py = self.tmp / "real_bin" / "python"
+        real_py.parent.mkdir(parents=True)
+        real_py.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        real_py.chmod(0o755)
+        target_dir = self.tmp / "target_dir"
+        target_dir.mkdir()
+        link_dir = self.tmp / "sub" / "link_dir"
+        link_dir.parent.mkdir(parents=True)
+        link_dir.symlink_to(target_dir)
+
+        candidate = link_dir / ".." / "real_bin" / "python"
+        result = find_vectorize_python(candidate)
+        self.assertEqual(result, candidate)
+        self.assertTrue(result.is_file())
+        self.assertNotEqual(result, Path(os.path.abspath(candidate)))
+
+    def test_nonexistent_tilde_user_raises_vectorize_error(self):
+        bad = "~usuario_inexistente_ocre_99999/bin/python"
+        with self.assertRaises(VectorizeError) as ctx_explicit:
+            find_vectorize_python(bad)
+        self.assertIn("explícito", str(ctx_explicit.exception))
+
+        with mock.patch.dict(os.environ, {"OCRE_VECTORIZE_PYTHON": bad}):
+            with self.assertRaises(VectorizeError) as ctx_env:
+                find_vectorize_python()
+        self.assertIn("OCRE_VECTORIZE_PYTHON", str(ctx_env.exception))
+
 
 class RunVectorizeTests(unittest.TestCase):
     def setUp(self):

@@ -255,27 +255,40 @@ def find_vectorize_python(explicit: str | Path | None = None) -> Path:
     argumento ou env — que não existe ou não é executável é
     ``VectorizeError``: nunca cai silenciosamente num interpretador não
     pedido (as deps do vectorize, cv2+numpy, podem não estar no venv da
-    CLI). O caminho devolvido é absoluto mas NÃO ``.resolve()``:
-    ``bin/python`` de venv é symlink e resolvê-lo rodaria o subprocesso
-    fora do venv. ``~`` é expandido.
+    CLI). O caminho devolvido é absoluto mas NÃO ``.resolve()`` nem
+    ``os.path.abspath()``: ``bin/python`` de venv é symlink e
+    resolvê-lo rodaria o subprocesso fora do venv, e ``abspath``
+    colapsaria ``..`` textualmente sem seguir symlinks de diretório —
+    validando um caminho e executando outro. Os componentes são
+    preservados (o kernel resolve ``..`` como ``is_file``/``os.access``
+    já fizeram na validação). ``~`` é expandido.
     """
     if explicit is not None:
-        candidate = Path(explicit).expanduser()
+        raw: str | Path = explicit
         source = f"explícito {explicit!r}"
+        expand = True
     else:
         env = os.environ.get("OCRE_VECTORIZE_PYTHON")
         if env:
-            candidate = Path(env).expanduser()
+            raw = env
             source = f"OCRE_VECTORIZE_PYTHON={env!r}"
+            expand = True
         else:
-            candidate = Path(sys.executable)
+            raw = sys.executable
             source = "sys.executable"
+            expand = False
+    try:
+        candidate = Path(raw).expanduser() if expand else Path(raw)
+    except RuntimeError as exc:
+        raise VectorizeError(
+            f"interpretador do vectorize inválido ({source}): {exc}"
+        ) from exc
     if not candidate.is_file() or not os.access(candidate, os.X_OK):
         raise VectorizeError(
             f"interpretador do vectorize inválido ({source}): "
             f"{candidate} não existe ou não é executável"
         )
-    return Path(os.path.abspath(candidate))
+    return candidate if candidate.is_absolute() else Path.cwd() / candidate
 
 
 def run_vectorize(
