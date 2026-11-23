@@ -208,4 +208,3 @@ class SyntheticWorker:
         )
         if self._after_transition is not None:
             self._after_transition(event)
-        return next_snapshot

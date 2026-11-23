@@ -11,6 +11,7 @@ from enum import Enum
 from typing import Any, Protocol
 
 from ocre_core.jobs import (
+    TERMINAL_STATES,
     AdapterExecutionState,
     CancellationUnsupportedInPhase,
     ConcurrentJobUpdate,
@@ -165,10 +166,7 @@ class OCREApplication:
         except (KeyError, TypeError, ValueError) as exc:
             raise ApplicationError("validation_failed", 422, "Invalid sync batch") from exc
         decision = self.sync_store.evaluate(batch, tenant_id=principal.tenant_id)
-        if isinstance(decision, SyncConflict):
-            raise ApplicationError("sync_conflict", 409, "Batch base revision is stale", current_head_revision_id=decision.current_head_revision_id)
-        if isinstance(decision, SyncBatchIdentityConflict):
-            raise ApplicationError("sync_batch_identity_conflict", 409, "Batch identity was reused")
+        self._raise_sync_error(decision)
         if isinstance(decision, SyncReplay):
             return self._receipt(decision.receipt, replayed=True)
         receipt = self.sync_store.commit(
@@ -176,12 +174,16 @@ class OCREApplication:
             tenant_id=principal.tenant_id,
             committed_revision_id=_new_id("rev"),
         )
-        if isinstance(receipt, SyncBatchIdentityConflict):
-            raise ApplicationError("sync_batch_identity_conflict", 409, "Batch identity was reused")
-        if isinstance(receipt, SyncConflict):
-            raise ApplicationError("sync_conflict", 409, "Batch base revision is stale", current_head_revision_id=receipt.current_head_revision_id)
+        self._raise_sync_error(receipt)
         replayed = isinstance(receipt, SyncReplay)
         return self._receipt(receipt.receipt if replayed else receipt, replayed=replayed)
+
+    @staticmethod
+    def _raise_sync_error(result: Any) -> None:
+        if isinstance(result, SyncConflict):
+            raise ApplicationError("sync_conflict", 409, "Batch base revision is stale", current_head_revision_id=result.current_head_revision_id)
+        if isinstance(result, SyncBatchIdentityConflict):
+            raise ApplicationError("sync_batch_identity_conflict", 409, "Batch identity was reused")
 
     @staticmethod
     def _receipt(receipt: BatchReceipt, *, replayed: bool) -> dict[str, Any]:
@@ -280,7 +282,7 @@ class OCREApplication:
             if prior.snapshot.job_id != job_id:
                 raise ApplicationError("idempotency_key_reused", 409, "Idempotency key was reused")
             return {"job_id": job_id, "state": prior.snapshot.state.value, "sequence": prior.snapshot.sequence, "replayed": True}
-        if snapshot.state in {JobState.SUCCEEDED, JobState.FAILED, JobState.CANCELLED}:
+        if snapshot.state in TERMINAL_STATES:
             return {"job_id": job_id, "state": snapshot.state.value, "sequence": snapshot.sequence, "replayed": False}
         now = self.clock()
         try:

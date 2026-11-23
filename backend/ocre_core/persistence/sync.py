@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import sqlite3
 
-from ocre_core.sync import BatchReceipt, SyncBatch, SyncBatchIdentityConflict, SyncConflict, SyncReplay, SyncReady, evaluate_sync_batch
+from ocre_core.sync import BatchReceipt, SyncBatch, SyncBatchIdentityConflict, SyncConflict, SyncReplay, evaluate_sync_batch
 from .sqlite import PersistenceConflict
 from . import codec
 
@@ -52,7 +52,6 @@ class SQLiteSyncStore:
             head=h[0] if h else None
             decision=evaluate_sync_batch(batch,current_head_revision_id=head)
             if isinstance(decision,SyncConflict): db.rollback(); return decision
-            if not isinstance(decision,SyncReady): raise RuntimeError("unexpected sync decision")
             receipt=BatchReceipt(batch,committed_revision_id)
             db.execute("INSERT INTO sync_revisions VALUES(?,?,?,?,?,?)",(tenant_id,batch.project_id,committed_revision_id,batch.batch_id,self._dump(revision_snapshot),self._dump(batch.operations)))
             db.execute("INSERT INTO sync_receipts VALUES(?,?,?,?,?)",(tenant_id,batch.project_id,batch.batch_id,self._dump(batch),self._dump(receipt)))

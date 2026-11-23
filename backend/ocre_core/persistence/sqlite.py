@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import sqlite3
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Callable
 
@@ -55,7 +55,7 @@ class SQLiteJobStore(JobPersistencePort):
         if row:
             if row[0] != idem.request_fingerprint: raise IdempotencyConflict(idem.key)
             receipt = self._load(row[1])
-            return CommitReceipt(receipt.snapshot, receipt.event, True)
+            return replace(receipt, replayed=True)
         return None
 
     def _commit(self, *, snapshot, event, expected_sequence, idempotency, outbox):
@@ -77,28 +77,27 @@ class SQLiteJobStore(JobPersistencePort):
                 row = db.execute("SELECT seq,body FROM snapshots WHERE tenant=? AND kind=? AND id=?", (tenant, "job" if isinstance(snapshot, JobSnapshot) else "execution", agg_id)).fetchone()
                 if row is None or row[0] != expected_sequence: raise PersistenceConflict("stale or missing snapshot")
                 old = self._load(row[1])
-                if getattr(event, "from_state") != old.state: raise ValueError("event from_state differs from persisted snapshot")
+                if event.from_state != old.state: raise ValueError("event from_state differs from persisted snapshot")
                 terminal_states = ADAPTER_TERMINAL_STATES if isinstance(old, AdapterExecutionSnapshot) else TERMINAL_STATES
                 if old.state in terminal_states: raise ValueError("terminal snapshot is immutable")
                 if snapshot.state != event.to_state: raise ValueError("snapshot state differs from event destination")
                 origin = old.cancellation_origin
-                if getattr(event, "to_state").value == "cancel_requested":
-                    if getattr(event, "from_state").value not in {"queued", "running"} or getattr(event, "cancellation_origin", None) != old.state:
+                if event.to_state.value == "cancel_requested":
+                    if event.from_state.value not in {"queued", "running"} or event.cancellation_origin != old.state:
                         raise ValueError("cancel request origin does not match persisted state")
                     origin = old.state
-                elif getattr(event, "from_state").value == "cancel_requested":
-                    if getattr(event, "cancellation_origin", None) != origin: raise ValueError("cancellation origin mismatch")
-                    evidence=getattr(event,"cancellation_evidence",None)
-                    if getattr(event,"to_state").value == "cancelled":
+                elif event.from_state.value == "cancel_requested":
+                    if event.cancellation_origin != origin: raise ValueError("cancellation origin mismatch")
+                    evidence=event.cancellation_evidence
+                    if event.to_state.value == "cancelled":
                         expected_kind="worker_start_prevented" if origin.value == "queued" else "process_terminated_by_cancellation"
                         if evidence is None or evidence.aggregate_id != agg_id or evidence.requested_from_state != origin or evidence.kind.value != expected_kind:
                             raise ValueError("cancellation evidence does not match persisted request")
                     elif evidence is not None:
                         raise ValueError("cancellation evidence is only valid for cancelled outcome")
-                elif getattr(event,"cancellation_evidence",None) is not None:
+                elif event.cancellation_evidence is not None:
                     raise ValueError("cancellation evidence without persisted cancellation request")
-                if isinstance(snapshot, JobSnapshot): snapshot = JobSnapshot(snapshot.job_id,snapshot.state,snapshot.sequence,snapshot.updated_at,snapshot.payload,origin,tenant)
-                else: snapshot = AdapterExecutionSnapshot(snapshot.execution_id,snapshot.job_id,snapshot.state,snapshot.sequence,snapshot.updated_at,snapshot.payload,origin,tenant)
+                snapshot = replace(snapshot, cancellation_origin=origin)
                 db.execute("UPDATE snapshots SET seq=?,body=? WHERE tenant=? AND kind=? AND id=?", (snapshot.sequence,self._dump(snapshot),tenant,"job" if isinstance(snapshot,JobSnapshot) else "execution",agg_id))
                 db.execute("INSERT INTO events(tenant,job_id,seq,event_id,body) VALUES(?,?,?,?,?)", (tenant,snapshot.job_id,event.sequence,event.event_id,self._dump(event)))
                 if idempotency: db.execute("INSERT INTO receipts VALUES(?,?,?,?,?)",(tenant,idempotency.operation,idempotency.key,idempotency.request_fingerprint,self._dump(CommitReceipt(snapshot,event))))
@@ -142,7 +141,7 @@ class SQLiteJobStore(JobPersistencePort):
     def find_idempotency(self, *, tenant_id, operation, key):
         with self._connect() as db: row=db.execute("SELECT body FROM receipts WHERE tenant=? AND operation=? AND key=?",(tenant_id,operation,key)).fetchone()
         r=self._load(row[0]) if row else None
-        return CommitReceipt(r.snapshot,r.event,True) if r else None
+        return replace(r, replayed=True) if r else None
 
     def read_events(self, *, tenant_id, job_id, after_cursor=0, limit=100):
         if limit < 1: raise ValueError("limit must be positive")

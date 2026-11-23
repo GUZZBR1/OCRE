@@ -626,8 +626,7 @@ def run_contact_case(
         "mass_kg": bar_mass_inertia(params)[0],
         "engines": {},
     }
-    pb_result: dict[str, Any] | None = None
-    mj_result: dict[str, Any] | None = None
+    results: dict[str, Any] = {}
     for name, runner in (
         ("pybullet", run_pybullet_case),
         ("mujoco", run_mujoco_case),
@@ -636,14 +635,11 @@ def run_contact_case(
             result = runner(params, duration_s=duration_s)
             result["status"] = "ok"
             report["engines"][name] = result
-            if name == "pybullet":
-                pb_result = result
-            else:
-                mj_result = result
+            results[name] = result
         except PhysicsEngineError as exc:
             report["engines"][name] = {"status": "unavailable", "reason": str(exc)}
-        except PhysicsModelError:
-            raise
+    pb_result = results.get("pybullet")
+    mj_result = results.get("mujoco")
     if pb_result is not None and mj_result is not None:
         report["comparison"] = compare_envelopes(
             pb_result["envelope"], mj_result["envelope"]
@@ -658,10 +654,7 @@ def run_contact_case(
         report["comparison"] = None
         report["load_profile_pybullet"] = None
         report["load_profile_mujoco"] = None
-    try:
-        report["pinocchio_check"] = run_pinocchio_check(params, tolerance=tolerance)
-    except PhysicsModelError:
-        raise
+    report["pinocchio_check"] = run_pinocchio_check(params, tolerance=tolerance)
     return report
 
 

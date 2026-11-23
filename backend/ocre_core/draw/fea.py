@@ -82,7 +82,7 @@ import math
 import os
 import shutil
 import subprocess
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
@@ -686,6 +686,12 @@ def _base_result(status: str, spec: AxialCaseSpec) -> FeaResult:
     }
 
 
+def _fail(result: dict[str, Any], failures: list) -> dict[str, Any]:
+    result["status"] = "failed"
+    result["failures"] = failures
+    return result
+
+
 def run_axial_case(step_path: str | Path, workdir: str | Path, *,
                    spec: AxialCaseSpec | None = None,
                    doc_id: str | None = None,
@@ -707,15 +713,7 @@ def run_axial_case(step_path: str | Path, workdir: str | Path, *,
     if spec is None:
         spec = AxialCaseSpec(step_path=step_path)
     if mesh_size_mm is not None:
-        spec = AxialCaseSpec(
-            step_path=spec.step_path,
-            young_modulus_mpa=spec.young_modulus_mpa,
-            poisson_ratio=spec.poisson_ratio,
-            prescribed_ux_mm=spec.prescribed_ux_mm,
-            length_mm=spec.length_mm, width_mm=spec.width_mm,
-            height_mm=spec.height_mm, mesh_size_mm=mesh_size_mm,
-            timeout_gmsh_s=spec.timeout_gmsh_s,
-            timeout_ccx_s=spec.timeout_ccx_s)
+        spec = replace(spec, mesh_size_mm=mesh_size_mm)
     result = _base_result("blocked", spec)
 
     # --- Preflight fail-closed: caso incompleto nao roda nada. ---
@@ -742,39 +740,29 @@ def run_axial_case(step_path: str | Path, workdir: str | Path, *,
     gmsh = _run([gmsh_bin, "-3", str(geo_path)], workdir,
                 spec.timeout_gmsh_s)
     if not gmsh["ok"]:
-        result["status"] = "failed"
-        result["failures"] = [f"gmsh failed: {gmsh['failure']}"]
         result["notes"] = [_truncate(gmsh["stderr"] or gmsh["stdout"])]
-        return result
+        return _fail(result, [f"gmsh failed: {gmsh['failure']}"])
     msh_path = workdir / "bar.msh"
     if not msh_path.is_file():
-        result["status"] = "failed"
-        result["failures"] = ["gmsh reported success but bar.msh "
-                              "was not written"]
-        return result
+        return _fail(result, ["gmsh reported success but bar.msh "
+                              "was not written"])
     try:
         mesh = parse_gmsh_msh(msh_path)
     except (ValueError, IndexError) as exc:
-        result["status"] = "failed"
-        result["failures"] = [f"could not parse bar.msh: {exc}"]
-        return result
+        return _fail(result, [f"could not parse bar.msh: {exc}"])
     if not mesh["tets"]:
-        result["status"] = "failed"
-        result["failures"] = ["mesh has no C3D4 volume elements"]
-        return result
+        return _fail(result, ["mesh has no C3D4 volume elements"])
 
     # --- Deck proprio (.inp) a partir do .msh parseado. ---
     inp_path = workdir / "job.inp"
     try:
         inp_info = write_ccx_inp(
             mesh, inp_path,
-            young_modulus_mpa=spec.young_modulus_mpa or YOUNG_MODULUS_MPA,
-            poisson_ratio=spec.poisson_ratio or POISSON_RATIO,
-            prescribed_ux_mm=spec.prescribed_ux_mm or PRESCRIBED_UX_MM)
+            young_modulus_mpa=spec.young_modulus_mpa,
+            poisson_ratio=spec.poisson_ratio,
+            prescribed_ux_mm=spec.prescribed_ux_mm)
     except ValueError as exc:
-        result["status"] = "failed"
-        result["failures"] = [f"could not write job.inp: {exc}"]
-        return result
+        return _fail(result, [f"could not write job.inp: {exc}"])
     result["notes"].append(
         f"boundary faces from {inp_info['bc_source']}; "
         f"{len(mesh['tets'])} C3D4 elements, {len(mesh['nodes'])} nodes; "
@@ -793,22 +781,16 @@ def run_axial_case(step_path: str | Path, workdir: str | Path, *,
             result["artifacts"][name] = {
                 "file": path.name, "sha256": _sha256_file(path)}
     if not ccx["ok"]:
-        result["status"] = "failed"
-        result["failures"] = [f"ccx failed: {ccx['failure']}"]
         result["notes"].append(_truncate(ccx["stderr"] or ccx["stdout"]))
-        return result
+        return _fail(result, [f"ccx failed: {ccx['failure']}"])
     if not dat_path.is_file():
-        result["status"] = "failed"
-        result["failures"] = ["ccx reported success but job.dat was "
-                              "not written"]
-        return result
+        return _fail(result, ["ccx reported success but job.dat was "
+                              "not written"])
     try:
         measured = parse_ccx_dat(dat_path.read_text(
             encoding="utf-8", errors="replace"))
     except ValueError as exc:
-        result["status"] = "failed"
-        result["failures"] = [f"could not parse job.dat: {exc}"]
-        return result
+        return _fail(result, [f"could not parse job.dat: {exc}"])
 
     rx_error = _pct_error(measured["rx_N"], RX_REF_N)
     s11_error = _pct_error(measured["s11_max_MPa"], S11_REF_MPA)
