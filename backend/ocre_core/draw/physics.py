@@ -264,7 +264,10 @@ def envelope_from_series(series: list[dict[str, float]]) -> dict[str, Any]:
     """Envelope a partir da série temporal de força normal (N).
 
     ``series``: [{"t_s": float, "f_normal_N": float}, ...] com tempo
-    monotônico. Devolve f_max, instante do pico, RMS, p95 e contagens.
+    monotônico. Devolve f_max, instante do pico, RMS, p95, impulso
+    (∫F dt, trapezoidal — transferência de momentum, robusta às
+    rigidezes de contato distintas dos engines, ao contrário do pico
+    instantâneo) e contagens.
     """
     if not series:
         raise PhysicsModelError("série de força vazia: sem envelope")
@@ -282,11 +285,16 @@ def envelope_from_series(series: list[dict[str, float]]) -> dict[str, Any]:
     ordered = sorted(forces)
     p95_idx = min(len(ordered) - 1, int(math.ceil(0.95 * len(ordered))) - 1)
     rms = math.sqrt(sum(f * f for f in forces) / len(forces))
+    impulse = sum(
+        0.5 * (forces[i] + forces[i + 1]) * (times[i + 1] - times[i])
+        for i in range(len(forces) - 1)
+    )
     return {
         "f_max_N": forces[peak_idx],
         "t_peak_s": times[peak_idx],
         "rms_N": rms,
         "p95_N": ordered[p95_idx],
+        "impulse_Ns": impulse,
         "n_steps": len(series),
         "n_contact_steps": sum(1 for f in forces if f > 0),
         "duration_s": times[-1] - times[0],
@@ -302,7 +310,7 @@ def compare_envelopes(
     do usuário (L4). Só reporta os números.
     """
     out: dict[str, Any] = {"reference": "mujoco"}
-    for key in ("f_max_N", "rms_N", "p95_N"):
+    for key in ("f_max_N", "rms_N", "p95_N", "impulse_Ns"):
         ref = float(mujoco_envelope[key])
         val = float(pybullet_envelope[key])
         out[f"divergence_{key}"] = abs(val - ref) / ref if ref else float("nan")

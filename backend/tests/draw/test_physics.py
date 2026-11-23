@@ -91,6 +91,21 @@ class EnvelopeTests(unittest.TestCase):
         self.assertEqual(env["t_peak_s"], 0.01)
         self.assertEqual(env["n_contact_steps"], 2)
         self.assertAlmostEqual(env["rms_N"], math.sqrt((25 + 9) / 3), places=10)
+        # Impulso trapezoidal: (0+5)/2*0.01 + (5+3)/2*0.01 = 0.065 N·s.
+        self.assertAlmostEqual(env["impulse_Ns"], 0.065, places=10)
+
+    def test_envelope_impulse_is_timestep_independent(self):
+        # Mesma rampa amostrada em dois passos: o impulso (integral)
+        # concorda; métricas por-amostra como RMS não precisam — por
+        # isso impulso é o escalar mais comparável entre engines com
+        # timesteps distintos (PyBullet 240 Hz vs MuJoCo 1 kHz).
+        coarse = [{"t_s": t, "f_normal_N": t * 100.0} for t in (0.0, 0.5, 1.0)]
+        fine = [{"t_s": t, "f_normal_N": t * 100.0} for t in (0.0, 0.25, 0.5, 0.75, 1.0)]
+        self.assertAlmostEqual(
+            envelope_from_series(coarse)["impulse_Ns"],
+            envelope_from_series(fine)["impulse_Ns"],
+            places=10,
+        )
 
     def test_envelope_rejects_nan_and_non_monotonic_time(self):
         with self.assertRaises(PhysicsModelError):
@@ -102,12 +117,15 @@ class EnvelopeTests(unittest.TestCase):
 
     def test_compare_envelopes_is_relative_to_mujoco(self):
         comp = compare_envelopes(
-            {"f_max_N": 110.0, "rms_N": 50.0, "p95_N": 90.0, "t_peak_s": 0.03},
-            {"f_max_N": 100.0, "rms_N": 40.0, "p95_N": 80.0, "t_peak_s": 0.04},
+            {"f_max_N": 110.0, "rms_N": 50.0, "p95_N": 90.0, "t_peak_s": 0.03,
+             "impulse_Ns": 22.0},
+            {"f_max_N": 100.0, "rms_N": 40.0, "p95_N": 80.0, "t_peak_s": 0.04,
+             "impulse_Ns": 20.0},
         )
         self.assertEqual(comp["reference"], "mujoco")
         self.assertAlmostEqual(comp["divergence_f_max_N"], 0.10)
         self.assertAlmostEqual(comp["divergence_rms_N"], 0.25)
+        self.assertAlmostEqual(comp["divergence_impulse_Ns"], 0.10)
         self.assertAlmostEqual(comp["t_peak_diff_s"], -0.01, places=10)
 
 
