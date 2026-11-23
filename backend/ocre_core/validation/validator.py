@@ -290,10 +290,19 @@ def _read_confined(root: Path, uri: Any, max_bytes: int) -> bytes:
         os.close(fd)
 
 
+def _selected_case(eir: Mapping[str, Any], case_id: str | None) -> dict[str, Any] | None:
+    """Resolve the execution case: ``case_id`` selects it; a sole case is implicit."""
+    cases = [c for c in _seq(eir.get("simulation_cases")) if isinstance(c, dict)]
+    if case_id is not None:
+        cases = [c for c in cases if c.get("case_id") == case_id]
+    return cases[0] if len(cases) == 1 else None
+
+
 def _semantic(eir: dict[str, Any], bundle: dict[str, Any], groups: dict[str, Any] | None,
               root: Path | None, purpose: str, capabilities: Mapping[str, Any] | None,
               diagnostics: list[Diagnostic], max_artifact_bytes: int, max_document_bytes: int,
               profile: dict[str, Any], unit_profile: dict[str, Any], *,
+              case_id: str | None = None,
               approval_context: Mapping[str, Any] | None = None,
               approval_out: dict[str, Any] | None = None) -> None:
     project, revision = eir.get("project", {}), eir.get("revision", {})
@@ -418,15 +427,23 @@ def _semantic(eir: dict[str, Any], bundle: dict[str, Any], groups: dict[str, Any
         except ValueError as exc:
             _add(diagnostics, "semantic", f"/artifacts/{i}/uri", "unsafe_uri", str(exc))
     if groups is not None:
-        _validate_groups(eir, groups, artifacts, diagnostics)
+        _validate_groups(eir, groups, artifacts, diagnostics, case_id)
     elif group_ref_ids:
         _add(diagnostics, "semantic", "/simulation_cases", "group_manifest_unavailable", "group manifest document was not supplied or safely loaded", "warning" if purpose == "authoring" else "error")
 
     manifest_refs = {c.get("group_manifest_ref") for c in _seq(eir.get("simulation_cases"))
                      if isinstance(c, dict) and c.get("group_manifest_ref")}
+    selected = _selected_case(eir, case_id)
     consumed = {ref for ref in (bundle.get("eir_artifact_id"),) if ref}
-    consumed.update(manifest_refs)
-    consumed.update(g.get("artifact_id") for g in eir.get("geometry", []) if isinstance(g, dict) and g.get("artifact_id"))
+    if selected is None:
+        consumed.update(manifest_refs)
+        consumed.update(g.get("artifact_id") for g in eir.get("geometry", []) if isinstance(g, dict) and g.get("artifact_id"))
+    else:
+        if selected.get("group_manifest_ref"):
+            consumed.add(selected["group_manifest_ref"])
+        geometry_refs = {ref for ref in _seq(selected.get("geometry_refs"))}
+        consumed.update(g.get("artifact_id") for g in eir.get("geometry", [])
+                        if isinstance(g, dict) and g.get("geometry_id") in geometry_refs and g.get("artifact_id"))
     if groups is not None:
         consumed.update(ref for ref in (groups.get("source_artifact_id"), groups.get("mesh_artifact_id")) if ref)
     migration = eir.get("migration")
@@ -467,7 +484,7 @@ def _semantic(eir: dict[str, Any], bundle: dict[str, Any], groups: dict[str, Any
                             _add(diagnostics, "semantic", f"/artifacts/{aid}", "document_too_large", "EIR artifact exceeds the configured document byte limit")
                         elif jcs(parse_json_strict(artifact_bytes)) != jcs(eir):
                             _add(diagnostics, "semantic", f"/artifacts/{aid}", "eir_artifact_content_mismatch", "bundle EIR artifact does not match the validated EIR document")
-                    if groups is not None and aid in manifest_refs:
+                    if groups is not None and aid in (manifest_refs & consumed):
                         if len(artifact_bytes) > max_document_bytes:
                             _add(diagnostics, "semantic", f"/artifacts/{aid}", "document_too_large", "group manifest artifact exceeds the configured document byte limit")
                         elif jcs(parse_json_strict(artifact_bytes)) != jcs(groups):
@@ -545,8 +562,10 @@ def _null_complete_refs(eir: Any, diagnostics: list[Diagnostic]) -> None:
                     _add(diagnostics, "semantic", f"/simulation_cases/{i}/material_assignments/{j}/{field}", "null_complete_reference", "complete material assignment requires this reference")
 
 
-def _validate_groups(eir: dict[str, Any], groups: dict[str, Any], artifacts: dict[str, dict[str, Any]], diagnostics: list[Diagnostic]) -> None:
-    matching = [c for c in eir.get("simulation_cases", []) if isinstance(c, dict) and c.get("group_manifest_ref")]
+def _validate_groups(eir: dict[str, Any], groups: dict[str, Any], artifacts: dict[str, dict[str, Any]], diagnostics: list[Diagnostic], case_id: str | None = None) -> None:
+    matching = [c for c in eir.get("simulation_cases", [])
+                if isinstance(c, dict) and c.get("group_manifest_ref")
+                and (case_id is None or c.get("case_id") == case_id)]
     if len(matching) != 1:
         _add(diagnostics, "semantic", "/manifest_id", "group_manifest_reference_mismatch", "one supplied group manifest must correspond to exactly one EIR case")
         return
@@ -585,7 +604,8 @@ def _approval_fingerprint(eir: dict[str, Any] | None, bundle: dict[str, Any] | N
                           context: Mapping[str, Any], capabilities: Mapping[str, Any] | None,
                           approval_out: dict[str, Any], digests: list[tuple[str, str, str]],
                           profile: dict[str, Any], unit_profile: dict[str, Any],
-                          diagnostics: list[Diagnostic]) -> str | None:
+                          diagnostics: list[Diagnostic], root: Path | None,
+                          bundle_manifest_uri: str | None, max_document_bytes: int) -> str | None:
     """Assemble the ten OCRE-AF/1 inputs and hash them.
 
     Runs only after every deterministic check passed: an error or
@@ -597,7 +617,8 @@ def _approval_fingerprint(eir: dict[str, Any] | None, bundle: dict[str, Any] | N
         return None
     values = _approval_inputs(eir, bundle, bundle_raw, case_id, context,
                               capabilities, approval_out, digests, profile,
-                              unit_profile, diagnostics)
+                              unit_profile, diagnostics, root,
+                              bundle_manifest_uri, max_document_bytes)
     if values is None:
         return None
     try:
@@ -612,8 +633,12 @@ def _approval_inputs(eir: dict[str, Any], bundle: dict[str, Any], bundle_raw: An
                      case_id: str | None, context: Mapping[str, Any],
                      capabilities: Mapping[str, Any], approval_out: dict[str, Any],
                      digests: list[tuple[str, str, str]], profile: dict[str, Any],
-                     unit_profile: dict[str, Any], diagnostics: list[Diagnostic]) -> dict[str, Any] | None:
+                     unit_profile: dict[str, Any], diagnostics: list[Diagnostic],
+                     root: Path | None, bundle_manifest_uri: str | None,
+                     max_document_bytes: int) -> dict[str, Any] | None:
     missing = [name for name in ("validator", "adapters") if context.get(name) is None]
+    if "preparation_policy" not in context:
+        missing.append("preparation_policy")
     if missing:
         _add(diagnostics, "semantic", "/", "approval_fingerprint_inputs_missing",
              f"approval context lacks required inputs: {', '.join(missing)}")
@@ -622,13 +647,11 @@ def _approval_inputs(eir: dict[str, Any], bundle: dict[str, Any], bundle_raw: An
         _add(diagnostics, "semantic", "/", "approval_fingerprint_inputs_missing",
              "approval context 'adapters' must be a list")
         return None
-    cases = [c for c in _seq(eir.get("simulation_cases")) if isinstance(c, dict)]
-    selected = [c for c in cases if c.get("case_id") == case_id] if case_id is not None else cases
-    if len(selected) != 1:
+    case = _selected_case(eir, case_id)
+    if case is None:
         _add(diagnostics, "semantic", "/simulation_cases", "approval_case_unresolved",
              "approval requires exactly one selected simulation case")
         return None
-    case = selected[0]
     eir_sha = approval_out.get("eir_document_sha256")
     consumed = approval_out.get("consumed_artifacts")
     if not isinstance(eir_sha, str) or not isinstance(consumed, list):
@@ -673,9 +696,31 @@ def _approval_inputs(eir: dict[str, Any], bundle: dict[str, Any], bundle_raw: An
         _add(diagnostics, "semantic", "/", "approval_fingerprint_inputs_missing",
              f"cannot derive schema/policy inputs: {exc}")
         return None
-    bundle_bytes = (bytes(bundle_raw) if isinstance(bundle_raw, (bytes, bytearray))
-                    else bundle_raw.encode("utf-8") if isinstance(bundle_raw, str)
-                    else jcs(bundle))
+    if isinstance(bundle_raw, (bytes, bytearray)):
+        bundle_bytes = bytes(bundle_raw)
+    elif isinstance(bundle_raw, str):
+        bundle_bytes = bundle_raw.encode("utf-8")
+    else:
+        bundle_bytes = None
+        if bundle_manifest_uri is not None and root is not None:
+            try:
+                bundle_bytes = _read_confined(root, bundle_manifest_uri, max_document_bytes)
+            except (OSError, ValueError):
+                pass
+        if bundle_bytes is None:
+            _add(diagnostics, "semantic", "/", "approval_fingerprint_inputs_missing",
+                 "exact bytes of the staged bundle manifest are unavailable")
+            return None
+        # The staged file must encode the same manifest that was validated;
+        # hashing anything else would diverge from the snapshot re-hash.
+        try:
+            staged_manifest = parse_json_strict(bundle_bytes)
+        except StrictJSONError:
+            staged_manifest = None
+        if staged_manifest is None or jcs(staged_manifest) != jcs(bundle):
+            _add(diagnostics, "semantic", "/", "bundle_manifest_content_mismatch",
+                 "staged bundle manifest bytes do not encode the validated bundle document")
+            return None
     return {
         "eir_document_sha256": bytes.fromhex(eir_sha),
         "bundle_manifest_sha256": hashlib.sha256(bundle_bytes).digest(),
@@ -697,6 +742,7 @@ def validate(eir: Any, bundle: Any, group_manifest: Any | None = None, *,
              adapter_capabilities: Mapping[str, Any] | None = None,
              case_id: str | None = None,
              approval_context: Mapping[str, Any] | None = None,
+             bundle_manifest_uri: str | None = None,
              max_document_bytes: int = 16 * 1024 * 1024,
              max_artifact_bytes: int = 1024 * 1024 * 1024) -> ValidationReport:
     """Validate EIR and bundle; optionally verify group manifest/files for pre-flight.
@@ -707,11 +753,15 @@ def validate(eir: Any, bundle: Any, group_manifest: Any | None = None, *,
     ``approval_context`` carries the OCRE-AF/1 inputs the validator cannot
     derive itself: ``validator`` (id/version/implementation_sha256/
     policy_version), ``adapters`` (stage_id/adapter_id/version/
-    binary_sha256/capabilities_sha256) and ``preparation_policy`` (or null).
+    binary_sha256/capabilities_sha256) and ``preparation_policy`` (a key
+    that must be present, valued null when no preparation applies).
     ``case_id`` selects the simulation case bound into
     ``execution_parameters``; with exactly one case it may be omitted.
-    Without a context the approval fingerprint stays unavailable and
-    readiness stays blocked.
+    When ``bundle`` is a parsed document, ``bundle_manifest_uri`` names the
+    staged manifest file inside ``bundle_root`` so the fingerprint binds
+    its exact bytes; byte/string manifests are hashed verbatim. Without a
+    context the approval fingerprint stays unavailable and readiness
+    stays blocked.
     """
     if purpose not in ("authoring", "execution_preflight"):
         raise ValueError("purpose must be 'authoring' or 'execution_preflight'")
@@ -766,7 +816,7 @@ def validate(eir: Any, bundle: Any, group_manifest: Any | None = None, *,
             _semantic(parsed["eir"], parsed["bundle"], parsed.get("groups"),
                       Path(bundle_root) if bundle_root is not None else None,
                       purpose, adapter_capabilities, diagnostics, max_artifact_bytes, max_document_bytes,
-                      profile, unit_profile,
+                      profile, unit_profile, case_id=case_id,
                       approval_context=approval_context, approval_out=approval_out)
         except (TypeError, KeyError, AttributeError) as exc:
             _add(diagnostics, "semantic", "", "invalid_document_shape", f"semantic evaluation could not proceed: {type(exc).__name__}")
@@ -775,7 +825,9 @@ def validate(eir: Any, bundle: Any, group_manifest: Any | None = None, *,
         approval_hex = _approval_fingerprint(
             parsed.get("eir"), parsed.get("bundle"), bundle, case_id,
             approval_context, adapter_capabilities, approval_out, digests,
-            profile, unit_profile, diagnostics)
+            profile, unit_profile, diagnostics,
+            Path(bundle_root) if bundle_root is not None else None,
+            bundle_manifest_uri, max_document_bytes)
     diagnostics.sort(key=lambda d: (d.stage, d.pointer, d.code, d.message, d.severity))
     invalid = any(d.severity == "error" and d.code not in _INCOMPLETE_CODES for d in diagnostics)
     incomplete = any(d.code in _INCOMPLETE_CODES for d in diagnostics)

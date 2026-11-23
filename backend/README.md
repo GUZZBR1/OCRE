@@ -16,14 +16,16 @@ compatibilidade com infraestrutura de produção.
 - `ocre_core.validation.approval_fingerprint` + `validator`: codificador puro
   do fingerprint OCRE-AF/1 integrado ao pré-flight. Com `approval_context`
   (identidade do validador, registros de adapters e política de preparação —
-  insumos que só a plataforma pode declarar), raiz de bundle e capacidades
-  verificadas, o validador monta os dez campos normativos, calcula o digest e
-  só então reporta `execution_readiness: ready`. Sem esses insumos a porta
-  real (`ValidatorPreflight` sem `PreflightInputsProvider`) permanece
-  bloqueada com `approval_fingerprint_unavailable`, e qualquer divergência de
-  case/adapter/capacidade vira diagnóstico de bloqueio. Ainda não há provider
-  real de insumos nem pacote imutável de validador: a execução local real
-  continua indisponível.
+  insumos que só a plataforma pode declarar), bytes exatos do manifesto
+  staged (`bundle_manifest_uri`), raiz de bundle e capacidades verificadas,
+  o validador monta os dez campos normativos, calcula o digest e só então
+  reporta `execution_readiness: ready`; a porta real também exige que
+  adapter/revisão/projeto da submissão correspondam ao aprovado. Sem esses
+  insumos a porta (`ValidatorPreflight` sem `PreflightInputsProvider`)
+  permanece bloqueada com `approval_fingerprint_unavailable`, e qualquer
+  divergência de case/adapter/capacidade/submissão vira diagnóstico de
+  bloqueio. Ainda não há provider real de insumos nem pacote imutável de
+  validador: a execução local real continua indisponível.
 - `ocre_core.migration.v01_to_v02`: migrador explícito, somente em memória e
   sem alterar bytes de origem, que produz documento `draft` v0.2 e relatório
   versionado com resoluções, pendências e validação de autoria. A migração não

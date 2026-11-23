@@ -38,7 +38,7 @@ class FixedPreflight:
         self.report = report
         self.calls = 0
 
-    def evaluate(self, _request):
+    def evaluate(self, _request, **_ignored):
         self.calls += 1
         return self.report
 
@@ -106,18 +106,23 @@ def load_eir_example(name):
     return json.loads((EXAMPLES_DIR / name).read_text(encoding="utf-8"))
 
 
+BUNDLE_MANIFEST_NAME = "input-bundle.json"
+
+
 def stage_eir_example_bundle(root, eir=None, bundle=None, groups=None):
-    """Materialize the 0.2.0 example artifacts under ``root``.
+    """Materialize the 0.2.0 example bundle under ``root``.
 
     Each declared ``sha256`` is pinned to the bytes actually written, so
-    the bundle passes pre-flight byte verification. Caller-supplied
-    ``eir``/``bundle``/``groups`` (possibly mutated) are what the artifact
-    bytes encode.
+    the bundle passes pre-flight byte verification, and the manifest
+    itself is staged at ``input-bundle.json`` so its exact bytes can be
+    bound into the approval fingerprint. Caller-supplied ``eir``/
+    ``bundle``/``groups`` (possibly mutated) are what the bytes encode.
     """
     root = Path(root)
     eir = eir if eir is not None else load_eir_example("eir.json")
     bundle = bundle if bundle is not None else load_eir_example("input-bundle.json")
     groups = groups if groups is not None else load_eir_example("mesh-group-manifest.json")
+    root.mkdir(parents=True, exist_ok=True)
     for item in bundle["artifacts"]:
         target = root / item["uri"]
         target.parent.mkdir(parents=True, exist_ok=True)
@@ -129,6 +134,8 @@ def stage_eir_example_bundle(root, eir=None, bundle=None, groups=None):
             contents = item["artifact_id"].encode()
         target.write_bytes(contents)
         item["sha256"] = hashlib.sha256(contents).hexdigest()
+    # Written last so the staged manifest encodes the final artifact hashes.
+    (root / BUNDLE_MANIFEST_NAME).write_bytes(jcs(bundle))
     return root, eir, bundle, groups
 
 
