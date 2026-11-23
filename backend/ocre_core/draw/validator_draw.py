@@ -310,14 +310,25 @@ def polyline_length_mm(points: list[list[float]], closed: bool) -> float:
 
 
 def _parse_datetime(value: Any) -> datetime | None:
+    """RFC 3339 com timezone, ou ``None`` — nunca um datetime naive.
+
+    Um ``created_at``/``updated_at`` sem offset falha o format check do
+    schema; devolvê-lo naive faria a comparação ``updated < created``
+    explodir em TypeError (naive x aware), abortando o ``_semantic``
+    inteiro e escondendo TODOS os diagnósticos seguintes atrás de um
+    ``invalid_document_shape`` genérico.
+    """
     if not isinstance(value, str):
         return None
     try:
-        return datetime.fromisoformat(
+        parsed = datetime.fromisoformat(
             value[:-1] + "+00:00" if value.endswith("Z") else value
         )
     except ValueError:
         return None
+    if parsed.tzinfo is None:
+        return None
+    return parsed
 
 
 def _semantic(

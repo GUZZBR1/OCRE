@@ -66,6 +66,22 @@ class NewDocumentTests(unittest.TestCase):
             r"^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
         )
 
+    def test_created_at_requires_full_rfc3339_with_timezone(self):
+        # O format check do schema exige Z ou offset; o builder não pode
+        # produzir um documento que o próprio validador reprovaria.
+        for bad in (
+            "2026-01-01T00:00:00",        # naive, sem offset
+            "2026-01-01",                 # só data
+            "20260101T000000Z",           # formato básico, sem hífens
+            "2026-01-01 00:00:00Z",       # espaço no lugar do T
+        ):
+            with self.subTest(created_at=bad), self.assertRaises(ValueError):
+                new_document(SOURCE, created_at=bad)
+        doc = new_document(SOURCE, created_at="2026-01-01T00:00:00Z")
+        self.assertEqual(doc["created_at"], "2026-01-01T00:00:00Z")
+        doc = new_document(SOURCE, created_at="2026-01-01T00:00:00+03:00")
+        self.assertEqual(doc["created_at"], "2026-01-01T00:00:00+03:00")
+
 
 class AddStrokeTests(unittest.TestCase):
     def test_assigns_stable_id_order_and_length(self):

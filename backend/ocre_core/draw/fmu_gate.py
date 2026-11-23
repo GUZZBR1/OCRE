@@ -33,14 +33,14 @@ FINGERPRINT_DOMAIN = "DRAW:PAPER-APPROVAL:FINGERPRINT"
 
 def validate_fmu(
     fmu_path: str | Path | None = None,
-    *,
-    timeout_s: float = 120.0,
 ) -> dict[str, Any]:
     """Valida um FMU com FMPy, ou reporta honestamente por que não.
 
     Sem FMU no beta, devolve ``not-triggered`` — nunca dispara ponta
     a ponta sem FMU. Nunca levanta exceção por falta de FMU/FMPy: a
-    ausência é um status do relatório, não um crash.
+    ausência é um status do relatório, não um crash. Nada aqui roda
+    sob timeout (a leitura da descrição é em processo); quando a
+    simulação do FMU existir, ela ganha o seu próprio timeout.
     """
     base: dict[str, Any] = {
         "gate": GATE_ID,

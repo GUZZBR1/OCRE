@@ -17,6 +17,7 @@ from __future__ import annotations
 import copy
 import hashlib
 import math
+import re
 import uuid
 from datetime import datetime, timezone
 from typing import Any
@@ -42,7 +43,18 @@ def _utc_now() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
+# Same shape the schema's date-time format check enforces (RFC 3339
+# com timezone obrigatória): o builder não pode produzir um documento
+# que o próprio validador reprovaria — ``fromisoformat`` sozinho
+# aceita datas naive e formatos básicos sem os hífens.
+_RFC3339_RE = re.compile(
+    r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})"
+)
+
+
 def _parse_rfc3339(value: str) -> datetime:
+    if not isinstance(value, str) or not _RFC3339_RE.fullmatch(value):
+        raise ValueError(f"not an RFC 3339 date-time: {value!r}")
     try:
         return datetime.fromisoformat(value[:-1] + "+00:00" if value.endswith("Z") else value)
     except ValueError as exc:

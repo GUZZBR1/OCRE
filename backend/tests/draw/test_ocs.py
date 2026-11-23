@@ -64,6 +64,9 @@ class _FakeOcsHandler(BaseHTTPRequestHandler):
     lossy = False  # when True, audit/save_verified report dropped_on_save > 0
     always_stale = False
     deleted: set[str] = set()  # handles erased via entities_delete
+    reversed_entities = False  # devolve /entities fora da ordem do DXF
+    bad_json = False  # responde 200 com corpo não-JSON
+    audit_broken = False  # audit responde sem o bloco 'target'
 
     def log_message(self, *args):  # silence the test server
         pass
@@ -98,6 +101,14 @@ class _FakeOcsHandler(BaseHTTPRequestHandler):
             self._send(200, {"ok": True, "ready": True, "version": "2026.44",
                              "document_id": 1, "session_id": "fake-session"})
         elif parsed.path == "/api/v1/state":
+            if type(self).bad_json:
+                raw = b"<html>proxy falhou</html>"
+                self.send_response(200)
+                self.send_header("Content-Type", "text/html")
+                self.send_header("Content-Length", str(len(raw)))
+                self.end_headers()
+                self.wfile.write(raw)
+                return
             self._send(200, {"ok": True, "document_id": 1, "revision": 5,
                              "geometry_revision": 3, "version": "2026.44"})
         elif parsed.path == "/api/v1/capabilities":
@@ -110,6 +121,10 @@ class _FakeOcsHandler(BaseHTTPRequestHandler):
                         if e["handle"] not in type(self).deleted]
             if "layer" in query:
                 entities = [e for e in entities if e["layer"] == query["layer"][0]]
+            if type(self).reversed_entities:
+                entities = entities[::-1]
+            if "limit" in query:
+                entities = entities[: int(query["limit"][0])]
             self._send(200, {"ok": True, "count": len(entities),
                              "document_id": 1, "entities": entities})
         else:
@@ -134,12 +149,15 @@ class _FakeOcsHandler(BaseHTTPRequestHandler):
             self._send(200, {"ok": True, "items": items})
         elif parsed.path == "/api/v1/audit":
             dropped = 2 if type(self).lossy else 0
-            self._send(200, {"ok": True, "status": "passed",
-                             "manifest": {"total": 6,
-                                        "by_layer": {"0": 3, "DRAW_STROKES": 3}},
-                             "target": {"format": "dxf", "version": "AC1015",
-                                      "dropped_on_save": dropped,
-                                      "lossless": dropped == 0}})
+            report = {"ok": True, "status": "passed",
+                      "manifest": {"total": 6,
+                                 "by_layer": {"0": 3, "DRAW_STROKES": 3}},
+                      "target": {"format": "dxf", "version": "AC1015",
+                                 "dropped_on_save": dropped,
+                                 "lossless": dropped == 0}}
+            if type(self).audit_broken:
+                report.pop("target")
+            self._send(200, report)
         elif parsed.path == "/api/v1/save_verified":
             if type(self).lossy:
                 self._send(200, {"ok": True, "result": {
@@ -225,6 +243,9 @@ class _FakeOcsServer:
         _FakeOcsHandler.lossy = False
         _FakeOcsHandler.always_stale = False
         _FakeOcsHandler.deleted = set()
+        _FakeOcsHandler.reversed_entities = False
+        _FakeOcsHandler.bad_json = False
+        _FakeOcsHandler.audit_broken = False
         self.httpd = ThreadingHTTPServer(("127.0.0.1", 0), _FakeOcsHandler)
         self.port = self.httpd.server_address[1]
         self.thread = threading.Thread(target=self.httpd.serve_forever,
@@ -252,13 +273,47 @@ class OcsClientMockTests(unittest.TestCase):
         _FakeOcsHandler.lossy = False
         _FakeOcsHandler.always_stale = False
         _FakeOcsHandler.deleted = set()
+        _FakeOcsHandler.reversed_entities = False
+        _FakeOcsHandler.bad_json = False
+        _FakeOcsHandler.audit_broken = False
         self.client = OcsClient(port=self.server.port, token=TOKEN)
+
+    def _f0_dxf(self, directory: Path) -> Path:
+        """Escreve o DXF da F0 que gerou as 3 entidades do fake.
+
+        Os vértices do fake estão em coords CAD (y-up); o documento é
+        em coords papel (y-down), convertidos por ``export_dxf`` com a
+        altura efetiva A4 (296,47 mm). O pareamento de sync_strokes lê
+        este arquivo de verdade — um caminho inexistente não serve.
+        """
+        from ocre_core.draw.dxf_export import export_dxf
+
+        document = {
+            "schema": "draw.paper.v1",
+            "paper": {"format": "A4", "width_mm": 210.0, "height_mm": 297.0,
+                      "effective_width_mm": 210.0,
+                      "effective_height_mm": 296.47},
+            "strokes": [
+                {"stroke_id": "s-0001", "status": "stable", "closed": True,
+                 "points_mm": [[10.0, 30.0], [90.0, 30.0], [90.0, 70.0],
+                               [10.0, 70.0]]},
+                {"stroke_id": "s-0002", "status": "stable", "closed": False,
+                 "points_mm": [[120.0, 10.0], [150.0, 40.0], [180.0, 10.0]]},
+                {"stroke_id": "s-0003", "status": "stable", "closed": False,
+                 "points_mm": [[10.0, 200.0], [100.0, 200.0]]},
+            ],
+        }
+        dxf_path = Path(directory) / "document.dxf"
+        export_dxf(document, dxf_path)
+        return dxf_path
 
     def _synced_three(self):
         """Syncs s-0001/2/3 onto the fake's 3 stroke handles."""
+        self._tmpdxf = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmpdxf.cleanup)
         with tempfile.TemporaryDirectory() as tmp:
             self.client.sync_strokes(
-                "/tmp/f0/document.dxf",
+                self._f0_dxf(Path(self._tmpdxf.name)),
                 ["s-0001", "s-0002", "s-0003"],
                 out_path=Path(tmp) / "verified.dxf",
             )
@@ -295,6 +350,14 @@ class OcsClientMockTests(unittest.TestCase):
         client = OcsClient(port=1, token=TOKEN, timeout_s=2)
         with self.assertRaises(OcsUnavailableError):
             client.ready()
+
+    def test_non_json_2xx_response_is_ocs_error(self):
+        # Antes: JSONDecodeError cru escapava do _request num 200 com
+        # corpo não-JSON — o contrato é OcsError (bad_response).
+        _FakeOcsHandler.bad_json = True
+        with self.assertRaises(OcsError) as ctx:
+            self.client.state()
+        self.assertEqual(ctx.exception.code, "bad_response")
 
     def test_wrong_token_is_unauthorized(self):
         client = OcsClient(port=self.server.port, token="wrong")
@@ -344,7 +407,7 @@ class OcsClientMockTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             out = Path(tmp) / "verified.dxf"
             report = self.client.sync_strokes(
-                "/tmp/f0/document.dxf",
+                self._f0_dxf(Path(tmp)),
                 ["s-0001", "s-0002", "s-0003"],
                 out_path=out,
             )
@@ -356,11 +419,108 @@ class OcsClientMockTests(unittest.TestCase):
         self.assertTrue(report["save_verified"]["verified"])
         self.assertLessEqual(report["gate_g2_1_open_to_queryable_s"], 2.0)
 
+    def test_sync_strokes_refuses_audit_without_target(self):
+        # Um audit sem 'target.dropped_on_save' não prova save lossless
+        # — o gate G2.3 falha fechado em vez de assumir zero perda.
+        _FakeOcsHandler.audit_broken = True
+        with tempfile.TemporaryDirectory() as tmp:
+            with self.assertRaises(OcsError) as ctx:
+                self.client.sync_strokes(
+                    self._f0_dxf(Path(tmp)),
+                    ["s-0001", "s-0002", "s-0003"],
+                    out_path=Path(tmp) / "verified.dxf",
+                )
+        self.assertEqual(ctx.exception.code, "bad_response")
+
     def test_sync_strokes_refuses_count_mismatch(self):
-        with self.assertRaises(OcsError) as ctx:
-            self.client.sync_strokes("/tmp/f0/document.dxf",
-                                     ["s-0001"], out_path="/tmp/o.dxf")
+        with tempfile.TemporaryDirectory() as tmp:
+            dxf = self._f0_dxf(Path(tmp))
+            with self.assertRaises(OcsError) as ctx:
+                self.client.sync_strokes(dxf, ["s-0001"],
+                                         out_path="/tmp/o.dxf")
         self.assertEqual(ctx.exception.code, "stroke_count_mismatch")
+
+    def test_sync_strokes_pairs_by_geometry_not_entity_order(self):
+        """Regressão: a resposta do OCS fora da ordem do DXF não pode
+        trocar os ids — antes, o zip posicional gravava s-0001 na
+        entidade errada silenciosamente."""
+        _FakeOcsHandler.reversed_entities = True
+        with tempfile.TemporaryDirectory() as tmp:
+            report = self.client.sync_strokes(
+                self._f0_dxf(Path(tmp)),
+                ["s-0001", "s-0002", "s-0003"],
+                out_path=Path(tmp) / "verified.dxf",
+            )
+        # OCS devolveu [8E, 8D, 8C]; o pareamento por vértices acha o
+        # traço certo do DXF para cada handle — nunca por posição.
+        self.assertEqual(report["handles"], ["8C", "8D", "8E"])
+        self.assertEqual(self.client.scan_stroke_ids(),
+                         {"s-0001": "8C", "s-0002": "8D", "s-0003": "8E"})
+
+    def test_sync_strokes_refuses_geometry_mismatch_before_writing(self):
+        """Uma entidade do CAD sem par geométrico no DXF falha fechada
+        — e nada é escrito no servidor."""
+        from ocre_core.draw.dxf_export import export_dxf
+
+        with tempfile.TemporaryDirectory() as tmp:
+            document = {
+                "schema": "draw.paper.v1",
+                "paper": {"format": "A4", "width_mm": 210.0,
+                          "height_mm": 297.0, "effective_width_mm": 210.0,
+                          "effective_height_mm": 296.47},
+                "strokes": [
+                    {"stroke_id": "s-0001", "status": "stable",
+                     "closed": True,
+                     "points_mm": [[10.0, 30.0], [90.0, 30.0], [90.0, 70.0],
+                                   [10.0, 70.0]]},
+                    {"stroke_id": "s-0002", "status": "stable",
+                     "closed": False,
+                     "points_mm": [[120.0, 10.0], [150.0, 40.0],
+                                   [180.0, 10.0]]},
+                    # s-0003 com geometria DIFERENTE da entidade 8E.
+                    {"stroke_id": "s-0003", "status": "stable",
+                     "closed": False,
+                     "points_mm": [[10.0, 150.0], [100.0, 150.0]]},
+                ],
+            }
+            dxf = Path(tmp) / "document.dxf"
+            export_dxf(document, dxf)
+            with self.assertRaises(OcsError) as ctx:
+                self.client.sync_strokes(
+                    dxf, ["s-0001", "s-0002", "s-0003"],
+                    out_path=Path(tmp) / "verified.dxf")
+        self.assertEqual(ctx.exception.code, "geometry_mismatch")
+        self.assertEqual(_FakeOcsHandler.xdata, {})
+
+    def test_sync_strokes_refuses_conflicting_imported_xdata(self):
+        """O XDATA que o DXF já traz (importado pelo OCS) discordando
+        do id declarado falha fechada antes de qualquer escrita."""
+        _FakeOcsHandler.xdata = {"8C": "s-0002"}
+        with tempfile.TemporaryDirectory() as tmp:
+            with self.assertRaises(OcsError) as ctx:
+                self.client.sync_strokes(
+                    self._f0_dxf(Path(tmp)),
+                    ["s-0001", "s-0002", "s-0003"],
+                    out_path=Path(tmp) / "verified.dxf")
+        self.assertEqual(ctx.exception.code, "xdata_conflict")
+        self.assertEqual(_FakeOcsHandler.xdata, {"8C": "s-0002"})
+
+    def test_stroke_entities_refuse_truncated_scan(self):
+        """Resposta com exatamente `limit` itens não prova completude:
+        a varredura falha fechada em vez de sumir com traços."""
+        with self.assertRaises(OcsError) as ctx:
+            self.client._stroke_entities(limit=3)
+        self.assertEqual(ctx.exception.code, "entities_truncated")
+        # Menos que o limite é completo; mais é servidor ignorando o cap.
+        self.assertEqual(len(self.client._stroke_entities(limit=4)), 3)
+
+    def test_scan_refuses_duplicate_stroke_id_in_cad(self):
+        # Dois handles com o mesmo id = CAD corrompido; o dict
+        # esconderia um deles e a prova rodaria incompleta.
+        _FakeOcsHandler.xdata = {"8C": "s-0001", "8D": "s-0001"}
+        with self.assertRaises(OcsError) as ctx:
+            self.client.scan_stroke_ids()
+        self.assertEqual(ctx.exception.code, "duplicate_stroke_in_cad")
 
     # -- Borracha (erase_strokes / sync_document) ---------------------------
 
@@ -497,6 +657,19 @@ class OcsClientMockTests(unittest.TestCase):
                                             "status": "weird"},
                                        ]})
 
+    def test_sync_document_rejects_duplicate_stroke_id(self):
+        # Um segundo traço com o mesmo id era engolido pelo dict e as
+        # provas rodavam sobre o mapa corrompido.
+        self._synced_three()
+        with self.assertRaises(ValueError):
+            self.client.sync_document({"schema": "draw.paper.v1",
+                                       "strokes": [
+                                           {"stroke_id": "s-0001",
+                                            "status": "stable"},
+                                           {"stroke_id": "s-0001",
+                                            "status": "erased"},
+                                       ]})
+
     def test_stale_state_retries_once_with_fresh_revision(self):
         # Same request_id, bogus revision first: 409, then retry succeeds.
         result = self.client._envelope(
@@ -546,6 +719,21 @@ class OcsClientMockTests(unittest.TestCase):
         # The second step is stale once, then retried with a fresh
         # revision and succeeds — so both complete here.
         self.assertEqual(result["completed_steps"], 2)
+
+    def test_run_steps_rejects_malformed_step(self):
+        # Um passo não-dict ou sem 'op' estourava KeyError/AttributeError
+        # no _envelope em vez de um erro claro com o índice.
+        for bad_step in ("entities_create", {"params": {}},
+                         {"op": ""}, {"op": 3}):
+            with self.subTest(step=bad_step), \
+                    self.assertRaises(ValueError):
+                self.client.run_steps([bad_step])
+        # params que sobrescreveria o envelope também é recusado.
+        with self.assertRaises(ValueError):
+            self.client.run_steps([
+                {"op": "entities_create",
+                 "params": {"request_id": "forged"}},
+            ])
 
 
 @unittest.skipUnless(find_ocs_binary(), "sem binário OpenCADStudio "

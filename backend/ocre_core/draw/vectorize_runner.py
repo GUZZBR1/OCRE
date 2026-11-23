@@ -176,13 +176,26 @@ def _normalize_primitives_with_skipped_types(
             closed = polyline_type in ("polygon", "rectangle") or bool(
                 primitive.get("closed", False)
             )
-            try:
-                clean_points = [[float(x), float(y)] for x, y in points]
-            except (TypeError, ValueError) as exc:
+            # Mesma regra de document._check_points: bool e não-número
+            # (str, None, ...) são recusados ANTES do float() — float(True)
+            # = 1.0 e float("1.5") = 1.5 aceitariam coordenada corrompida
+            # em silêncio, e NaN/Inf atravessariam como ponto não finito.
+            if not all(
+                isinstance(point, (list, tuple))
+                and len(point) == 2
+                and all(
+                    not isinstance(v, bool)
+                    and isinstance(v, (int, float))
+                    and math.isfinite(float(v))
+                    for v in point
+                )
+                for point in points
+            ):
                 raise VectorizeError(
-                    f"primitiva {polyline_type!r} com points_mm "
-                    f"malformados: {points!r} ({exc})"
-                ) from exc
+                    f"primitiva {polyline_type!r} com points_mm malformados "
+                    f"(pares [x, y] finitos exigidos): {points!r}"
+                )
+            clean_points = [[float(x), float(y)] for x, y in points]
             entry = {
                 "points_mm": clean_points,
                 "closed": closed,

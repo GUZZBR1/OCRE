@@ -278,6 +278,38 @@ class ComputeFingerprintTests(unittest.TestCase):
         with self.assertRaises(DrawFingerprintInputError):
             parse_encoded(b"OCRE" + result.encoded[len(DOMAIN):])
 
+    def test_parse_encoded_rejects_record_kinds_the_encoder_never_emits(self):
+        """A auditoria recusa (field_id, kind, tamanho) impossíveis:
+        digests só valem kind 0x01 com 32 bytes, só o field 10 pode ser
+        0x00 (e vazio), e todo o resto é 0x03 (JCS)."""
+        import struct
+
+        result = compute_fingerprint(valid_inputs())
+        records = parse_encoded(result.encoded)
+
+        def forge(overrides):
+            blob = DOMAIN
+            for f_id, kind, payload in records:
+                kind, payload = overrides.get(f_id, (kind, payload))
+                blob += struct.pack(">HBQ", f_id, kind, len(payload)) + payload
+            return blob
+
+        for bad in (
+            {1: (0x03, b'"ab"')},           # digest como JSON
+            {1: (0x01, b"\x00" * 10)},      # digest com 10 bytes
+            {2: (0x00, b"")},               # field 2 nunca é null
+            {5: (0x00, b"")},               # null fora do field 10
+            {5: (0x01, _sha_bytes("x"))},   # JCS field como digest
+            {10: (0x00, b"abc")},           # null com payload
+            {10: (0x01, _sha_bytes("x"))},  # field 10 como digest
+            {3: (0x03, b"not json")},       # payload 0x03 não-JSON
+            {3: (0x03, b'{"b":1, "a":2}')},  # JSON não-canônico (JCS difere)
+            {3: (0x03, b"NaN")},            # extensão Python que JCS não emite
+        ):
+            with self.subTest(bad=bad), \
+                    self.assertRaises(DrawFingerprintInputError):
+                parse_encoded(forge(bad))
+
 
 if __name__ == "__main__":
     unittest.main()

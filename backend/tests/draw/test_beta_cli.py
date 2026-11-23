@@ -239,9 +239,11 @@ class BetaRunMockedTests(unittest.TestCase):
             "ocre_core.draw.fea.run_axial_case",
             side_effect=fake_fea))
 
-        def fake_physics(**kwargs):
+        def fake_physics(report_path, timeout_s):
+            # O passo roda physics via subprocesso (regra do módulo:
+            # "nunca em processo"); o helper é a fronteira patchada.
             calls.append("physics")
-            return {
+            report = {
                 "case": "axial_bar_contact.v1",
                 "model_sha256": "f" * 64,
                 "engines": {
@@ -259,10 +261,12 @@ class BetaRunMockedTests(unittest.TestCase):
                 "load_profile_mujoco": {"profile": "physics.load_profile.v1",
                                         "f_max_N": 1.6},
             }
+            Path(report_path).write_text(
+                json.dumps(report, sort_keys=True), encoding="utf-8")
+            return report
 
-        patches.append(mock.patch(
-            "ocre_core.draw.physics.run_contact_case",
-            side_effect=fake_physics))
+        patches.append(mock.patch.object(
+            cli_mod, "_run_physics_subprocess", side_effect=fake_physics))
 
         patches.append(mock.patch(
             "ocre_core.draw.cli._beta_gmsh_surface_stl",
@@ -612,6 +616,54 @@ class BetaRunMockedTests(unittest.TestCase):
                 _base_argv(Path(tmp),
                            ["--open-strokes-policy", "skip-aux"]))
         self.assertEqual(code, 2)
+
+    def test_step_staging_dir_is_cleaned_on_export_refusal(self):
+        # Com observe_conversions (aqui via --cad-only) o STEP é
+        # escrito num dir temporário dentro de step/; uma recusa
+        # fail-closed do exporter não pode deixar o tmp para trás.
+        from ocre_core.draw.step_export import StepExportError
+
+        calls: list[str] = []
+        self._patch_chain(calls, ocs_binary="/fake/OpenCADStudio")
+        with tempfile.TemporaryDirectory() as tmp:
+            out_dir = Path(tmp) / "out"
+            with mock.patch(
+                "ocre_core.draw.step_export.document_to_step",
+                side_effect=StepExportError("refused for the test"),
+            ):
+                code, out = _run_cli(_base_argv(out_dir, ["--cad-only"]))
+            step_dir = out_dir / "step"
+            leftovers = (
+                [p for p in step_dir.iterdir() if p.name.startswith("tmp")]
+                if step_dir.is_dir() else []
+            )
+            self.assertEqual(leftovers, [])
+        report = json.loads(out)
+        step = next(s for s in report["steps"] if s["id"] == "step")
+        self.assertEqual(step["status"], "blocked")
+        self.assertEqual(code, 2)
+
+    def test_physics_subprocess_failure_fails_the_step_not_the_run(self):
+        # O caso physics roda como subprocesso (regra do módulo:
+        # "nunca em processo"). Uma falha dele vira passo "failed" e
+        # o relatório continua sendo escrito.
+        calls: list[str] = []
+        self._patch_chain(calls, ocs_binary="/fake/OpenCADStudio")
+        with tempfile.TemporaryDirectory() as tmp:
+            out_dir = Path(tmp) / "out"
+            with mock.patch.object(
+                cli_mod, "_run_physics_subprocess",
+                side_effect=RuntimeError("engine segfault (subprocess died)"),
+            ):
+                code, out = _run_cli(_base_argv(out_dir))
+            report = json.loads(out)
+            self.assertEqual(code, 1, out)
+            self.assertEqual(report["status"], "failed")
+            physics = next(s for s in report["steps"] if s["id"] == "physics")
+            self.assertEqual(physics["status"], "failed")
+            self.assertIn("physics contact case failed", physics["error"])
+            self.assertIn("engine segfault", physics["error"])
+            self.assertTrue((out_dir / "beta-report.json").is_file())
 
     def test_fmu_gate_reports_not_triggered_without_fmu(self):
         from ocre_core.draw.fmu_gate import validate_fmu
