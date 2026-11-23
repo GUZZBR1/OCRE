@@ -23,6 +23,7 @@ from typing import Any
 
 from .paper import DEFAULT_SPEC, PaperSpec, resolve_paper
 from .validator_draw import (
+    CIRCLE_SHEET_EPS_MM,
     SCHEMA_NAME,
     StrictJSONError,
     _canonical_bytes,
@@ -187,7 +188,12 @@ def _check_circle(circle: Any, doc: dict[str, Any]) -> dict[str, float]:
     cx, cy, r = float(circle["cx_mm"]), float(circle["cy_mm"]), float(circle["r_mm"])
     if r <= 0:
         raise ValueError(f"circle.r_mm must be positive: {r!r}")
-    if not (0.0 <= cx - r and cx + r <= width_mm and 0.0 <= cy - r and cy + r <= eff_height_mm):
+    if not (
+        -CIRCLE_SHEET_EPS_MM <= cx - r
+        and cx + r <= width_mm + CIRCLE_SHEET_EPS_MM
+        and -CIRCLE_SHEET_EPS_MM <= cy - r
+        and cy + r <= eff_height_mm + CIRCLE_SHEET_EPS_MM
+    ):
         raise ValueError(
             f"circle (cx={cx}, cy={cy}, r={r}) is outside the {fmt} sheet "
             f"({width_mm} x {eff_height_mm} mm)"

@@ -15,7 +15,11 @@ from ocre_core.draw.document import (
     new_document,
     stabilize_stroke,
 )
-from ocre_core.draw.validator_draw import StrictJSONError, bundled_schema_sha256
+from ocre_core.draw.validator_draw import (
+    StrictJSONError,
+    bundled_schema_sha256,
+    validate_draw_document_or_raise,
+)
 
 SOURCE = {"repo": "santleme/draw", "commit": "8a17115", "origin": "upstream-vectorize"}
 
@@ -131,6 +135,27 @@ class AddStrokeTests(unittest.TestCase):
             add_stroke(doc, points, closed=True, shape="polygon",
                        circle={"cx_mm": 10, "cy_mm": 10, "r_mm": 5})
         self.assertEqual(doc["strokes"], [])
+
+    def test_circle_tangent_to_edge_within_rounding_noise(self):
+        """Círculo tangente à borda: o fit arredonda a 3 casas e pode
+        exceder a folha por ~1µm — dentro do eps, aceita; muito além,
+        segue fora da folha."""
+        doc = make_doc()
+        stroke = add_stroke(
+            doc,
+            [[10, 10], [20, 10], [20, 20]],
+            closed=True,
+            circle={"cx_mm": 205, "cy_mm": 10, "r_mm": 5.0005},  # 210.0005 ≤ eps
+        )
+        self.assertEqual(stroke["circle"]["r_mm"], 5.0005)
+        validate_draw_document_or_raise(doc)  # o validator concorda
+        with self.assertRaises(ValueError):  # 0.01 mm fora: não é ruído
+            add_stroke(
+                doc,
+                [[10, 10], [20, 10], [20, 20]],
+                closed=True,
+                circle={"cx_mm": 205, "cy_mm": 10, "r_mm": 5.01},
+            )
 
     def test_timestamps_require_temporal_stamps(self):
         doc = make_doc(order_kind="unknown")

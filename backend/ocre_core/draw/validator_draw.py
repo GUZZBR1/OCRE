@@ -43,6 +43,10 @@ SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 # a document on another sheet is judged against ITS sheet, not A4.
 PAPER_WIDTH_MM = DEFAULT_SPEC.width_mm
 PAPER_EFFECTIVE_HEIGHT_MM = DEFAULT_SPEC.effective_height_mm
+# Tolerância de borda para círculos analíticos: o fit do vetorizador
+# arredonda pontos a 3 casas, então um círculo tangente à folha pode
+# exceder cx±r em ~1µm — não é fora da folha, é ruído numérico.
+CIRCLE_SHEET_EPS_MM = 1e-3
 # A scale is consistent with the paper when it maps the canvas onto the
 # effective sheet within 0.01 mm on each axis.
 SCALE_TOLERANCE_MM = 0.01
@@ -428,10 +432,10 @@ def _semantic(
                      "invalid_circle",
                      "circle requires finite cx_mm, cy_mm and r_mm > 0")
             elif not (
-                0.0 <= float(circle["cx_mm"]) - float(circle["r_mm"])
-                and float(circle["cx_mm"]) + float(circle["r_mm"]) <= paper_width
-                and 0.0 <= float(circle["cy_mm"]) - float(circle["r_mm"])
-                and float(circle["cy_mm"]) + float(circle["r_mm"]) <= paper_eff_height
+                -CIRCLE_SHEET_EPS_MM <= float(circle["cx_mm"]) - float(circle["r_mm"])
+                and float(circle["cx_mm"]) + float(circle["r_mm"]) <= paper_width + CIRCLE_SHEET_EPS_MM
+                and -CIRCLE_SHEET_EPS_MM <= float(circle["cy_mm"]) - float(circle["r_mm"])
+                and float(circle["cy_mm"]) + float(circle["r_mm"]) <= paper_eff_height + CIRCLE_SHEET_EPS_MM
             ):
                 _add(diagnostics, "semantic", f"{ptr}/circle",
                      "circle_outside_sheet",
