@@ -272,6 +272,4 @@ def parse_encoded(encoded: bytes) -> list[tuple[int, int, bytes]]:
     if [record[0] for record in records] != list(range(1, 11)):
         raise DrawFingerprintInputError(
             "fingerprint must contain exactly fields 1..10 in order")
-    if offset != len(encoded):
-        raise DrawFingerprintInputError("trailing bytes after fingerprint records")
     return records

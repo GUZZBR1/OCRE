@@ -50,7 +50,7 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
-from .paper import DEFAULT_SPEC
+from .paper import paper_size_mm
 from .document import document_sha256
 
 __all__ = [
@@ -219,19 +219,10 @@ def worker_versions(*, worker_python: str | Path | None = None) -> dict:
 
 
 def _paper_size(document: dict) -> tuple[float, float]:
-    paper = document.get("paper") or {}
-    width = float(paper.get("width_mm", DEFAULT_SPEC.width_mm))
-    height = float(
-        paper.get(
-            "effective_height_mm",
-            paper.get("height_mm", DEFAULT_SPEC.effective_height_mm),
-        )
-    )
-    if not (math.isfinite(width) and math.isfinite(height)):
-        raise StepExportError("paper.width_mm/height_mm devem ser finitos")
-    if width <= 0 or height <= 0:
-        raise StepExportError("paper.width_mm/height_mm devem ser positivos")
-    return width, height
+    try:
+        return paper_size_mm(document)
+    except ValueError as exc:
+        raise StepExportError(str(exc)) from exc
 
 
 def _closed_stable_profiles(document: dict) -> tuple[list[list[list[float]]], list[str], list[dict[str, str]]]:
@@ -347,18 +338,18 @@ def document_to_step(
             "material é obrigatório e declarado por humano "
             "(material nunca é inventado)"
         )
+    material = material.strip()
     profiles, stroke_ids, skipped = _closed_stable_profiles(document)
     expected_area = sum(_polygon_area_mm2(p) for p in profiles)
     expected_volume = expected_area * float(thickness_mm)
 
     out_path = Path(out_path)
-    if out_path.parent != Path(".") and not out_path.parent.exists():
-        out_path.parent.mkdir(parents=True, exist_ok=True)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
     job: dict[str, Any] = {
         "kind": "export",
         "profiles": profiles,
         "thickness_mm": float(thickness_mm),
-        "material": material.strip(),
+        "material": material,
         "out_path": str(out_path),
     }
     if timestamp is not None:
@@ -385,7 +376,7 @@ def document_to_step(
         "output_bytes": result["bytes"],
         "file_schema": result.get("file_schema"),
         "thickness_mm": float(thickness_mm),
-        "material_declared": material.strip(),
+        "material_declared": material,
         "stroke_ids": stroke_ids,
         "skipped": skipped,
         "profiles": len(profiles),
@@ -416,7 +407,7 @@ def document_to_step(
             "volume_mm3": volume,
             "bbox_mm": result["bbox_mm"],
         },
-        "material": {"value": material.strip(), "source": "human-confirmed-or-declared"},
+        "material": {"value": material, "source": "human-confirmed-or-declared"},
         "material_in_step_native": bool(result.get("material_in_step_native", False)),
     }
     # Publish sidecar atomically so a failed write cannot truncate a prior manifest.
@@ -476,8 +467,7 @@ def export_dxf_ac1015(
     """
     profiles, stroke_ids, skipped = _closed_stable_profiles(document)
     dxf_path = Path(dxf_path)
-    if dxf_path.parent != Path(".") and not dxf_path.parent.exists():
-        dxf_path.parent.mkdir(parents=True, exist_ok=True)
+    dxf_path.parent.mkdir(parents=True, exist_ok=True)
     # O worker precisa de um STEP de saída no job de export; usa-se um
     # temporário descartável — o artefato deste spike é o DXF.
     with tempfile.TemporaryDirectory(prefix="ocre-step-dxf-") as tmp:

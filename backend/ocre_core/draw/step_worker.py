@@ -205,11 +205,8 @@ def _job_export(job: dict) -> dict:
                     pts = pts[:-1]
                 face_or_faces.append(make_face(Polyline(*pts, close=True)))
             exporter = ExportDXF(version="AC1015", unit=Unit.MM)
-            if len(face_or_faces) == 1:
-                exporter.add_shape(face_or_faces[0])
-            else:
-                for face in face_or_faces:
-                    exporter.add_shape(face)
+            for face in face_or_faces:
+                exporter.add_shape(face)
             exporter.write(str(dxf_path))
             result["dxf_path"] = str(dxf_path)
             result["dxf_sha256"] = _sha256(dxf_path)

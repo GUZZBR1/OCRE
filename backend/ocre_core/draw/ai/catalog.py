@@ -29,6 +29,14 @@ MATERIALS = {
     "crane": (),
 }
 
+_MATERIAL_ALIASES = {
+    "steel": "steel", "aço": "steel", "aluminum": "aluminum", "alumínio": "aluminum",
+    "stainless steel": "stainless steel", "aço inoxidável": "stainless steel",
+    "high-speed steel": "high-speed steel", "aço rápido": "high-speed steel",
+    "carbide": "carbide", "metal duro": "carbide", "plastic": "plastic", "plástico": "plastic",
+}
+
+
 # Conservative candidate defaults for simple parts. These are proposals only.
 MATERIAL_FALLBACK = {
     "plate": "steel",
@@ -52,12 +60,12 @@ def material_match(part: str, material: str) -> str | None:
     """Return a catalog material candidate only when explicitly catalogued."""
     if not isinstance(material, str):
         return None
-    key = " ".join(material.casefold().split())
-    aliases = {
-        "steel": "steel", "aço": "steel", "aluminum": "aluminum", "alumínio": "aluminum",
-        "stainless steel": "stainless steel", "aço inoxidável": "stainless steel",
-        "high-speed steel": "high-speed steel", "aço rápido": "high-speed steel",
-        "carbide": "carbide", "metal duro": "carbide", "plastic": "plastic", "plástico": "plastic",
-    }
-    key = aliases.get(key, key)
-    return next((aliases.get(name.casefold(), name.casefold()) for name in MATERIALS.get(part, ()) if key == aliases.get(name.casefold(), name.casefold())), None)
+    key = _MATERIAL_ALIASES.get(
+        " ".join(material.casefold().split()),
+        " ".join(material.casefold().split()),
+    )
+    for name in MATERIALS.get(part, ()):
+        canonical = _MATERIAL_ALIASES.get(name.casefold(), name.casefold())
+        if canonical == key:
+            return canonical
+    return None

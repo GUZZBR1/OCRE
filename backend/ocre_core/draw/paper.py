@@ -29,6 +29,7 @@ Rules:
 from __future__ import annotations
 
 import ast
+import math
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -92,6 +93,27 @@ def get_paper_spec(format: str) -> PaperSpec:
         return _SPECS[format]
     except KeyError as exc:
         raise ValueError(f"unknown paper format: {format!r}") from exc
+
+
+def paper_size_mm(document: dict) -> tuple[float, float]:
+    """Effective (width_mm, effective_height_mm) of the document's paper block.
+
+    Strict: raises ``ValueError`` for non-finite or non-positive sizes;
+    falls back to ``DEFAULT_SPEC`` fields when the block is absent.
+    """
+    paper = document.get("paper") or {}
+    width = float(paper.get("width_mm", DEFAULT_SPEC.width_mm))
+    height = float(
+        paper.get(
+            "effective_height_mm",
+            paper.get("height_mm", DEFAULT_SPEC.effective_height_mm),
+        )
+    )
+    if not (math.isfinite(width) and math.isfinite(height)):
+        raise ValueError("paper.width_mm/height_mm devem ser finitos")
+    if width <= 0 or height <= 0:
+        raise ValueError("paper.width_mm/height_mm devem ser positivos")
+    return width, height
 
 
 def resolve_paper(paper: str | PaperSpec | None) -> PaperSpec:
