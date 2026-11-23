@@ -4,7 +4,7 @@ from __future__ import annotations
 import sqlite3
 
 from ocre_core.sync import BatchReceipt, SyncBatch, SyncBatchIdentityConflict, SyncConflict, SyncReplay, evaluate_sync_batch
-from .sqlite import PersistenceConflict, SQLiteJobStore
+from .sqlite import PersistenceConflict, SQLiteJobStore, _connection
 
 _dump = SQLiteJobStore._dump
 _load = SQLiteJobStore._load
@@ -14,7 +14,7 @@ class SQLiteSyncStore:
     """SQLite-only proof of local transaction/restart semantics."""
     def __init__(self, database):
         self.database=str(database)
-        with sqlite3.connect(self.database) as db:
+        with _connection(self.database) as db:
             db.executescript("""
             CREATE TABLE IF NOT EXISTS sync_heads(tenant TEXT, project TEXT, revision TEXT, PRIMARY KEY(tenant,project));
             CREATE TABLE IF NOT EXISTS sync_receipts(tenant TEXT, project TEXT, batch TEXT, envelope BLOB, receipt BLOB, PRIMARY KEY(tenant,project,batch));
@@ -22,11 +22,11 @@ class SQLiteSyncStore:
             """)
 
     def current_head(self, *, tenant_id, project_id):
-        with sqlite3.connect(self.database) as db: row=db.execute("SELECT revision FROM sync_heads WHERE tenant=? AND project=?",(tenant_id,project_id)).fetchone()
+        with _connection(self.database) as db: row=db.execute("SELECT revision FROM sync_heads WHERE tenant=? AND project=?",(tenant_id,project_id)).fetchone()
         return row[0] if row else None
 
     def lookup(self, *, tenant_id, project_id, batch_id):
-        with sqlite3.connect(self.database) as db: row=db.execute("SELECT receipt FROM sync_receipts WHERE tenant=? AND project=? AND batch=?",(tenant_id,project_id,batch_id)).fetchone()
+        with _connection(self.database) as db: row=db.execute("SELECT receipt FROM sync_receipts WHERE tenant=? AND project=? AND batch=?",(tenant_id,project_id,batch_id)).fetchone()
         return _load(row[0]) if row else None
 
     def evaluate(self, batch: SyncBatch, *, tenant_id):
@@ -65,5 +65,5 @@ class SQLiteSyncStore:
         finally: db.close()
 
     def get_revision(self, *, tenant_id, project_id, revision_id):
-        with sqlite3.connect(self.database) as db: row=db.execute("SELECT snapshot,operations FROM sync_revisions WHERE tenant=? AND project=? AND revision=?",(tenant_id,project_id,revision_id)).fetchone()
+        with _connection(self.database) as db: row=db.execute("SELECT snapshot,operations FROM sync_revisions WHERE tenant=? AND project=? AND revision=?",(tenant_id,project_id,revision_id)).fetchone()
         return (_load(row[0]),_load(row[1])) if row else None

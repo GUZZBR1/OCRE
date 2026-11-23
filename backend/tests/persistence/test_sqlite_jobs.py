@@ -407,3 +407,12 @@ def test_event_pages_and_outbox_drain_require_positive_limits(tmp_path):
         store.read_events(tenant_id="default", job_id="j1", limit=0)
     with pytest.raises(ValueError):
         store.read_events(tenant_id="default", job_id="j1", after_cursor=-1)
+
+
+def test_connect_closes_connection_on_exit_and_on_error(tmp_path):
+    store=SQLiteJobStore(tmp_path/"jobs.db")
+    with store._connect() as db: pass
+    with pytest.raises(sqlite3.ProgrammingError): db.execute("SELECT 1")
+    with pytest.raises(RuntimeError):
+        with store._connect() as db: raise RuntimeError("boom")
+    with pytest.raises(sqlite3.ProgrammingError): db.execute("SELECT 1")
