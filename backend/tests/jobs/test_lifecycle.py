@@ -1,4 +1,5 @@
-from datetime import datetime, timezone
+
+from tests.helpers import NOW
 
 import pytest
 
@@ -15,7 +16,7 @@ from ocre_core.jobs import (
     transition_job,
 )
 
-NOW = datetime(2026, 1, 1, tzinfo=timezone.utc)
+
 
 
 def event(current, target, sequence=0, cancellation_evidence=None, cancellation_origin=None):

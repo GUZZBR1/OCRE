@@ -1,38 +1,18 @@
 from fastapi.testclient import TestClient
 
 from ocre_core.api.app import create_app
-from ocre_core.application.services import OCREApplication, PreflightReport, Principal
-from ocre_core.persistence.sqlite import SQLiteJobStore
-from ocre_core.persistence.sync import SQLiteSyncStore
+from ocre_core.application.services import Principal
+from tests.helpers import BLOCKED_APPROVAL, FixedPreflight, RuleAuthorizer, application
 
 
-class ProjectAccess:
-    def authorize(self, principal, project_id, action):
-        return principal.tenant_id == "tenant-a" and project_id == "project-a"
-
-
-class Blocked:
-    def evaluate(self, _request):
-        return PreflightReport("incomplete", "blocked", ({"code": "approval_fingerprint_unavailable"},))
-
-
-class Ready:
-    def __init__(self):
-        self.calls = 0
-
-    def evaluate(self, _request):
-        self.calls += 1
-        return PreflightReport("valid", "ready")
+AUTH = RuleAuthorizer(
+    lambda p, proj: p.tenant_id == "tenant-a" and proj == "project-a"
+)
 
 
 def test_local_transport_injects_principal_and_exposes_only_six_operations(tmp_path):
     principal = Principal("tenant-a", "actor-a")
-    service = OCREApplication(
-        sync_store=SQLiteSyncStore(tmp_path / "sync.db"),
-        job_store=SQLiteJobStore(tmp_path / "jobs.db"),
-        authorizer=ProjectAccess(),
-        preflight=Blocked(),
-    )
+    service = application(tmp_path, authorizer=AUTH, preflight=FixedPreflight(BLOCKED_APPROVAL))
     app = create_app(service, principal_dependency=lambda: principal)
     client = TestClient(app)
     operations = {
@@ -72,12 +52,7 @@ def test_local_transport_injects_principal_and_exposes_only_six_operations(tmp_p
 
 def test_http_sync_replay_returns_original_receipt_and_rejects_reused_identity(tmp_path):
     principal = Principal("tenant-a", "actor-a")
-    service = OCREApplication(
-        sync_store=SQLiteSyncStore(tmp_path / "sync.db"),
-        job_store=SQLiteJobStore(tmp_path / "jobs.db"),
-        authorizer=ProjectAccess(),
-        preflight=Blocked(),
-    )
+    service = application(tmp_path, authorizer=AUTH, preflight=FixedPreflight(BLOCKED_APPROVAL))
     client = TestClient(create_app(service, principal_dependency=lambda: principal))
     path = "/v1/projects/project-a/sync-batches"
     batch = {
@@ -99,13 +74,8 @@ def test_http_sync_replay_returns_original_receipt_and_rejects_reused_identity(t
 
 def test_cancel_accepts_empty_body_and_job_submit_rejects_non_strict_json_before_preflight(tmp_path):
     principal = Principal("tenant-a", "actor-a")
-    preflight = Ready()
-    service = OCREApplication(
-        sync_store=SQLiteSyncStore(tmp_path / "sync.db"),
-        job_store=SQLiteJobStore(tmp_path / "jobs.db"),
-        authorizer=ProjectAccess(),
-        preflight=preflight,
-    )
+    preflight = FixedPreflight()
+    service = application(tmp_path, authorizer=AUTH, preflight=preflight)
     app = create_app(service, principal_dependency=lambda: principal)
     client = TestClient(app)
     job = client.post("/v1/projects/project-a/jobs", headers={"Idempotency-Key": "submit"}, json={
@@ -135,12 +105,7 @@ def test_cancel_accepts_empty_body_and_job_submit_rejects_non_strict_json_before
 
 def test_http_job_submit_cancel_and_event_replay_are_idempotent(tmp_path):
     principal = Principal("tenant-a", "actor-a")
-    service = OCREApplication(
-        sync_store=SQLiteSyncStore(tmp_path / "sync.db"),
-        job_store=SQLiteJobStore(tmp_path / "jobs.db"),
-        authorizer=ProjectAccess(),
-        preflight=Ready(),
-    )
+    service = application(tmp_path, authorizer=AUTH, preflight=FixedPreflight())
     client = TestClient(create_app(service, principal_dependency=lambda: principal))
     submit_path = "/v1/projects/project-a/jobs"
     submission = {

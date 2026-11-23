@@ -1,4 +1,5 @@
-from datetime import datetime, timezone
+from tests.helpers import NOW
+
 import inspect
 
 from ocre_core.jobs import AdapterExecutionState, JobState, transition_job
@@ -19,13 +20,12 @@ def test_snapshot_reads_require_explicit_tenant_scope():
 
 
 def test_atomic_port_values_share_job_sequence_and_event_identity():
-    now = datetime(2026, 1, 1, tzinfo=timezone.utc)
     event = transition_job(
         job_id="j1", event_id="ev-1", current_state=JobState.QUEUED,
         current_sequence=4, expected_sequence=4, target_state=JobState.PREPARING,
-        occurred_at=now,
+        occurred_at=NOW,
     )
-    snapshot = JobSnapshot("j1", event.to_state, event.sequence, now)
+    snapshot = JobSnapshot("j1", event.to_state, event.sequence, NOW)
     outbox = OutboxMessage("msg-ev-1", "j1", event.event_id, "job.events", b"{}")
     assert snapshot.sequence == event.sequence
     assert snapshot.state is event.to_state
@@ -34,10 +34,9 @@ def test_atomic_port_values_share_job_sequence_and_event_identity():
 
 
 def test_submit_bootstrap_values_start_platform_and_adapter_at_queued():
-    now = datetime(2026, 1, 1, tzinfo=timezone.utc)
-    job = JobSnapshot("j1", JobState.QUEUED, 1, now)
-    execution = AdapterExecutionSnapshot("x1", "j1", AdapterExecutionState.QUEUED, 1, now)
-    submitted = ExecutionSubmitted("j1", "x1", "ev-submit", 1, now)
+    job = JobSnapshot("j1", JobState.QUEUED, 1, NOW)
+    execution = AdapterExecutionSnapshot("x1", "j1", AdapterExecutionState.QUEUED, 1, NOW)
+    submitted = ExecutionSubmitted("j1", "x1", "ev-submit", 1, NOW)
     assert job.state is JobState.QUEUED
     assert execution.state is AdapterExecutionState.QUEUED
     assert submitted.job_id == job.job_id == execution.job_id

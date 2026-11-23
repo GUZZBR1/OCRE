@@ -1,5 +1,4 @@
 import sqlite3
-from datetime import datetime, timezone
 from dataclasses import replace
 from concurrent.futures import ThreadPoolExecutor
 from threading import Barrier
@@ -10,12 +9,11 @@ from ocre_core.jobs import (AdapterExecutionState, CancellationEvidence, Cancell
 from ocre_core.persistence.jobs import AdapterExecutionSnapshot, ExecutionSubmitted, IdempotencyConflict, IdempotencyRecord, JobSnapshot, OutboxMessage
 from ocre_core.persistence.sqlite import FakeMessageConsumer, FakeOutboxDispatcher, PersistenceConflict, SQLiteJobStore
 
-NOW=datetime(2026,1,1,tzinfo=timezone.utc)
+from tests.helpers import NOW, insert_snapshot, queued_job
 
 def setup_store(tmp_path):
     store=SQLiteJobStore(tmp_path/"jobs.db")
-    snap=JobSnapshot("j1",JobState.QUEUED,1,NOW)
-    with store._connect() as db: db.execute("INSERT INTO snapshots VALUES(?,?,?,?,?,?)",("default","job","j1","j1",1,store._dump(snap)))
+    snap=queued_job(store)
     return store,snap
 
 def test_transition_atomic_idempotency_restart_and_pages(tmp_path):
@@ -103,12 +101,7 @@ def test_publish_before_ack_crash_redelivers_duplicate(tmp_path):
 def test_identical_job_ids_are_tenant_scoped_for_snapshots_and_event_replay(tmp_path):
     store = SQLiteJobStore(tmp_path / "jobs.db")
     for tenant in ("tenant-a", "tenant-b"):
-        snapshot = JobSnapshot("shared-job", JobState.QUEUED, 1, NOW, tenant_id=tenant)
-        with store._connect() as db:
-            db.execute(
-                "INSERT INTO snapshots VALUES(?,?,?,?,?,?)",
-                (tenant, "job", "shared-job", "shared-job", 1, store._dump(snapshot)),
-            )
+        insert_snapshot(store, JobSnapshot("shared-job", JobState.QUEUED, 1, NOW, tenant_id=tenant))
         event = transition_job(
             job_id="shared-job", event_id=f"{tenant}-event",
             current_state=JobState.QUEUED, current_sequence=1,
@@ -273,11 +266,7 @@ def test_persistence_rejects_forged_transition_from_terminal_snapshot(tmp_path):
 def test_persistence_rejects_forged_transition_from_terminal_adapter_snapshot(tmp_path):
     store = SQLiteJobStore(tmp_path / "jobs.db")
     terminal = AdapterExecutionSnapshot("x1", "j1", AdapterExecutionState.EXECUTION_FAILED, 1, NOW)
-    with store._connect() as db:
-        db.execute(
-            "INSERT INTO snapshots VALUES(?,?,?,?,?,?)",
-            ("default", "execution", "x1", "j1", 1, store._dump(terminal)),
-        )
+    insert_snapshot(store, terminal)
     forged = transition_adapter_execution(
         execution_id="x1", event_id="forged-adapter-terminal-rewrite",
         current_state=AdapterExecutionState.RUNNING, current_sequence=1,
