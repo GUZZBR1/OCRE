@@ -1,10 +1,15 @@
+import io
 import math
 import os
 import sys
+import threading
+import time
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from unittest import mock
 
+from ocre_core.integrations import process_host
 from ocre_core.integrations.process_host import (
     EnvironmentMode,
     ProcessBatchHost,
@@ -81,6 +86,53 @@ class ProcessBatchHostTests(unittest.TestCase):
         self.assertLess(result.duration_seconds, 5)
         self.assertTrue(result.stdout.truncated)
         self.assertTrue(result.stderr.truncated)
+
+    def test_clean_exit_at_deadline_with_lagging_drain_is_not_timed_out(self):
+        # Regression test: when wait() returns normally but consumed the
+        # whole deadline, the drains still need a real budget to consume
+        # buffered pipe data. Joining them on the already-spent deadline
+        # reported a false timed_out for an in-time execution.
+        release = threading.Event()
+        real_drain = process_host._BoundedDrain
+
+        class FakePopen:
+            def __init__(self, argv, **kwargs):
+                self.pid = 424242
+                self.returncode = None
+                self.stdout = io.BytesIO(b"buffered-at-eof")
+                self.stderr = io.BytesIO(b"")
+
+            def wait(self, timeout=None):
+                if self.returncode is None:
+                    # The child runs up to its deadline, then exits
+                    # successfully: wait() returns with no budget left
+                    # (sleep() never returns early).
+                    time.sleep(timeout or 0)
+                    self.returncode = 0
+                return self.returncode
+
+        class LaggingDrain(real_drain):
+            def run(self):
+                release.wait(5)
+                super().run()
+
+            def join(self, timeout=None):
+                # The drain only gets to run once it observes a real drain
+                # budget; a join budget at/below this value stands for the
+                # already-spent deadline (bounded drains never need it).
+                if timeout is not None and timeout > 0.5:
+                    release.set()
+                return super().join(timeout)
+
+        with mock.patch.object(process_host.subprocess, "Popen", FakePopen), \
+                mock.patch.object(process_host, "_BoundedDrain", LaggingDrain), \
+                mock.patch.object(process_host.os, "killpg") as killpg:
+            result = self.host.run(self.spec(timeout=0.05))
+
+        self.assertEqual(result.exit_code, 0)
+        self.assertFalse(result.timed_out)
+        self.assertEqual(result.stdout.text, "buffered-at-eof")
+        killpg.assert_not_called()
 
     def test_stdout_stderr_are_drained_and_capture_is_bounded(self):
         code = "import sys; sys.stdout.write('x'*100000); sys.stderr.write('y'*100000)"
