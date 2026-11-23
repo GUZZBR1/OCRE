@@ -1763,6 +1763,166 @@ def _beta_text_report(report: dict[str, Any]) -> str:
     return "\n".join(lines) + "\n"
 
 
+def _beta_preflight(
+    args: argparse.Namespace,
+) -> tuple[list[str], dict[str, Any] | None]:
+    """Fail-closed checks run before any heavy work.
+
+    Returns the collected errors (empty means go) and the validated
+    working document when ``--document`` was given.
+    """
+    preflight_errors: list[str] = []
+    if not _HEX40_RE.fullmatch(args.draw_commit or ""):
+        preflight_errors.append(
+            "--draw-commit must be a full 40-hex git revision "
+            f"(got {args.draw_commit!r})")
+    png_path = Path(args.png)
+    if not png_path.is_file():
+        preflight_errors.append(f"PNG not found: {png_path}")
+    if not Path(args.vectorize_script).is_file():
+        preflight_errors.append(
+            f"vectorize script not found: {args.vectorize_script}")
+    if args.vectorize_pythonpath and not args.vectorize_module:
+        preflight_errors.append(
+            "--vectorize-pythonpath requires --vectorize-module")
+    if args.thickness_mm is None:
+        preflight_errors.append(
+            "thickness-mm is required and declared by a human "
+            "(thickness is never invented)")
+    elif not (math.isfinite(args.thickness_mm) and args.thickness_mm > 0):
+        preflight_errors.append(
+            f"thickness-mm must be positive and finite "
+            f"(got {args.thickness_mm!r})")
+    if not _material_declared(args.material) and not (args.ai_adapter_factory or args.proposal_file or args.confirm_proposal or args.reject_proposal):
+        preflight_errors.append(
+            "material is required and declared by a human "
+            "(material is never invented)")
+    if not (math.isfinite(args.timeout_s) and args.timeout_s > 0):
+        preflight_errors.append(
+            f"--timeout-s must be positive and finite "
+            f"(got {args.timeout_s!r})")
+    working_doc: dict[str, Any] | None = None
+    if args.document:
+        doc_path = Path(args.document)
+        if not doc_path.is_file():
+            preflight_errors.append(
+                f"--document not found: {doc_path}")
+        else:
+            try:
+                working_doc = loads_document(doc_path.read_bytes())
+                validate_draw_document_or_raise(working_doc)
+            except ValueError as exc:
+                preflight_errors.append(
+                    f"--document failed validation: {exc}")
+    return preflight_errors, working_doc
+
+
+def _process_proposals(
+    args: argparse.Namespace,
+    ctx: dict[str, Any],
+    proposal_file: Path,
+    report: dict[str, Any],
+    steps: list[dict[str, Any]],
+) -> bool:
+    """Load/update proposals bound to the current document."""
+    ai_adapter = ctx["ai_adapter"]
+    doc = ctx.get("doc")
+    if doc is None:
+        return True
+    try:
+        from dataclasses import asdict
+        from .ai.proposals import PROPOSAL_STATES, Proposal, confirm, reject
+        from .ai.semantics import analyze, material_for_step
+        digest = document_sha256(doc)
+        ledger = (
+            json.loads(proposal_file.read_text(encoding="utf-8"))
+            if proposal_file.is_file() else None
+        )
+        if ledger is not None:
+            if not isinstance(ledger, dict):
+                raise ValueError("proposal ledger must be a JSON object")
+            if (ledger.get("document_sha256") != digest
+                    or ledger.get("revision") != doc.get("revision")):
+                raise ValueError("proposal ledger document revision/hash mismatch")
+            if not isinstance(ledger.get("proposals"), list):
+                raise ValueError("proposal ledger proposals must be a list")
+        if ledger is None and ai_adapter is not None:
+            proposals = analyze(doc, ai_adapter, explicit_material=args.material)
+            ledger = {
+                "document_sha256": digest,
+                "revision": doc["revision"],
+                "proposals": [asdict(proposal) for proposal in proposals],
+            }
+            proposal_file.parent.mkdir(parents=True, exist_ok=True)
+            _atomic_write_json(proposal_file, ledger)
+        if ledger is not None:
+            confirmed, rejected = set(args.confirm_proposal), set(args.reject_proposal)
+            if confirmed & rejected:
+                raise ValueError("proposal ids cannot be both confirmed and rejected")
+            if args.confirmed_by and not (confirmed or rejected):
+                raise ValueError("--confirmed-by requires a proposal action")
+            if (confirmed or rejected) and not args.confirmed_by:
+                raise ValueError("--confirmed-by is required with proposal actions")
+            proposals_by_id: dict[str, Proposal] = {}
+            for raw_proposal in ledger["proposals"]:
+                if not isinstance(raw_proposal, dict):
+                    raise ValueError("each ledger proposal must be an object")
+                proposal = Proposal(**raw_proposal)
+                if proposal.proposal_id in proposals_by_id:
+                    raise ValueError(f"duplicate proposal id: {proposal.proposal_id}")
+                if (proposal.document_revision != doc.get("revision")
+                        or proposal.document_sha256 != digest):
+                    raise ValueError(
+                        f"proposal {proposal.proposal_id} document revision/hash mismatch"
+                    )
+                if proposal.state not in PROPOSAL_STATES:
+                    raise ValueError(f"invalid state for proposal {proposal.proposal_id}")
+                proposals_by_id[proposal.proposal_id] = proposal
+            known = set(proposals_by_id)
+            requested = confirmed | rejected
+            if requested - known:
+                raise ValueError(f"unknown proposal ids: {sorted(requested - known)}")
+            for proposal_id in confirmed:
+                proposal = proposals_by_id[proposal_id]
+                if proposal.state == "rejected":
+                    raise ValueError(f"cannot confirm rejected proposal {proposal_id}")
+                if proposal.state == "pending":
+                    proposals_by_id[proposal_id] = confirm(proposal, by=args.confirmed_by)
+            for proposal_id in rejected:
+                proposal = proposals_by_id[proposal_id]
+                if proposal.state == "confirmed":
+                    raise ValueError(f"cannot reject confirmed proposal {proposal_id}")
+                if proposal.state == "pending":
+                    proposals_by_id[proposal_id] = reject(proposal, by=args.confirmed_by)
+            ledger["proposals"] = [asdict(p) for p in proposals_by_id.values()]
+            if requested:
+                _atomic_write_json(proposal_file, ledger)
+            report["proposals"] = {
+                "path": str(proposal_file),
+                "count": len(ledger["proposals"]),
+                "document_sha256": digest,
+            }
+            materials = {
+                material
+                for proposal in proposals_by_id.values()
+                if (material := material_for_step(doc, proposal)) is not None
+            }
+            if len(materials) > 1:
+                raise ValueError("multiple distinct confirmed materials require resolution")
+            if not _material_declared(args.material) and materials:
+                args.material = next(iter(materials))
+    except Exception as exc:
+        report["proposal_error"] = str(exc)
+    if not _material_declared(args.material):
+        steps.append(_beta_step_report(
+            "human-confirmation", "blocked", 0,
+            {"proposal_file": str(proposal_file)},
+            error="valid declared or confirmed material required",
+        ))
+        return False
+    return True
+
+
 def _cmd_beta_run(args: argparse.Namespace) -> int:
     out_dir = Path(args.out_dir).resolve()
     proposal_file = Path(args.proposal_file).resolve() if args.proposal_file else out_dir / "proposals.json"
@@ -1826,49 +1986,7 @@ def _cmd_beta_run(args: argparse.Namespace) -> int:
         return int(report["exit_code"])
 
     # --- Preflight (fail-closed, before any heavy work). ---
-    preflight_errors: list[str] = []
-    if not _HEX40_RE.fullmatch(args.draw_commit or ""):
-        preflight_errors.append(
-            "--draw-commit must be a full 40-hex git revision "
-            f"(got {args.draw_commit!r})")
-    png_path = Path(args.png)
-    if not png_path.is_file():
-        preflight_errors.append(f"PNG not found: {png_path}")
-    if not Path(args.vectorize_script).is_file():
-        preflight_errors.append(
-            f"vectorize script not found: {args.vectorize_script}")
-    if args.vectorize_pythonpath and not args.vectorize_module:
-        preflight_errors.append(
-            "--vectorize-pythonpath requires --vectorize-module")
-    if args.thickness_mm is None:
-        preflight_errors.append(
-            "thickness-mm is required and declared by a human "
-            "(thickness is never invented)")
-    elif not (math.isfinite(args.thickness_mm) and args.thickness_mm > 0):
-        preflight_errors.append(
-            f"thickness-mm must be positive and finite "
-            f"(got {args.thickness_mm!r})")
-    if not _material_declared(args.material) and not (args.ai_adapter_factory or args.proposal_file or args.confirm_proposal or args.reject_proposal):
-        preflight_errors.append(
-            "material is required and declared by a human "
-            "(material is never invented)")
-    if not (math.isfinite(args.timeout_s) and args.timeout_s > 0):
-        preflight_errors.append(
-            f"--timeout-s must be positive and finite "
-            f"(got {args.timeout_s!r})")
-    working_doc: dict[str, Any] | None = None
-    if args.document:
-        doc_path = Path(args.document)
-        if not doc_path.is_file():
-            preflight_errors.append(
-                f"--document not found: {doc_path}")
-        else:
-            try:
-                working_doc = loads_document(doc_path.read_bytes())
-                validate_draw_document_or_raise(working_doc)
-            except ValueError as exc:
-                preflight_errors.append(
-                    f"--document failed validation: {exc}")
+    preflight_errors, working_doc = _beta_preflight(args)
     if preflight_errors:
         report["status"] = "blocked"
         report["exit_code"] = 2
@@ -1900,105 +2018,6 @@ def _cmd_beta_run(args: argparse.Namespace) -> int:
             working_doc, ctx["doc_sha256"])
         report["documents"]["working_source"] = "example-document (--document)"
 
-    def process_proposals(ctx: dict[str, Any], proposal_file: Path) -> bool:
-        """Load/update proposals bound to the current document."""
-        ai_adapter = ctx["ai_adapter"]
-        doc = ctx.get("doc")
-        if doc is None:
-            return True
-        try:
-            from dataclasses import asdict
-            from .ai.proposals import PROPOSAL_STATES, Proposal, confirm, reject
-            from .ai.semantics import analyze, material_for_step
-            digest = document_sha256(doc)
-            ledger = (
-                json.loads(proposal_file.read_text(encoding="utf-8"))
-                if proposal_file.is_file() else None
-            )
-            if ledger is not None:
-                if not isinstance(ledger, dict):
-                    raise ValueError("proposal ledger must be a JSON object")
-                if (ledger.get("document_sha256") != digest
-                        or ledger.get("revision") != doc.get("revision")):
-                    raise ValueError("proposal ledger document revision/hash mismatch")
-                if not isinstance(ledger.get("proposals"), list):
-                    raise ValueError("proposal ledger proposals must be a list")
-            if ledger is None and ai_adapter is not None:
-                proposals = analyze(doc, ai_adapter, explicit_material=args.material)
-                ledger = {
-                    "document_sha256": digest,
-                    "revision": doc["revision"],
-                    "proposals": [asdict(proposal) for proposal in proposals],
-                }
-                proposal_file.parent.mkdir(parents=True, exist_ok=True)
-                _atomic_write_json(proposal_file, ledger)
-            if ledger is not None:
-                confirmed, rejected = set(args.confirm_proposal), set(args.reject_proposal)
-                if confirmed & rejected:
-                    raise ValueError("proposal ids cannot be both confirmed and rejected")
-                if args.confirmed_by and not (confirmed or rejected):
-                    raise ValueError("--confirmed-by requires a proposal action")
-                if (confirmed or rejected) and not args.confirmed_by:
-                    raise ValueError("--confirmed-by is required with proposal actions")
-                proposals_by_id: dict[str, Proposal] = {}
-                for raw_proposal in ledger["proposals"]:
-                    if not isinstance(raw_proposal, dict):
-                        raise ValueError("each ledger proposal must be an object")
-                    proposal = Proposal(**raw_proposal)
-                    if proposal.proposal_id in proposals_by_id:
-                        raise ValueError(f"duplicate proposal id: {proposal.proposal_id}")
-                    if (proposal.document_revision != doc.get("revision")
-                            or proposal.document_sha256 != digest):
-                        raise ValueError(
-                            f"proposal {proposal.proposal_id} document revision/hash mismatch"
-                        )
-                    if proposal.state not in PROPOSAL_STATES:
-                        raise ValueError(f"invalid state for proposal {proposal.proposal_id}")
-                    proposals_by_id[proposal.proposal_id] = proposal
-                known = set(proposals_by_id)
-                requested = confirmed | rejected
-                if requested - known:
-                    raise ValueError(f"unknown proposal ids: {sorted(requested - known)}")
-                for proposal_id in confirmed:
-                    proposal = proposals_by_id[proposal_id]
-                    if proposal.state == "rejected":
-                        raise ValueError(f"cannot confirm rejected proposal {proposal_id}")
-                    if proposal.state == "pending":
-                        proposals_by_id[proposal_id] = confirm(proposal, by=args.confirmed_by)
-                for proposal_id in rejected:
-                    proposal = proposals_by_id[proposal_id]
-                    if proposal.state == "confirmed":
-                        raise ValueError(f"cannot reject confirmed proposal {proposal_id}")
-                    if proposal.state == "pending":
-                        proposals_by_id[proposal_id] = reject(proposal, by=args.confirmed_by)
-                ledger["proposals"] = [asdict(p) for p in proposals_by_id.values()]
-                if requested:
-                    _atomic_write_json(proposal_file, ledger)
-                report["proposals"] = {
-                    "path": str(proposal_file),
-                    "count": len(ledger["proposals"]),
-                    "document_sha256": digest,
-                }
-                materials = {
-                    material
-                    for proposal in proposals_by_id.values()
-                    if (material := material_for_step(doc, proposal)) is not None
-                }
-                if len(materials) > 1:
-                    raise ValueError("multiple distinct confirmed materials require resolution")
-                if not _material_declared(args.material) and materials:
-                    args.material = next(iter(materials))
-        except Exception as exc:
-            report["proposal_error"] = str(exc)
-        if not _material_declared(args.material):
-            steps.append(_beta_step_report(
-                "human-confirmation", "blocked", 0,
-                {"proposal_file": str(proposal_file)},
-                error="valid declared or confirmed material required",
-            ))
-            return False
-        return True
-
     # --- The chain, in order. Step 1 is unrolled: only after it
     # succeeds does the working document exist for the report and the
     # proposal gate, and only then do the remaining steps run. ---
@@ -2014,7 +2033,7 @@ def _cmd_beta_run(args: argparse.Namespace) -> int:
             ctx["export_doc"], ctx["export_doc_sha256"])
         report["documents"]["working"] = _doc_entry(
             ctx["doc"], ctx["doc_sha256"])
-        if process_proposals(ctx, proposal_file):
+        if _process_proposals(args, ctx, proposal_file, report, steps):
             runners = [_beta_step_ocs, _beta_step_step]
             if not args.cad_only:
                 runners += [_beta_step_fea, _beta_step_physics,
