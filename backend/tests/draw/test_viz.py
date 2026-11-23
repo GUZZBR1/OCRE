@@ -21,11 +21,15 @@ import tempfile
 import unittest
 from pathlib import Path
 
-import meshio
 import numpy as np
+import pytest
 
 from ocre_core.draw import viz
 from ocre_core.draw.viz import VizError
+
+# meshio é dep opcional (requirements-viz.txt): ausente = skip honesto
+# do módulo inteiro, mesma regra dos binários externos (ver docstring).
+meshio = pytest.importorskip("meshio")
 
 FIXTURES = Path(__file__).resolve().parent / "fixtures"
 FRD = FIXTURES / "axial_bar_h5mm.frd"
