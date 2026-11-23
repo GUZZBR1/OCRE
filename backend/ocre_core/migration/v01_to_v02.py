@@ -36,7 +36,6 @@ class MigrationResult:
     source_bytes: bytes
     source_sha256: str
     draft_bytes: bytes
-    draft_sha256: str
     report: Mapping[str, Any]
 
     @property
@@ -339,7 +338,7 @@ def migrate_v01_to_v02(
             "ready": False,
         },
     }
-    return MigrationResult(source_bytes, source_sha, draft_bytes, draft_sha, report)
+    return MigrationResult(source_bytes, source_sha, draft_bytes, report)
 
 
 def _migration_warnings(source: Mapping[str, Any]) -> list[dict[str, str]]:
