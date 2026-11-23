@@ -613,7 +613,7 @@ class OpenStrokesPolicyTests(unittest.TestCase):
 
     Estes testes NÃO precisam do venv ``.venv-beta``: ``_run_worker`` é
     mockado, então o que se prova é a fronteira do documento (o que sai
-    em ``profiles``/``skipped`` e o que ainda recusa fail-closed), não
+    em ``regions``/``skipped`` e o que ainda recusa fail-closed), não
     a geometria OCCT — que a classe ``StepExportTests`` já cobre.
     """
 
@@ -635,8 +635,16 @@ class OpenStrokesPolicyTests(unittest.TestCase):
 
         def fake_worker(job, *, timeout_s, worker_python=None):
             captured["job"] = job
+
+            def wire_area(desc):
+                if desc["kind"] == "circle":
+                    return math.pi * desc["radius_mm"] ** 2
+                return step_export._polygon_area_mm2(desc["points_mm"])
+
             area = sum(
-                step_export._polygon_area_mm2(p) for p in job["profiles"]
+                wire_area(region["outer"])
+                - sum(wire_area(hole) for hole in region["holes"])
+                for region in job["regions"]
             )
             return {
                 "ok": True,
@@ -682,7 +690,8 @@ class OpenStrokesPolicyTests(unittest.TestCase):
         )
         self.assertEqual(report["open_strokes_policy"], "skip-open")
         # Só o perfil fechado chegou ao job do worker.
-        self.assertEqual(len(job["profiles"]), 1)
+        self.assertEqual(len(job["regions"]), 1)
+        self.assertEqual(job["regions"][0]["outer"]["kind"], "polygon")
         self.assertAlmostEqual(
             report["volume_mm3"], EXPECTED_VOLUME_MM3,
             delta=EXPECTED_VOLUME_MM3 * VOLUME_REL_TOL,
