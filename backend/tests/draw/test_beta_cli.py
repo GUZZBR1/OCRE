@@ -37,6 +37,9 @@ from ocre_core.draw.cli import main
 from ocre_core.draw.vectorize_runner import sha256_file
 
 HERE = Path(__file__).resolve().parent
+# Artefatos temporários ficam dentro do repo (AGENTS.md); ``.tmp/`` na
+# raiz é gitignored.
+REPO_TMP = HERE.parents[2] / ".tmp"
 FIXTURES = HERE / "fixtures"
 BETA_EXEMPLO = FIXTURES / "beta-exemplo"
 FAKE_VECTORIZE = FIXTURES / "fake_vectorize.py"
@@ -435,6 +438,7 @@ class BetaRunMockedTests(unittest.TestCase):
             "bbox_mm": [[10.0, 226.47, 0.0], [90.0, 266.47, 2.0]],
             "worker_versions": {"build123d": "0.13.0"},
         }
+        REPO_TMP.mkdir(exist_ok=True)
         for extra, expected in (
             ([], "fail"),
             (["--open-strokes-policy", "skip-open"], "skip-open"),
@@ -442,7 +446,9 @@ class BetaRunMockedTests(unittest.TestCase):
             with self.subTest(policy=expected):
                 calls: list[str] = []
                 self._patch_chain(calls, ocs_binary="/fake/OpenCADStudio")
-                with tempfile.TemporaryDirectory() as tmp, mock.patch(
+                with tempfile.TemporaryDirectory(
+                    dir=REPO_TMP
+                ) as tmp, mock.patch(
                     "ocre_core.draw.step_export.document_to_step",
                     return_value=step_result,
                 ) as step_mock:
@@ -456,7 +462,8 @@ class BetaRunMockedTests(unittest.TestCase):
                     report["params"]["open_strokes_policy"], expected)
 
     def test_unknown_open_strokes_policy_is_refused_by_the_parser(self):
-        with tempfile.TemporaryDirectory() as tmp:
+        REPO_TMP.mkdir(exist_ok=True)
+        with tempfile.TemporaryDirectory(dir=REPO_TMP) as tmp:
             code, _out = _run_cli(
                 _base_argv(Path(tmp),
                            ["--open-strokes-policy", "skip-aux"]))

@@ -308,8 +308,15 @@ class OpenStrokesPolicyTests(unittest.TestCase):
     a geometria OCCT — que a classe ``StepExportTests`` já cobre.
     """
 
+    # Artefatos temporários ficam dentro do repo (AGENTS.md); ``.tmp/``
+    # na raiz é gitignored.
+    _REPO_TMP = Path(__file__).resolve().parents[3] / ".tmp"
+
     def setUp(self):
-        self.tmp = tempfile.TemporaryDirectory(prefix="ocre-open-policy-")
+        self._REPO_TMP.mkdir(exist_ok=True)
+        self.tmp = tempfile.TemporaryDirectory(
+            prefix="ocre-open-policy-", dir=self._REPO_TMP
+        )
         self.addCleanup(self.tmp.cleanup)
         self.dir = Path(self.tmp.name)
 
