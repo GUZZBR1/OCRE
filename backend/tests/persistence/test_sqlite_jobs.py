@@ -26,13 +26,13 @@ def test_transition_atomic_idempotency_restart_and_pages(tmp_path):
     store,snap=setup_store(tmp_path)
     event=transition_job(job_id="j1",event_id="e2",current_state=snap.state,current_sequence=1,expected_sequence=1,target_state=JobState.PREPARING,occurred_at=NOW)
     new=JobSnapshot("j1",event.to_state,event.sequence,NOW)
-    idem=IdempotencyRecord("default","transition","k","fp","j1")
+    idem=IdempotencyRecord("default","transition","k","fp")
     out=OutboxMessage("m2","j1","e2","jobs",b"x")
     r=store.commit_transition(expected_sequence=1,snapshot=new,event=event,idempotency=idem,outbox=out)
     assert r.snapshot.sequence == 2
     assert store.commit_transition(expected_sequence=1,snapshot=new,event=event,idempotency=idem,outbox=out).replayed
     with pytest.raises(IdempotencyConflict):
-        store.commit_transition(expected_sequence=1,snapshot=new,event=event,idempotency=IdempotencyRecord("default","transition","k","different","j1"),outbox=out)
+        store.commit_transition(expected_sequence=1,snapshot=new,event=event,idempotency=IdempotencyRecord("default","transition","k","different"),outbox=out)
     restarted=SQLiteJobStore(tmp_path/"jobs.db")
     assert restarted.get_snapshot("j1", tenant_id="default").state is JobState.PREPARING
     first=restarted.read_events(tenant_id="default",job_id="j1",limit=1)
@@ -45,13 +45,13 @@ def test_create_execution_is_atomic_and_replayable(tmp_path):
     job=JobSnapshot("j",JobState.QUEUED,1,NOW)
     execution=AdapterExecutionSnapshot("x","j",AdapterExecutionState.QUEUED,1,NOW)
     event=ExecutionSubmitted("j","x","submit-1",1,NOW)
-    idem=IdempotencyRecord("default","submit","key","fingerprint","j")
+    idem=IdempotencyRecord("default","submit","key","fingerprint")
     outbox=OutboxMessage("submit-message","j","submit-1","jobs",b"")
     assert store.create_execution(job_snapshot=job,execution_snapshot=execution,submitted_event=event,idempotency=idem,outbox=outbox).event==event
     assert store.create_execution(job_snapshot=job,execution_snapshot=execution,submitted_event=event,idempotency=idem,outbox=outbox).replayed
     assert store.get_execution_snapshot("x", tenant_id="default").state.value=="queued"
     with pytest.raises(PersistenceConflict):
-        store.create_execution(job_snapshot=JobSnapshot("j",JobState.QUEUED,1,NOW),execution_snapshot=AdapterExecutionSnapshot("x2","j",execution.state,1,NOW),submitted_event=ExecutionSubmitted("j","x2","submit-2",1,NOW),idempotency=IdempotencyRecord("default","submit","key2","fp","j"),outbox=OutboxMessage("m2","j","submit-2","jobs",b""))
+        store.create_execution(job_snapshot=JobSnapshot("j",JobState.QUEUED,1,NOW),execution_snapshot=AdapterExecutionSnapshot("x2","j",execution.state,1,NOW),submitted_event=ExecutionSubmitted("j","x2","submit-2",1,NOW),idempotency=IdempotencyRecord("default","submit","key2","fp"),outbox=OutboxMessage("m2","j","submit-2","jobs",b""))
     assert store.get_execution_snapshot("x2", tenant_id="default") is None
 
 def test_committed_event_id_collision_surfaces_as_persistence_conflict(tmp_path):
@@ -86,7 +86,7 @@ def test_create_execution_validates_submitted_event_shape(tmp_path):
                 job_snapshot=JobSnapshot(job_id,JobState.QUEUED,1,NOW),
                 execution_snapshot=AdapterExecutionSnapshot(execution_id,job_id,AdapterExecutionState.QUEUED,1,NOW),
                 submitted_event=ExecutionSubmitted(job_id,execution_id,event_id,sequence,occurred),
-                idempotency=IdempotencyRecord("default","submit","key","fp",job_id),
+                idempotency=IdempotencyRecord("default","submit","key","fp"),
                 outbox=OutboxMessage("m",job_id,event_id,"t",b""))
     assert store.get_snapshot("j",tenant_id="default") is None
 
@@ -106,7 +106,8 @@ def test_outbox_retry_after_failure_and_consumer_dedup(tmp_path):
     assert FakeOutboxDispatcher(store,calls.append).dispatch()==0
     consumer=FakeMessageConsumer(tmp_path/"consumer.db",lambda m:calls.append(m))
     assert consumer.consume(calls[0]) is True
-    assert FakeMessageConsumer(tmp_path/"consumer.db",lambda m:calls.append(m)).consume(calls[0]) is False
+    assert FakeMessageConsumer(tmp_path/"consumer.db",lambda m:calls.append(m)).consume(calls[0]) is True
+    assert len(calls)==2
 
 
 def test_publish_before_ack_crash_redelivers_duplicate(tmp_path):
@@ -183,6 +184,23 @@ def test_consumer_recovers_abandoned_claim_after_restart(tmp_path):
     assert consumer.consume(message)
     assert handled==[message]
 
+def test_already_processed_message_still_drains_outbox(tmp_path):
+    store,snap=setup_store(tmp_path)
+    kick(store, snap, JobState.PREPARING)
+    message=store.pending_outbox()[0]
+    handled=[]
+    db=tmp_path/"consumer.db"
+    # Crash window: the handler ran (consumed='processed') but the dispatcher
+    # died before mark_delivered, leaving outbox.delivered=0.
+    assert FakeMessageConsumer(db,handled.append).consume(message) is True
+    restarted=FakeMessageConsumer(db,handled.append)
+    assert FakeOutboxDispatcher(store,restarted.consume).dispatch()==1
+    assert store.pending_outbox()==()
+    assert handled==[message]
+    with sqlite3.connect(db) as conn:
+        conn.execute("INSERT INTO consumed VALUES('m-claimed','processing')")
+    assert restarted.consume(OutboxMessage("m-claimed","j1","e9","t",b"")) is False
+
 def test_cancel_confirmation_must_match_persisted_origin_and_evidence(tmp_path):
     store,snap=setup_store(tmp_path)
     kick(store, snap, JobState.CANCEL_REQUESTED, "cancel-request")
@@ -245,7 +263,7 @@ def test_concurrent_same_key_cancel_commits_once_and_replays(tmp_path):
         target_state=JobState.CANCEL_REQUESTED, occurred_at=NOW,
     )
     snapshot = JobSnapshot("j1", event.to_state, event.sequence, NOW)
-    idempotency = IdempotencyRecord("default", "cancel", "cancel-key", "same-request", "j1")
+    idempotency = IdempotencyRecord("default", "cancel", "cancel-key", "same-request")
     outbox = OutboxMessage("cancel-message", "j1", event.event_id, "jobs", b"")
     barrier = Barrier(2)
 
@@ -382,7 +400,7 @@ def test_create_execution_rejects_wrong_port_record_types(tmp_path):
         job_snapshot=JobSnapshot("j", JobState.QUEUED, 1, NOW),
         execution_snapshot=AdapterExecutionSnapshot("x", "j", AdapterExecutionState.QUEUED, 1, NOW),
         submitted_event=ExecutionSubmitted("j", "x", "e", 1, NOW),
-        idempotency=IdempotencyRecord("default", "submit", "k", "f", "j"),
+        idempotency=IdempotencyRecord("default", "submit", "k", "f"),
         outbox=OutboxMessage("m", "j", "e", "t", b""),
     )
     for key, bad in (

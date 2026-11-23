@@ -9,7 +9,7 @@ Rules these contracts encode (from ``docs/architecture/DRAW_AI_LAYER.md``
 and the user's orders):
 
 - Deterministic first: the AI only sees what deterministic software
-  could not resolve (see ``router.py``).
+  could not resolve (see ``docs/architecture/ai/roteador.md``).
 - The AI proposes, never decides: every method below returns *proposal
   shapes* (``Classification`` / ``Incoherence`` / ``MaterialAdvice``).
   Turning one into anything in a document is a separate, explicit,

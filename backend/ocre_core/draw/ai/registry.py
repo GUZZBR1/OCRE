@@ -4,7 +4,7 @@ A model becomes usable by one explicit line — ``register_model(name,
 adapter)`` — and by nothing else. There is no auto-discovery, no
 default model, no environment sniffing: without that line, the
 registry is empty and every AI step fails closed (see
-``get_model`` / ``require_model``).
+``require_model``).
 
 Registering validates that the adapter fulfils the ``ModelAdapter``
 contract (a runtime-checkable protocol); anything else is refused.
@@ -66,11 +66,6 @@ DEFAULT_REGISTRY = ModelRegistry()
 def register_model(name: str, adapter: ModelAdapter) -> None:
     """Register ``adapter`` under ``name`` in the shared registry."""
     DEFAULT_REGISTRY.register(name, adapter)
-
-
-def get_model(name: str) -> ModelAdapter:
-    """Return the shared registry's adapter for ``name``; fail closed."""
-    return DEFAULT_REGISTRY.get(name)
 
 
 def require_model(name: str | None) -> ModelAdapter:

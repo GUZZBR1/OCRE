@@ -43,7 +43,6 @@ class IdempotencyRecord:
     operation: str
     key: str
     request_fingerprint: str
-    result_reference: str
 
 
 @dataclass(frozen=True)

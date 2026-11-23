@@ -1,7 +1,7 @@
 """Tests for the AI layer scaffolding (entorno only — no model).
 
 The package ``ocre_core/draw/ai/`` is mechanics, not a model: interfaces,
-registry, context, deterministic-first router, proposal gate and config.
+registry, context and the proposal gate.
 No model is registered by default, no knowledge base is encoded, no
 network is used. These tests prove the scaffolding fails closed without
 a model and that the human-confirmation gate (G3.2) is structural:
@@ -13,8 +13,6 @@ from __future__ import annotations
 import unittest
 
 from ocre_core.draw.ai import (
-    AIConfig,
-    AINotConfiguredError,
     ApplicationResult,
     Classification,
     Incoherence,
@@ -25,9 +23,7 @@ from ocre_core.draw.ai import (
     confirm,
     new_proposal,
     reject,
-    require_configured,
     require_model,
-    route,
 )
 from ocre_core.draw.ai.interfaces import (
     CoherenceChecker,
@@ -60,8 +56,7 @@ def make_document():
 class FakeModel:
     """A test-only adapter fulfilling the ModelAdapter contract.
 
-    Counts calls so tests can prove the router never invokes it when
-    deterministic software resolves the item. Proposes nothing real:
+    Counts calls. Proposes nothing real:
     the labels here are test fixtures, not a knowledge base.
     """
 
@@ -127,29 +122,6 @@ class RegistryTests(unittest.TestCase):
             registry.register("", FakeModel())
 
 
-class ConfigTests(unittest.TestCase):
-    def test_default_config_is_empty_and_not_configured(self):
-        cfg = AIConfig()
-        self.assertIsNone(cfg.model_name)
-        self.assertIsNone(cfg.endpoint)
-        self.assertIsNone(cfg.api_key_env)
-        self.assertIsNone(cfg.knowledge_base_version)
-        self.assertFalse(cfg.enabled)
-        self.assertFalse(cfg.is_configured())
-        with self.assertRaises(AINotConfiguredError):
-            require_configured(cfg)
-        with self.assertRaises(AINotConfiguredError):
-            require_configured()
-
-    def test_configured_only_with_model_and_enabled(self):
-        self.assertFalse(AIConfig(model_name="x").is_configured())
-        self.assertFalse(AIConfig(enabled=True).is_configured())
-        self.assertTrue(AIConfig(model_name="x", enabled=True).is_configured())
-        self.assertIs(
-            require_configured(AIConfig(model_name="x", enabled=True)).model_name, "x"
-        )
-
-
 class ContextTests(unittest.TestCase):
     def test_build_context_packs_the_document(self):
         doc = make_document()
@@ -179,63 +151,6 @@ class ContextTests(unittest.TestCase):
             build_context({"strokes": []})
         with self.assertRaises(ValueError):
             build_context({"revision": 1, "strokes": []})
-
-
-class RouterTests(unittest.TestCase):
-    ITEM = {"kind": "format-conversion", "from": "pdf", "to": "jpeg"}
-
-    def test_deterministic_converter_wins_and_model_is_never_called(self):
-        model = FakeModel()
-        registry = ModelRegistry()
-        registry.register("fake", model)
-        config = AIConfig(model_name="fake", enabled=True)
-
-        def pdf_to_jpeg(item):
-            if item.get("from") == "pdf" and item.get("to") == "jpeg":
-                return "converted-by-software"
-            return None
-
-        result = route(self.ITEM, [pdf_to_jpeg], config=config, registry=registry)
-        self.assertEqual(result.outcome, "deterministic")
-        self.assertEqual(result.deterministic_result, "converted-by-software")
-        self.assertEqual(model.calls, 0)
-
-    def test_no_converter_and_no_model_is_unresolved(self):
-        result = route(self.ITEM, [lambda item: None])
-        self.assertEqual(result.outcome, "unresolved")
-        self.assertIn("not configured", result.detail)
-
-    def test_no_converter_with_model_escalates_to_ai(self):
-        model = FakeModel()
-        registry = ModelRegistry()
-        registry.register("fake", model)
-        config = AIConfig(model_name="fake", enabled=True)
-        result = route(self.ITEM, [lambda item: None], config=config, registry=registry)
-        self.assertEqual(result.outcome, "escalated-to-ai")
-        self.assertIn("fake", result.detail)
-        # The router decides only: it never invokes the model itself.
-        self.assertEqual(model.calls, 0)
-
-    def test_configured_but_unregistered_model_is_unresolved(self):
-        registry = ModelRegistry()
-        config = AIConfig(model_name="fantasma", enabled=True)
-        result = route(self.ITEM, [lambda item: None], config=config, registry=registry)
-        self.assertEqual(result.outcome, "unresolved")
-
-    def test_first_converter_that_can_do_it_wins(self):
-        calls = []
-
-        def first(item):
-            calls.append("first")
-            return None
-
-        def second(item):
-            calls.append("second")
-            return "done"
-
-        result = route(self.ITEM, [first, second])
-        self.assertEqual(result.outcome, "deterministic")
-        self.assertEqual(calls, ["first", "second"])
 
 
 class ProposalTests(unittest.TestCase):
@@ -278,6 +193,23 @@ class ProposalTests(unittest.TestCase):
         self.assertIsInstance(result, ApplicationResult)
         self.assertEqual(result.proposal_id, confirmed.proposal_id)
         self.assertEqual(result.applied_to_revision, doc["revision"])
+
+    def test_records_own_their_content_caller_and_decided_edits_do_not_leak(self):
+        doc = make_document()
+        content = {"stroke_id": "s-0001", "labels": ["parede"]}
+        proposal = new_proposal(
+            kind="semantic-classification",
+            content=content,
+            document_revision=doc["revision"],
+            document_sha256="abc",
+        )
+        content["labels"].append("muro")
+        content["extra"] = 1
+        self.assertEqual(proposal.content, {"stroke_id": "s-0001", "labels": ["parede"]})
+        for decided in (confirm(proposal, by="humano-1"), reject(proposal, by="humano-2")):
+            decided.content["injected"] = True
+            decided.content["labels"].append("muro")
+        self.assertEqual(proposal.content, {"stroke_id": "s-0001", "labels": ["parede"]})
 
     def test_apply_without_confirmation_is_refused(self):
         doc = make_document()

@@ -61,7 +61,8 @@ class SQLiteJobStore(JobPersistencePort):
             return replace(receipt, replayed=True)
         return None
 
-    def _commit(self, *, snapshot, event, expected_sequence, idempotency, outbox):
+    @staticmethod
+    def _validate_commit_records(*, snapshot, event, expected_sequence, idempotency, outbox):
         if (not isinstance(snapshot, (JobSnapshot, AdapterExecutionSnapshot))
                 or not isinstance(event, (JobTransition, AdapterExecutionTransition))
                 or not isinstance(outbox, OutboxMessage)
@@ -79,6 +80,35 @@ class SQLiteJobStore(JobPersistencePort):
         event_agg = event.job_id if isinstance(event, JobTransition) else event.execution_id
         if event_agg != agg_id or outbox.aggregate_id != agg_id or outbox.event_id != event.event_id or not outbox.message_id:
             raise ValueError("aggregate/event/outbox identity mismatch")
+        return tenant, kind, agg_id
+
+    @staticmethod
+    def _check_cancellation_consistency(*, old, event, agg_id):
+        origin = old.cancellation_origin
+        if event.to_state.value == "cancel_requested":
+            if event.from_state.value not in {"queued", "running"} or event.cancellation_origin is not old.state:
+                raise ValueError("cancel request origin does not match persisted state")
+            origin = old.state
+        elif event.from_state.value == "cancel_requested":
+            if origin is None or event.cancellation_origin is not origin: raise ValueError("cancellation origin mismatch")
+            evidence=event.cancellation_evidence
+            if event.to_state.value == "cancelled":
+                expected_kind="worker_start_prevented" if origin.value == "queued" else "process_terminated_by_cancellation"
+                if (not isinstance(evidence, CancellationEvidence) or evidence.aggregate_id != agg_id
+                        or evidence.requested_from_state is not origin or evidence.kind.value != expected_kind):
+                    raise ValueError("cancellation evidence does not match persisted request")
+            elif evidence is not None:
+                raise ValueError("cancellation evidence is only valid for cancelled outcome")
+        elif event.cancellation_origin is not None:
+            raise ValueError("cancellation origin outside cancellation flow")
+        elif event.cancellation_evidence is not None:
+            raise ValueError("cancellation evidence without persisted cancellation request")
+        return origin
+
+    def _commit(self, *, snapshot, event, expected_sequence, idempotency, outbox):
+        tenant, kind, agg_id = self._validate_commit_records(
+            snapshot=snapshot, event=event, expected_sequence=expected_sequence,
+            idempotency=idempotency, outbox=outbox)
         with self._connect() as db:
             db.execute("BEGIN IMMEDIATE")
             try:
@@ -98,25 +128,7 @@ class SQLiteJobStore(JobPersistencePort):
                 if old.state in terminal_states: raise ValueError("terminal snapshot is immutable")
                 if event.from_state is event.to_state: raise ValueError("transition event must change state")
                 if snapshot.state is not event.to_state: raise ValueError("snapshot state differs from event destination")
-                origin = old.cancellation_origin
-                if event.to_state.value == "cancel_requested":
-                    if event.from_state.value not in {"queued", "running"} or event.cancellation_origin is not old.state:
-                        raise ValueError("cancel request origin does not match persisted state")
-                    origin = old.state
-                elif event.from_state.value == "cancel_requested":
-                    if origin is None or event.cancellation_origin is not origin: raise ValueError("cancellation origin mismatch")
-                    evidence=event.cancellation_evidence
-                    if event.to_state.value == "cancelled":
-                        expected_kind="worker_start_prevented" if origin.value == "queued" else "process_terminated_by_cancellation"
-                        if (not isinstance(evidence, CancellationEvidence) or evidence.aggregate_id != agg_id
-                                or evidence.requested_from_state is not origin or evidence.kind.value != expected_kind):
-                            raise ValueError("cancellation evidence does not match persisted request")
-                    elif evidence is not None:
-                        raise ValueError("cancellation evidence is only valid for cancelled outcome")
-                elif event.cancellation_origin is not None:
-                    raise ValueError("cancellation origin outside cancellation flow")
-                elif event.cancellation_evidence is not None:
-                    raise ValueError("cancellation evidence without persisted cancellation request")
+                origin = self._check_cancellation_consistency(old=old, event=event, agg_id=agg_id)
                 snapshot = replace(snapshot, cancellation_origin=origin)
                 db.execute("UPDATE snapshots SET seq=?,body=? WHERE tenant=? AND kind=? AND id=?", (snapshot.sequence,self._dump(snapshot),tenant,kind,agg_id))
                 db.execute("INSERT INTO events(tenant,job_id,seq,event_id,body) VALUES(?,?,?,?,?)", (tenant,snapshot.job_id,event.sequence,event.event_id,self._dump(event)))
@@ -215,9 +227,18 @@ class FakeMessageConsumer:
             return db.execute("DELETE FROM consumed WHERE status='processing'").rowcount
 
     def consume(self, message):
+        """Return True once the message is durably processed and safe to ack.
+
+        An already-'processed' row is an idempotent success: the handler ran to
+        completion, so the dispatcher may mark the outbox row delivered. A
+        'processing' row is a contested or abandoned claim; redelivery only
+        resumes after recover_abandoned clears it.
+        """
         with sqlite3.connect(self.database) as db:
             try: db.execute("INSERT INTO consumed VALUES(?,'processing')",(message.message_id,))
-            except sqlite3.IntegrityError: return False
+            except sqlite3.IntegrityError:
+                row=db.execute("SELECT status FROM consumed WHERE message_id=?",(message.message_id,)).fetchone()
+                return row is not None and row[0]=='processed'
         try:
             self.handle(message)
         except Exception:
