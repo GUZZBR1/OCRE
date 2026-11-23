@@ -117,13 +117,12 @@ class OcsError(RuntimeError):
     ``code`` é o código simbólico do OCS (ex.: ``stale_state``,
     ``entity_absent``, ``save_failed``) ou um código local
     (``unavailable``, ``no_token``, ``bad_token_file``,
-    ``not_loopback``). ``http_status`` é o HTTP, quando houve.
+    ``not_loopback``).
     """
 
-    def __init__(self, message: str, *, code: str = "error", http_status: int | None = None):
+    def __init__(self, message: str, *, code: str = "error"):
         super().__init__(message)
         self.code = code
-        self.http_status = http_status
 
 
 class OcsUnavailableError(OcsError):
@@ -151,13 +150,14 @@ def resolve_token(
     env_token = os.environ.get("OCS_API_TOKEN")
     if env_token:
         return env_token
-    path = Path(token_file or os.environ.get("OCS_TOKEN_FILE", "") or "")
-    if token_file is None and not os.environ.get("OCS_TOKEN_FILE"):
+    env_file = os.environ.get("OCS_TOKEN_FILE")
+    if token_file is None and not env_file:
         raise OcsError(
             "sem token do OpenCADStudio: defina OCS_API_TOKEN, "
             "OCS_TOKEN_FILE (arquivo 0600) ou passe token=",
             code="no_token",
         )
+    path = Path(token_file or env_file or "")
     if not path.is_file():
         raise OcsError(
             f"arquivo de token do OCS não encontrado: {path}",
@@ -794,11 +794,11 @@ def _error_from_body(parsed: dict, http_status: int | None) -> OcsError:
     message = str(parsed.get("error") or parsed)
     if http_status == 401 or code == "unauthorized":
         return OcsError(f"OCS: não autorizado (Bearer inválido?): {message}",
-                        code="unauthorized", http_status=http_status)
+                        code="unauthorized")
     if code == "stale_state":
         return OcsError(f"OCS: stale_state — atualizar o state e tentar de novo: {message}",
-                        code="stale_state", http_status=http_status)
-    return OcsError(f"OCS: {message}", code=code, http_status=http_status)
+                        code="stale_state")
+    return OcsError(f"OCS: {message}", code=code)
 
 
 def _unwrap(parsed: dict, op: str, http_status: int | None, unwrap: str = "result") -> dict:
