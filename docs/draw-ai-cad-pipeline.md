@@ -38,6 +38,24 @@ verificados desta execução. A geometria suportada pelo beta permanece limitada
 a perfis fechados e estáveis extrudados; não há inferência de geometria de
 conjunto, restrições paramétricas ou semântica de engenharia.
 
+## Interpretador do vectorize
+
+O subprocesso do vectorize precisa de `numpy` e `opencv-contrib-python`
+(`cv2.ximgproc`), que não vivem no mesmo venv da CLI (que precisa de `ezdxf`).
+O interpretador é escolhido nesta ordem:
+
+1. `--vectorize-python CAMINHO` (nos subcomandos `export` e `beta-run`);
+2. variável de ambiente `OCRE_VECTORIZE_PYTHON`;
+3. fallback: o interpretador da própria CLI (`sys.executable`).
+
+Um caminho declarado que não existe ou não é executável falha fechado — nunca
+cai num interpretador que não foi pedido. O caminho resolvido entra em
+`export_parameters.vectorize.python` (sidecar e fingerprint). Exemplo:
+
+```bash
+export OCRE_VECTORIZE_PYTHON=~/draw/draw-core/.venv/bin/python
+```
+
 ## Exemplo de uso
 
 O exemplo abaixo usa um adapter local `my_provider:create_adapter`. O SHA do

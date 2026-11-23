@@ -8,6 +8,7 @@ G0.1/G0.2 (20 folhas) NÃO foi rodada.
 """
 
 import hashlib
+import json
 import math
 import os
 import shutil
@@ -20,6 +21,7 @@ from unittest import mock
 
 from ocre_core.draw.vectorize_runner import (
     VectorizeError,
+    find_vectorize_python,
     normalize_primitives,
     run_vectorize,
     sha256_file,
@@ -34,6 +36,15 @@ def fake_png(tmp: Path) -> Path:
     png = tmp / "canvas.png"
     png.write_bytes(b"\x89PNG\r\n\x1a\n")
     return png
+
+
+def env_without_vectorize_python() -> dict:
+    # OCRE_VECTORIZE_PYTHON setada no ambiente mudaria o interpretador
+    # padrão resolvido pelo runner (env > sys.executable); testes que
+    # fixam sys.executable no comando precisam dela ausente.
+    env = dict(os.environ)
+    env.pop("OCRE_VECTORIZE_PYTHON", None)
+    return env
 
 
 class Sha256Tests(unittest.TestCase):
@@ -156,6 +167,120 @@ class NormalizeTests(unittest.TestCase):
                     normalize_primitives([
                         {"type": "polyline", "points_mm": bad_points}])
 
+class FindVectorizePythonTests(unittest.TestCase):
+    """Costura de interpretador: explícito > env > sys.executable."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.tmp = Path(self._tmp.name)
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def _fake_python(self, name: str = "python") -> Path:
+        fake = self.tmp / name
+        fake.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        fake.chmod(0o755)
+        return fake
+
+    def test_explicit_wins_over_env(self):
+        explicit = self._fake_python("explicit-python")
+        env = self._fake_python("env-python")
+        with mock.patch.dict(os.environ, {"OCRE_VECTORIZE_PYTHON": str(env)}):
+            self.assertEqual(
+                find_vectorize_python(explicit),
+                Path(os.path.abspath(explicit)))
+
+    def test_env_wins_over_sys_executable(self):
+        env = self._fake_python()
+        with mock.patch.dict(os.environ, {"OCRE_VECTORIZE_PYTHON": str(env)}):
+            self.assertEqual(
+                find_vectorize_python(), Path(os.path.abspath(env)))
+
+    def test_sys_executable_is_the_fallback(self):
+        with mock.patch.dict(os.environ, {}, clear=True):
+            self.assertEqual(
+                find_vectorize_python(),
+                Path(os.path.abspath(sys.executable)))
+
+    def test_declared_but_missing_refuses_without_fallback(self):
+        # Caminho declarado inexistente é erro claro — nunca cai para
+        # sys.executable nem para outro fallback não pedido.
+        for kwargs, env in (
+            ({"explicit": self.tmp / "ausente"}, {}),
+            ({}, {"OCRE_VECTORIZE_PYTHON": str(self.tmp / "ausente")}),
+        ):
+            with self.subTest(kwargs=kwargs, env=env):
+                with mock.patch.dict(os.environ, env):
+                    with self.assertRaises(VectorizeError):
+                        find_vectorize_python(**kwargs)
+
+    def test_non_executable_refuses(self):
+        not_exec = self.tmp / "python"
+        not_exec.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        not_exec.chmod(0o644)
+        with self.assertRaises(VectorizeError):
+            find_vectorize_python(not_exec)
+        with mock.patch.dict(os.environ, {"OCRE_VECTORIZE_PYTHON": str(not_exec)}):
+            with self.assertRaises(VectorizeError):
+                find_vectorize_python()
+
+    def test_tilde_in_env_path_is_expanded(self):
+        home_python = self.tmp / "home" / "bin" / "python"
+        home_python.parent.mkdir(parents=True)
+        home_python.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        home_python.chmod(0o755)
+        env = {
+            "OCRE_VECTORIZE_PYTHON": "~/bin/python",
+            "HOME": str(self.tmp / "home"),
+        }
+        with mock.patch.dict(os.environ, env):
+            self.assertEqual(
+                find_vectorize_python(),
+                Path(os.path.abspath(home_python)))
+
+    def test_venv_symlink_is_not_resolved(self):
+        # bin/python de venv é symlink: .resolve() rodaria o subprocesso
+        # FORA do venv — o caminho devolvido é absoluto, não resolvido.
+        link = self.tmp / "venv" / "bin" / "python"
+        link.parent.mkdir(parents=True)
+        link.symlink_to(sys.executable)
+        result = find_vectorize_python(link)
+        self.assertEqual(result, Path(os.path.abspath(link)))
+        self.assertNotEqual(result, Path(os.path.realpath(link)))
+
+    def test_dotdot_after_directory_symlink_is_not_collapsed(self):
+        # sub/link_dir -> target_dir: sub/link_dir/../real_bin/python resolve
+        # pelo kernel para self.tmp/real_bin/python, NÃO sub/real_bin/python.
+        # os.path.abspath() colapsaria textualmente para um caminho inexistente.
+        real_py = self.tmp / "real_bin" / "python"
+        real_py.parent.mkdir(parents=True)
+        real_py.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        real_py.chmod(0o755)
+        target_dir = self.tmp / "target_dir"
+        target_dir.mkdir()
+        link_dir = self.tmp / "sub" / "link_dir"
+        link_dir.parent.mkdir(parents=True)
+        link_dir.symlink_to(target_dir)
+
+        candidate = link_dir / ".." / "real_bin" / "python"
+        result = find_vectorize_python(candidate)
+        self.assertEqual(result, candidate)
+        self.assertTrue(result.is_file())
+        self.assertNotEqual(result, Path(os.path.abspath(candidate)))
+
+    def test_nonexistent_tilde_user_raises_vectorize_error(self):
+        bad = "~usuario_inexistente_ocre_99999/bin/python"
+        with self.assertRaises(VectorizeError) as ctx_explicit:
+            find_vectorize_python(bad)
+        self.assertIn("explícito", str(ctx_explicit.exception))
+
+        with mock.patch.dict(os.environ, {"OCRE_VECTORIZE_PYTHON": bad}):
+            with self.assertRaises(VectorizeError) as ctx_env:
+                find_vectorize_python()
+        self.assertIn("OCRE_VECTORIZE_PYTHON", str(ctx_env.exception))
+
+
 class RunVectorizeTests(unittest.TestCase):
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()
@@ -277,6 +402,60 @@ class RunVectorizeTests(unittest.TestCase):
         self.assertTrue(out_dir.is_dir())
         self.assertEqual(result["polylines_total"], 5)
 
+    def _capturing_subprocess(self, captured: dict):
+        """Subprocesso fake: grava o JSON esperado e devolve sucesso."""
+
+        def fake_run(command, **kwargs):
+            captured["argv0"] = command[0]
+            json_path = Path(command[command.index("--json") + 1])
+            json_path.write_text(
+                json.dumps({"summary": {}, "primitives": []}),
+                encoding="utf-8")
+            return subprocess.CompletedProcess(
+                command, 0, stdout="", stderr="")
+
+        return mock.patch("subprocess.run", side_effect=fake_run)
+
+    def test_argv0_is_the_explicit_vectorize_python(self):
+        fake = self.tmp / "vectorize-python"
+        fake.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        fake.chmod(0o755)
+        captured: dict = {}
+        with self._capturing_subprocess(captured):
+            result = run_vectorize(
+                self.png, FAKE, self.fake_sha, self.tmp / "out",
+                vectorize_python=fake)
+        expected = os.path.abspath(fake)
+        self.assertEqual(captured["argv0"], expected)
+        self.assertEqual(result["python_path"], expected)
+
+    def test_argv0_is_the_env_vectorize_python(self):
+        env_python = self.tmp / "env-python"
+        env_python.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        env_python.chmod(0o755)
+        captured: dict = {}
+        with mock.patch.dict(
+            os.environ, {"OCRE_VECTORIZE_PYTHON": str(env_python)}
+        ), self._capturing_subprocess(captured):
+            result = run_vectorize(
+                self.png, FAKE, self.fake_sha, self.tmp / "out")
+        expected = os.path.abspath(env_python)
+        self.assertEqual(captured["argv0"], expected)
+        self.assertEqual(result["python_path"], expected)
+
+    def test_missing_vectorize_python_refuses_and_never_runs(self):
+        captured: dict = {}
+        with self._capturing_subprocess(captured):
+            with self.assertRaises(VectorizeError):
+                run_vectorize(
+                    self.png, FAKE, self.fake_sha, self.tmp / "out",
+                    vectorize_python=self.tmp / "ausente")
+        self.assertNotIn("argv0", captured)
+
+    def test_python_path_defaults_to_sys_executable(self):
+        result = run_vectorize(self.png, FAKE, self.fake_sha, self.tmp / "out")
+        self.assertEqual(result["python_path"], os.path.abspath(sys.executable))
+
 
 class RunVectorizeModuleModeTests(unittest.TestCase):
     """Modo módulo (``python -m``): o fake copiado para um diretório
@@ -296,7 +475,9 @@ class RunVectorizeModuleModeTests(unittest.TestCase):
         self._tmp.cleanup()
 
     def test_module_mode_invokes_dash_m_and_injects_pythonpath(self):
-        with mock.patch("subprocess.run", wraps=subprocess.run) as run:
+        with mock.patch.dict(
+            os.environ, env_without_vectorize_python(), clear=True
+        ), mock.patch("subprocess.run", wraps=subprocess.run) as run:
             result = run_vectorize(
                 self.png, FAKE, self.fake_sha, self.tmp / "out",
                 module="fake_vectorize_mod", pythonpath=self.mod_dir,
@@ -307,10 +488,13 @@ class RunVectorizeModuleModeTests(unittest.TestCase):
             result["module_origin"],
             str((self.mod_dir / "fake_vectorize_mod.py").resolve()),
         )
+        # call_args = última chamada (a execução `-m`); a 1ª é a sonda
+        # de resolução do módulo. command[0] é o interpretador
+        # resolvido: o default sys.executable normalizado.
         command = run.call_args.args[0]
         self.assertEqual(
             command[:3],
-            [sys.executable, "-m", "fake_vectorize_mod"],
+            [os.path.abspath(sys.executable), "-m", "fake_vectorize_mod"],
         )
         env = run.call_args.kwargs["env"]
         # A entrada injetada vem à frente de qualquer PYTHONPATH herdada.
@@ -373,10 +557,14 @@ class RunVectorizeModuleModeTests(unittest.TestCase):
             )
 
     def test_file_mode_command_and_env_are_unchanged(self):
-        with mock.patch("subprocess.run", wraps=subprocess.run) as run:
+        with mock.patch.dict(
+            os.environ, env_without_vectorize_python(), clear=True
+        ), mock.patch("subprocess.run", wraps=subprocess.run) as run:
             result = run_vectorize(self.png, FAKE, self.fake_sha, self.tmp / "out")
         command = run.call_args.args[0]
-        self.assertEqual(command[:2], [sys.executable, str(FAKE.resolve())])
+        self.assertEqual(
+            command[:2],
+            [os.path.abspath(sys.executable), str(FAKE.resolve())])
         self.assertNotIn("-m", command)
         self.assertIsNone(run.call_args.kwargs["env"])
         self.assertIsNone(result["module_origin"])
