@@ -1188,91 +1188,81 @@ def _beta_step_step(ctx: dict[str, Any]) -> dict[str, Any]:
         temp_context = tempfile.TemporaryDirectory(dir=step_dir)
         step_path = Path(temp_context.name) / "drawing.step"
     try:
-        report = document_to_step(
-            ctx["doc"], args.thickness_mm, args.material, step_path,
-            timeout_s=args.timeout_s,
-            open_strokes_policy=args.open_strokes_policy)
-    except StepExportError as exc:
+        try:
+            report = document_to_step(
+                ctx["doc"], args.thickness_mm, args.material, step_path,
+                timeout_s=args.timeout_s,
+                open_strokes_policy=args.open_strokes_policy)
+        except StepExportError as exc:
+            return _beta_step_done(
+                "step", "blocked", started,
+                {"thickness_mm": args.thickness_mm,
+                 "material": args.material,
+                 "open_strokes_policy": args.open_strokes_policy},
+                error=f"STEP export refused (fail-closed): {exc}",
+            )
+        except StepWorkerError as exc:
+            return _beta_step_done(
+                "step", "failed", started,
+                {"thickness_mm": args.thickness_mm,
+                 "material": args.material,
+                 "open_strokes_policy": args.open_strokes_policy},
+                error=f"STEP worker failed: {exc}",
+            )
+        if staging:
+            from .ai.observer import observe_conversion
+            observation = observe_conversion(ctx["doc"], ctx["ai_adapter"], stage="step",
+                                            artifacts={step_path.name: step_path.read_bytes()})
+            ctx["step_observation"] = observation
+            if observation.get("status") == "confirmed-error":
+                return _beta_step_done("step", "failed", started,
+                                       {"step": report, "observation": observation},
+                                       error="STEP observer confirmed a conversion error")
+        try:
+            brepcheck = validate_step(step_path, timeout_s=args.timeout_s)
+        except StepWorkerError as exc:
+            return _beta_step_done(
+                "step", "failed", started,
+                {"step": report},
+                error=f"BRepCheck failed: {exc}",
+            )
+        if brepcheck.get("brepcheck_valid") is not True:
+            # O passo depende do BRepCheck do worker (docstring): um STEP
+            # que o próprio kernel recusa não passa — com ou sem oráculo.
+            return _beta_step_done(
+                "step", "failed", started,
+                {"step": report, "brepcheck": brepcheck},
+                error="worker BRepCheck says the STEP is not valid",
+            )
+        try:
+            oracle = oracle_step(step_path, timeout_s=args.timeout_s)
+        except StepWorkerError as exc:
+            return _beta_step_done(
+                "step", "failed", started,
+                {"step": report, "brepcheck": brepcheck},
+                error=f"FreeCAD oracle failed: {exc}",
+            )
+        if oracle.get("status") == "fail":
+            return _beta_step_done(
+                "step", "failed", started,
+                {"step": report, "brepcheck": brepcheck, "oracle": oracle},
+                error="FreeCAD oracle says the STEP is not valid",
+            )
+        if staging:
+            manifest = Path(report["material_manifest_path"])
+            final_manifest = final_step_path.with_suffix(".step.manifest.json")
+            os.replace(step_path, final_step_path)
+            os.replace(manifest, final_manifest)
+            step_path = final_step_path
+            report["output_path"] = str(step_path)
+            report["material_manifest_path"] = str(final_manifest)
+        detail = {"step": report, "brepcheck": brepcheck, "oracle": oracle}
+        if ctx.get("step_observation") is not None:
+            detail["observation"] = ctx["step_observation"]
+        return _beta_step_done("step", "ok", started, detail)
+    finally:
         if temp_context is not None:
             temp_context.cleanup()
-        return _beta_step_done(
-            "step", "blocked", started,
-            {"thickness_mm": args.thickness_mm,
-             "material": args.material,
-             "open_strokes_policy": args.open_strokes_policy},
-            error=f"STEP export refused (fail-closed): {exc}",
-        )
-    except StepWorkerError as exc:
-        if temp_context is not None:
-            temp_context.cleanup()
-        return _beta_step_done(
-            "step", "failed", started,
-            {"thickness_mm": args.thickness_mm,
-             "material": args.material,
-             "open_strokes_policy": args.open_strokes_policy},
-            error=f"STEP worker failed: {exc}",
-        )
-    if staging:
-        from .ai.observer import observe_conversion
-        observation = observe_conversion(ctx["doc"], ctx["ai_adapter"], stage="step",
-                                        artifacts={step_path.name: step_path.read_bytes()})
-        ctx["step_observation"] = observation
-        if observation.get("status") == "confirmed-error":
-            temp_context.cleanup()
-            return _beta_step_done("step", "failed", started,
-                                     {"step": report, "observation": observation},
-                                     error="STEP observer confirmed a conversion error")
-    try:
-        brepcheck = validate_step(step_path, timeout_s=args.timeout_s)
-    except StepWorkerError as exc:
-        if temp_context is not None:
-            temp_context.cleanup()
-        return _beta_step_done(
-            "step", "failed", started,
-            {"step": report},
-            error=f"BRepCheck failed: {exc}",
-        )
-    if brepcheck.get("brepcheck_valid") is not True:
-        # O passo depende do BRepCheck do worker (docstring): um STEP
-        # que o próprio kernel recusa não passa — com ou sem oráculo.
-        if temp_context is not None:
-            temp_context.cleanup()
-        return _beta_step_done(
-            "step", "failed", started,
-            {"step": report, "brepcheck": brepcheck},
-            error="worker BRepCheck says the STEP is not valid",
-        )
-    try:
-        oracle = oracle_step(step_path, timeout_s=args.timeout_s)
-    except StepWorkerError as exc:
-        if temp_context is not None:
-            temp_context.cleanup()
-        return _beta_step_done(
-            "step", "failed", started,
-            {"step": report, "brepcheck": brepcheck},
-            error=f"FreeCAD oracle failed: {exc}",
-        )
-    if oracle.get("status") == "fail":
-        if temp_context is not None:
-            temp_context.cleanup()
-        return _beta_step_done(
-            "step", "failed", started,
-            {"step": report, "brepcheck": brepcheck, "oracle": oracle},
-            error="FreeCAD oracle says the STEP is not valid",
-        )
-    if staging:
-        manifest = Path(report["material_manifest_path"])
-        final_manifest = final_step_path.with_suffix(".step.manifest.json")
-        os.replace(step_path, final_step_path)
-        os.replace(manifest, final_manifest)
-        temp_context.cleanup()
-        step_path = final_step_path
-        report["output_path"] = str(step_path)
-        report["material_manifest_path"] = str(final_manifest)
-    detail = {"step": report, "brepcheck": brepcheck, "oracle": oracle}
-    if ctx.get("step_observation") is not None:
-        detail["observation"] = ctx["step_observation"]
-    return _beta_step_done("step", "ok", started, detail)
 
 
 def _beta_step_fea(ctx: dict[str, Any]) -> dict[str, Any]:
