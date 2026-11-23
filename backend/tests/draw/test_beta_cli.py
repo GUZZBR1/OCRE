@@ -37,6 +37,9 @@ from ocre_core.draw.cli import main
 from ocre_core.draw.vectorize_runner import sha256_file
 
 HERE = Path(__file__).resolve().parent
+# Artefatos temporários ficam dentro do repo (AGENTS.md); ``.tmp/`` na
+# raiz é gitignored.
+REPO_TMP = HERE.parents[2] / ".tmp"
 FIXTURES = HERE / "fixtures"
 BETA_EXEMPLO = FIXTURES / "beta-exemplo"
 FAKE_VECTORIZE = FIXTURES / "fake_vectorize.py"
@@ -360,32 +363,6 @@ class BetaRunMockedTests(unittest.TestCase):
         self.assertEqual(report["documents"]["export"]["doc_id"],
                          "11111111-2222-4333-8444-555555555555")
 
-    def test_open_strokes_policy_flag_reaches_step_export(self):
-        calls: list[str] = []
-        self._patch_chain(calls, ocs_binary="/fake/OpenCADStudio")
-        with tempfile.TemporaryDirectory() as tmp:
-            out_dir = Path(tmp) / "out"
-            for flag, expected in (([], "fail"),
-                                   (["--open-strokes-policy", "skip-all"],
-                                    "skip-all")):
-                with self.subTest(flag=flag):
-                    with mock.patch(
-                        "ocre_core.draw.step_export.document_to_step",
-                        return_value={
-                            "output_path": "x.step", "output_sha256": "d" * 64,
-                            "output_bytes": 9, "file_schema": "AP242",
-                            "thickness_mm": 2.0, "material_declared": "steel",
-                            "stroke_ids": ["s-0001"], "skipped": [],
-                            "profiles": 1, "expected_volume_mm3": 6400.0,
-                            "volume_mm3": 6400.0,
-                            "bbox_mm": [[0, 0, 0], [1, 1, 2]],
-                            "worker_versions": {}},
-                    ) as step:
-                        code, _out = _run_cli(_base_argv(out_dir, flag))
-                    self.assertEqual(code, 0, _out)
-                    self.assertEqual(
-                        step.call_args.kwargs["open_strokes_policy"], expected)
-
     def test_missing_thickness_blocks_fail_closed_before_any_step(self):
         calls: list[str] = []
         self._patch_chain(calls, ocs_binary="/fake/OpenCADStudio")
@@ -448,6 +425,49 @@ class BetaRunMockedTests(unittest.TestCase):
                  ("export", "step", "fea", "physics", "viz", "fmu")]
         self.assertEqual(order, ["export", "step", "fea", "physics", "viz",
                                  "fmu"])
+
+    def test_open_strokes_policy_reaches_document_to_step(self):
+        """--open-strokes-policy chega ao STEP; o default continua 'fail'."""
+        step_result = {
+            "output_path": "drawing.step", "output_sha256": "d" * 64,
+            "output_bytes": 9, "file_schema": "AP242",
+            "thickness_mm": 2.0, "material_declared": "steel",
+            "stroke_ids": ["s-0001"], "skipped": [],
+            "profiles": 1, "expected_volume_mm3": 6400.0,
+            "volume_mm3": 6400.0,
+            "bbox_mm": [[10.0, 226.47, 0.0], [90.0, 266.47, 2.0]],
+            "worker_versions": {"build123d": "0.13.0"},
+        }
+        REPO_TMP.mkdir(exist_ok=True)
+        for extra, expected in (
+            ([], "fail"),
+            (["--open-strokes-policy", "skip-open"], "skip-open"),
+        ):
+            with self.subTest(policy=expected):
+                calls: list[str] = []
+                self._patch_chain(calls, ocs_binary="/fake/OpenCADStudio")
+                with tempfile.TemporaryDirectory(
+                    dir=REPO_TMP
+                ) as tmp, mock.patch(
+                    "ocre_core.draw.step_export.document_to_step",
+                    return_value=step_result,
+                ) as step_mock:
+                    code, out = _run_cli(_base_argv(Path(tmp), extra))
+                report = json.loads(out)
+                self.assertEqual(code, 0, out)
+                self.assertEqual(
+                    step_mock.call_args.kwargs["open_strokes_policy"],
+                    expected)
+                self.assertEqual(
+                    report["params"]["open_strokes_policy"], expected)
+
+    def test_unknown_open_strokes_policy_is_refused_by_the_parser(self):
+        REPO_TMP.mkdir(exist_ok=True)
+        with tempfile.TemporaryDirectory(dir=REPO_TMP) as tmp:
+            code, _out = _run_cli(
+                _base_argv(Path(tmp),
+                           ["--open-strokes-policy", "skip-aux"]))
+        self.assertEqual(code, 2)
 
     def test_fmu_gate_reports_not_triggered_without_fmu(self):
         from ocre_core.draw.fmu_gate import validate_fmu

@@ -262,7 +262,7 @@ def _validate_cancellation_evidence(
     evidence: CancellationEvidence | None,
     cancellation_origin: JobState | AdapterExecutionState | None,
 ) -> None:
-    is_cancelled = target_state in {JobState.CANCELLED, AdapterExecutionState.CANCELLED}
+    is_cancelled = target_state.value == "cancelled"
     if not is_cancelled:
         if evidence is not None:
             raise ValueError("cancellation evidence is only valid for cancelled outcome")
@@ -276,8 +276,6 @@ def _validate_cancellation_evidence(
     evidence_source = evidence.requested_from_state
     if evidence_source != cancellation_origin:
         raise InvalidJobTransition("cancellation evidence does not match persisted request origin")
-    if cancellation_origin.value not in {"queued", "running"}:
-        raise InvalidJobTransition("unsupported state for cancellation evidence")
     if (
         evidence_source.value == "queued"
         and evidence.kind is not CancellationEvidenceKind.WORKER_START_PREVENTED

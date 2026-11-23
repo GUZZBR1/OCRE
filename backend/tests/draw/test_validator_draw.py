@@ -148,6 +148,15 @@ class FailClosedTests(unittest.TestCase):
         doc["schema_sha256"] = "0" * 64
         self.assert_invalid_with(doc, "unknown_schema_digest")
 
+    def test_legacy_schema_digest_still_validates(self):
+        # Documento gravado antes do bloco "circle" entrar no schema:
+        # o digest antigo segue aceito via legacy_sha256 do lock.
+        doc = make_valid_doc()
+        doc["schema_sha256"] = (
+            "1ea8e4fdb8a8058aa3fdea4c60b81a699e58a21154d72308333d71dc1df5bd80"
+        )
+        self.assertTrue(validate_draw_document(doc).valid)
+
     def test_timestamps_without_stamps(self):
         doc = make_valid_doc()
         doc["strokes"][0]["t_start_ms"] = 0
@@ -303,7 +312,7 @@ class CustomSchemaTests(unittest.TestCase):
     def test_supplied_schema_uses_canonical_digest(self):
         from ocre_core.draw.validator_draw import _canonical_bytes, load_bundled_schema
 
-        schema, _, _ = load_bundled_schema()
+        schema, _, _, _ = load_bundled_schema()
         doc = make_valid_doc()
         # Canonical digest of the same schema dict differs from the file-bytes
         # digest, so the declared file digest is unknown under a supplied schema.

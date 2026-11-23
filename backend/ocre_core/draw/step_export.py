@@ -17,8 +17,11 @@ Regras (fichas ``cad.md`` / ``formatos.md`` + decisão do Senado):
 - Espessura e material são DECLARADOS por humano (argumento) — nunca
   inventados. Espessura ausente/``None``/<=0 ou material vazio =
   recusa fail-closed.
-- Traço aberto = recusa fail-closed (nunca vira sólido). Documento
-  sem traço fechado ``stable`` = recusa.
+- Traço aberto ``stable``: ``open_strokes_policy="fail"`` (padrão)
+  recusa fail-closed — nunca vira sólido. A política opt-in
+  ``"skip-open"`` registra o traço em ``skipped`` e segue sem ele;
+  documento sem nenhum traço fechado ``stable`` recusa nas duas
+  políticas.
 - ``erased`` nunca entra; ``pending`` é pulado e registrado no
   relatório (mesma regra do escritor DXF F0).
 - O documento ``draw.paper.v1`` continua sendo o mestre: o STEP é só
@@ -50,11 +53,12 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
-from .paper import DEFAULT_SPEC
+from .paper import paper_size_mm
 from .document import document_sha256
 
 __all__ = [
     "DEFAULT_TIMEOUT_S",
+    "OPEN_STROKES_POLICIES",
     "ORACLE_UNAVAILABLE",
     "StepExportError",
     "document_to_step",
@@ -72,12 +76,15 @@ DEFAULT_TIMEOUT_S = 300
 # arredonda em ~1e-7 relativo; 0,1% é folga ampla sem esconder erro
 # de geometria).
 VOLUME_TOLERANCE_REL = 1e-3
-# Política para traços ``stable`` ABERTOS no pipeline STEP:
-# ``fail`` recusa fail-closed (padrão); ``skip-all`` pula e registra
-# (``reason="open_stroke"``), ainda fail-closed se nenhum traço fechado
-# ``stable`` restar. Não existe classificação "auxiliar" persistida no
-# documento hoje, então não há política "skip-aux" ainda.
-OPEN_STROKES_POLICIES = ("fail", "skip-all")
+# Políticas para traços ``stable`` abertos no pipeline STEP:
+# ``"fail"`` recusa a exportação inteira (fail-closed, padrão);
+# ``"skip-open"`` registra o traço em ``skipped`` com ``reason="open"``
+# e segue sem ele — um documento sem nenhum traço fechado ``stable``
+# continua recusando nas duas políticas.
+OPEN_STROKES_POLICIES = ("fail", "skip-open")
+# Epsilon geométrico do host (mm): separa "encostado" de "claramente
+# separado/contido" nos testes de cruzamento e contenção.
+_GEOM_EPS = 1e-9
 _FREECAD_ORACLE_SCRIPT = "freecad_oracle.py"
 ORACLE_UNAVAILABLE = "unavailable"
 MATERIAL_MANIFEST_SCHEMA = "ocre.step-material-manifest.v1"
@@ -226,19 +233,10 @@ def worker_versions(*, worker_python: str | Path | None = None) -> dict:
 
 
 def _paper_size(document: dict) -> tuple[float, float]:
-    paper = document.get("paper") or {}
-    width = float(paper.get("width_mm", DEFAULT_SPEC.width_mm))
-    height = float(
-        paper.get(
-            "effective_height_mm",
-            paper.get("height_mm", DEFAULT_SPEC.effective_height_mm),
-        )
-    )
-    if not (math.isfinite(width) and math.isfinite(height)):
-        raise StepExportError("paper.width_mm/height_mm devem ser finitos")
-    if width <= 0 or height <= 0:
-        raise StepExportError("paper.width_mm/height_mm devem ser positivos")
-    return width, height
+    try:
+        return paper_size_mm(document)
+    except ValueError as exc:
+        raise StepExportError(str(exc)) from exc
 
 
 def _stroke_circle(
@@ -293,8 +291,8 @@ def _closed_stable_profiles(
     ``{"stroke_id": str, "points": [[x, y_cad]...], "circle": desc|None}``.
     Fail-closed: ponto fora da folha, não finito ou fechado com <3 pontos
     recusa, sempre. Traço ``stable`` ABERTO recusa por padrão
-    (``open_strokes_policy="fail"``); com ``"skip-all"`` é pulado e
-    registrado (``reason="open_stroke"``) — e ainda assim falha se nenhum
+    (``open_strokes_policy="fail"``); com ``"skip-open"`` é pulado e
+    registrado (``reason="open"``) — e ainda assim falha se nenhum
     traço fechado ``stable`` restar.
     """
     if open_strokes_policy not in OPEN_STROKES_POLICIES:
@@ -333,17 +331,17 @@ def _closed_stable_profiles(
         if status != "stable":
             raise StepExportError(f"traço {stroke_id}: status desconhecido {status!r}")
         if not stroke.get("closed", False):
-            # Traço aberto NUNCA vira sólido. Por padrão recusa tudo
-            # (fail-closed); com "skip-all" é pulado e registrado — o
-            # documento continua sendo o mestre.
-            if open_strokes_policy == "skip-all":
-                skipped.append({"stroke_id": stroke_id, "reason": "open_stroke"})
-                continue
-            raise StepExportError(
-                f"traço {stroke_id}: traço aberto não vira sólido "
-                "(só traços fechados 'stable' vão para o STEP; "
-                "open_strokes_policy='skip-all' pula traços abertos)"
-            )
+            if open_strokes_policy == "fail":
+                # Traço aberto NUNCA vira sólido — recusa fail-closed,
+                # mesmo que haja outros traços fechados no documento.
+                raise StepExportError(
+                    f"traço {stroke_id}: traço aberto não vira sólido "
+                    "(só traços fechados 'stable' vão para o STEP)"
+                )
+            # "skip-open": o traço aberto não vira sólido, mas não
+            # derruba a exportação — fica registrado, rastreável.
+            skipped.append({"stroke_id": stroke_id, "reason": "open"})
+            continue
         points = stroke.get("points_mm")
         if not isinstance(points, list) or len(points) < 3:
             raise StepExportError(
@@ -428,10 +426,79 @@ def _segments_cross(
     return on(p1, p2, p3) or on(p1, p2, p4) or on(p3, p4, p1) or on(p3, p4, p2)
 
 
-def _check_no_crossings(rings: list[list[list[float]]], ids: list[str]) -> None:
-    """Fail-closed: recusa auto-interseção e cruzamento/toque entre anéis."""
-    segments = [list(zip(ring, ring[1:] + ring[:1])) for ring in rings]
-    for k, segs in enumerate(segments):
+def _seg_crosses_circle(
+    a: list[float], b: list[float], center: list[float], r: float
+) -> bool:
+    """True se o segmento cruza ou toca a circunferência (coords CAD)."""
+    dx, dy = b[0] - a[0], b[1] - a[1]
+    fx, fy = a[0] - center[0], a[1] - center[1]
+    if dx == 0.0 and dy == 0.0:  # segmento degenerado: ponto — toque se sobre o círculo
+        return abs(math.hypot(fx, fy) - r) <= _GEOM_EPS * max(1.0, r)
+    qa = dx * dx + dy * dy
+    qb = 2.0 * (fx * dx + fy * dy)
+    qc = fx * fx + fy * fy - r * r
+    disc = qb * qb - 4.0 * qa * qc
+    if disc < 0.0:
+        # |p(t)-c|^2 = r^2 sem raiz real; tolera tangência dentro do eps.
+        if disc < -_GEOM_EPS * max(qb * qb, 4.0 * qa * abs(qc), 1.0):
+            return False
+        disc = 0.0
+    sq = math.sqrt(disc)
+    t1, t2 = (-qb - sq) / (2.0 * qa), (-qb + sq) / (2.0 * qa)
+    # Alguma raiz em [0, 1] (inclusive): cruzamento; nas pontas, vértice
+    # sobre o círculo (toque). Raízes fora das duas pontas = segmento
+    # inteiro dentro do disco, sem cruzar a circunferência.
+    t_lo, t_hi = -_GEOM_EPS, 1.0 + _GEOM_EPS
+    return (t_lo <= t1 <= t_hi) or (t_lo <= t2 <= t_hi)
+
+
+def _circles_cross(ca: dict[str, Any], cb: dict[str, Any]) -> bool:
+    """True se as circunferências se cruzam ou se tocam."""
+    r1, r2 = ca["radius_mm"], cb["radius_mm"]
+    d = math.hypot(
+        ca["center_mm"][0] - cb["center_mm"][0],
+        ca["center_mm"][1] - cb["center_mm"][1],
+    )
+    tol = _GEOM_EPS * max(1.0, r1 + r2)
+    # OK: disjuntas (d > r1+r2) ou uma contida na outra (d < |r1-r2|).
+    return not (d > r1 + r2 + tol or d < abs(r1 - r2) - tol)
+
+
+def _contours_cross(ca: dict[str, Any], cb: dict[str, Any]) -> bool:
+    """Cruzamento/toque entre contornos na geometria enviada ao worker:
+    anel poligonal ou circunferência analítica — nunca a polilinha
+    discretizada de um traço ``circle``."""
+    a_circ, b_circ = ca["circle"], cb["circle"]
+    if a_circ is not None and b_circ is not None:
+        return _circles_cross(a_circ, b_circ)
+    if a_circ is not None:
+        ring = _ring(cb["points"])
+        return any(
+            _seg_crosses_circle(p, q, a_circ["center_mm"], a_circ["radius_mm"])
+            for p, q in zip(ring, ring[1:] + ring[:1])
+        )
+    if b_circ is not None:
+        ring = _ring(ca["points"])
+        return any(
+            _seg_crosses_circle(p, q, b_circ["center_mm"], b_circ["radius_mm"])
+            for p, q in zip(ring, ring[1:] + ring[:1])
+        )
+    ring_a, ring_b = _ring(ca["points"]), _ring(cb["points"])
+    return any(
+        _segments_cross(*s1, *s2)
+        for s1 in zip(ring_a, ring_a[1:] + ring_a[:1])
+        for s2 in zip(ring_b, ring_b[1:] + ring_b[:1])
+    )
+
+
+def _check_no_crossings(contours: list[dict[str, Any]]) -> None:
+    """Fail-closed: recusa auto-interseção e cruzamento/toque entre
+    contornos — na geometria do wire (círculo analítico ou anel)."""
+    for contour in contours:
+        if contour["circle"] is not None:
+            continue  # circunferência analítica não auto-intersecta
+        ring = _ring(contour["points"])
+        segs = list(zip(ring, ring[1:] + ring[:1]))
         n = len(segs)
         for i in range(n):
             for j in range(i + 2, n):
@@ -439,16 +506,16 @@ def _check_no_crossings(rings: list[list[list[float]]], ids: list[str]) -> None:
                     continue  # arestas adjacentes dividem o vértice do anel
                 if _segments_cross(*segs[i], *segs[j]):
                     raise StepExportError(
-                        f"traço {ids[k]}: contorno auto-intersecta ou se toca"
+                        f"traço {contour['stroke_id']}: contorno "
+                        "auto-intersecta ou se toca"
                     )
-    for a in range(len(segments)):
-        for b in range(a + 1, len(segments)):
-            for s1 in segments[a]:
-                for s2 in segments[b]:
-                    if _segments_cross(*s1, *s2):
-                        raise StepExportError(
-                            f"contornos {ids[a]} e {ids[b]} se cruzam ou se tocam"
-                        )
+    for a in range(len(contours)):
+        for b in range(a + 1, len(contours)):
+            if _contours_cross(contours[a], contours[b]):
+                raise StepExportError(
+                    f"contornos {contours[a]['stroke_id']} e "
+                    f"{contours[b]['stroke_id']} se cruzam ou se tocam"
+                )
 
 
 def _point_in_ring(point: list[float], ring: list[list[float]]) -> bool:
@@ -462,6 +529,31 @@ def _point_in_ring(point: list[float], ring: list[list[float]]) -> bool:
             if xin > x:
                 inside = not inside
     return inside
+
+
+def _rep_point(contour: dict[str, Any]) -> list[float]:
+    """Ponto representativo SOBRE a fronteira do contorno, para o teste
+    de contenção: primeiro vértice do anel ou um ponto da circunferência.
+    Usar o centro do círculo (interior) falharia quando um contorno
+    menor contivesse o centro — diria "círculo dentro do quadrado"
+    quando na verdade o quadrado está dentro do disco."""
+    circle = contour["circle"]
+    if circle is not None:
+        cx, cy = circle["center_mm"]
+        return [cx + circle["radius_mm"], cy]
+    return _ring(contour["points"])[0]
+
+
+def _point_in_contour(point: list[float], contour: dict[str, Any]) -> bool:
+    """Contenção estrita na fronteira do contorno — anel poligonal ou
+    circunferência analítica (a geometria que o worker extruda)."""
+    circle = contour["circle"]
+    if circle is not None:
+        r = circle["radius_mm"]
+        dx = point[0] - circle["center_mm"][0]
+        dy = point[1] - circle["center_mm"][1]
+        return math.hypot(dx, dy) < r - _GEOM_EPS * max(1.0, r)
+    return _point_in_ring(point, _ring(contour["points"]))
 
 
 def _contour_area_mm2(contour: dict[str, Any]) -> float:
@@ -489,23 +581,25 @@ def _regions(contours: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
     Profundidade par (0, 2, ...) = contorno externo (sólido/ilha);
     profundidade ímpar = furo pertencente ao contorno externo de maior
-    profundidade que o contém. Contornos não se cruzam nem se tocam
-    (verificado antes), então um único ponto por anel basta para a
-    contenção. Toda região sai com área líquida > 0 — furo que zera a
-    chapa recusa fail-closed.
+    profundidade que o contém. Cruzamento e contenção usam a geometria
+    do wire enviado ao worker (circunferência analítica quando o traço
+    tem bloco ``circle``, nunca só a polilinha discretizada), então um
+    único ponto representativo por contorno basta. Toda região sai com
+    área líquida > 0 — furo que zera a chapa recusa fail-closed.
     """
-    rings = [_ring(c["points"]) for c in contours]
-    ids = [c["stroke_id"] for c in contours]
-    for ring, stroke_id in zip(rings, ids):
-        if len(ring) < 3:
+    for contour in contours:
+        if contour["circle"] is not None:
+            continue  # a fronteira é a circunferência, não a polilinha
+        if len(_ring(contour["points"])) < 3:
             raise StepExportError(
-                f"traço {stroke_id}: contorno fechado degenerado "
+                f"traço {contour['stroke_id']}: contorno fechado degenerado "
                 "(menos de 3 pontos distintos)"
             )
-    _check_no_crossings(rings, ids)
+    _check_no_crossings(contours)
     containers = [
-        [j for j, other in enumerate(rings) if j != i and _point_in_ring(ring[0], other)]
-        for i, ring in enumerate(rings)
+        [j for j, other in enumerate(contours)
+         if j != i and _point_in_contour(_rep_point(contour), other)]
+        for i, contour in enumerate(contours)
     ]
     depth = [len(c) for c in containers]
     regions: list[dict[str, Any]] = []
@@ -569,6 +663,7 @@ def document_to_step(
             "material é obrigatório e declarado por humano "
             "(material nunca é inventado)"
         )
+    material = material.strip()
     contours, stroke_ids, skipped = _closed_stable_profiles(
         document, open_strokes_policy=open_strokes_policy
     )
@@ -581,8 +676,7 @@ def document_to_step(
     expected_volume = expected_area * float(thickness_mm)
 
     out_path = Path(out_path)
-    if out_path.parent != Path(".") and not out_path.parent.exists():
-        out_path.parent.mkdir(parents=True, exist_ok=True)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
     job: dict[str, Any] = {
         "kind": "export",
         "regions": [
@@ -593,7 +687,7 @@ def document_to_step(
             for region in regions
         ],
         "thickness_mm": float(thickness_mm),
-        "material": material.strip(),
+        "material": material,
         "out_path": str(out_path),
     }
     if timestamp is not None:
@@ -620,7 +714,8 @@ def document_to_step(
         "output_bytes": result["bytes"],
         "file_schema": result.get("file_schema"),
         "thickness_mm": float(thickness_mm),
-        "material_declared": material.strip(),
+        "material_declared": material,
+        "open_strokes_policy": open_strokes_policy,
         "stroke_ids": stroke_ids,
         "skipped": skipped,
         "profiles": len(regions),
@@ -652,7 +747,7 @@ def document_to_step(
             "volume_mm3": volume,
             "bbox_mm": result["bbox_mm"],
         },
-        "material": {"value": material.strip(), "source": "human-confirmed-or-declared"},
+        "material": {"value": material, "source": "human-confirmed-or-declared"},
         "material_in_step_native": bool(result.get("material_in_step_native", False)),
     }
     # Publish sidecar atomically so a failed write cannot truncate a prior manifest.
@@ -702,19 +797,22 @@ def export_dxf_ac1015(
     *,
     timeout_s: float = DEFAULT_TIMEOUT_S,
     worker_python: str | Path | None = None,
+    open_strokes_policy: str = "fail",
 ) -> dict:
     """Spike (a) do Senado: DXF ``AC1015`` (R2000) do perfil 2D via build123d.
 
-    Usa o mesmo perfil fechado ``stable`` do STEP (espessura 1 mm só
-    para o worker rodar; o DXF é 2D e não carrega espessura). Devolve
-    o relatório do worker; a abertura no LibreCAD é o gate
+    Usa os mesmos contornos fechados ``stable`` do STEP (espessura 1 mm
+    só para o worker rodar; o DXF é 2D e não carrega espessura) e a
+    mesma ``open_strokes_policy`` para traços abertos ``stable``.
+    Devolve o relatório do worker; a abertura no LibreCAD é o gate
     ``librecad_gate.check_dxf`` (F0), chamado pelo teste/caller.
     """
-    contours, stroke_ids, skipped = _closed_stable_profiles(document)
+    contours, stroke_ids, skipped = _closed_stable_profiles(
+        document, open_strokes_policy=open_strokes_policy
+    )
     regions = _regions(contours)
     dxf_path = Path(dxf_path)
-    if dxf_path.parent != Path(".") and not dxf_path.parent.exists():
-        dxf_path.parent.mkdir(parents=True, exist_ok=True)
+    dxf_path.parent.mkdir(parents=True, exist_ok=True)
     # O worker precisa de um STEP de saída no job de export; usa-se um
     # temporário descartável — o artefato deste spike é o DXF.
     with tempfile.TemporaryDirectory(prefix="ocre-step-dxf-") as tmp:

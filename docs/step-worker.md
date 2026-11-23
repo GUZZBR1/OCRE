@@ -70,9 +70,9 @@ Regras fail-closed (o host recusa antes de chamar o worker):
 - Espessura e material são DECLARADOS por humano — nunca inventados.
   `thickness_mm=None`/<=0 ou `material` vazio -> `StepExportError`.
 - Traço aberto `stable` -> recusa por padrão
-  (`open_strokes_policy="fail"`). Com `"skip-all"` (CLI
+  (`open_strokes_policy="fail"`). Com `"skip-open"` (CLI
   `--open-strokes-policy`) é pulado e registrado em `skipped`
-  (`reason="open_stroke"`); ainda assim falha se nenhum traço fechado
+  (`reason="open"`); ainda assim falha se nenhum traço fechado
   `stable` restar. Não existe papel "auxiliar" persistido no documento,
   então não há `skip-aux`.
 - Documento sem traço fechado `stable` -> recusa.

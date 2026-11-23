@@ -145,13 +145,17 @@ def _canonical_bytes(value: Any) -> bytes:
     ).encode("utf-8")
 
 
-def load_bundled_schema() -> tuple[dict[str, Any], str, str]:
-    """Return (schema, version, sha256) for the bundled draw-paper schema.
+def load_bundled_schema() -> tuple[dict[str, Any], str, str, tuple[str, ...]]:
+    """Return (schema, version, sha256, legacy_digests) for the bundled
+    draw-paper schema.
 
     The digest is the SHA-256 of the schema file's bytes and must match
     ``schema-lock-0.1.0.json`` — the same schema-lock mechanism the EIR
     validator uses. A mismatch means the bundled schema was edited without
-    updating the lock, and validation refuses to run.
+    updating the lock, and validation refuses to run. ``legacy_digests``
+    lists previously locked digests (``legacy_sha256`` in the lock):
+    documents written against an older revision of the same schema keep
+    validating, while a digest never locked still refuses.
     """
     try:
         path = SCHEMA_DIR / SCHEMA_FILE
@@ -160,19 +164,28 @@ def load_bundled_schema() -> tuple[dict[str, Any], str, str]:
         Draft202012Validator.check_schema(schema)
         digest = hashlib.sha256(path.read_bytes()).hexdigest()
         lock = json.loads((SCHEMA_DIR / LOCK_FILE).read_text(encoding="utf-8"))
-        locked = next(
+        locked_entry = next(
             (
-                entry.get("sha256")
+                entry
                 for entry in lock.get("schemas", [])
                 if entry.get("path") == SCHEMA_FILE
             ),
             None,
         )
+        locked = locked_entry.get("sha256") if locked_entry else None
+        legacy = locked_entry.get("legacy_sha256", ()) if locked_entry else ()
+        if (
+            not isinstance(legacy, list)
+            or not all(isinstance(d, str) and SHA256_RE.fullmatch(d) for d in legacy)
+        ):
+            raise ValueError(
+                "schema-lock-0.1.0.json has a malformed legacy_sha256 list"
+            )
         if lock.get("lock_version") != SCHEMA_VERSION or locked != digest:
             raise ValueError(
                 "bundled schema digest does not match schema-lock-0.1.0.json"
             )
-        return schema, SCHEMA_VERSION, digest
+        return schema, SCHEMA_VERSION, digest, tuple(legacy)
     except RecursionError as exc:
         raise ValueError("bundled schema exceeds the supported nesting depth") from exc
 
@@ -274,7 +287,7 @@ def _is_number(value: Any) -> bool:
     )
 
 
-def _polyline_length_mm(points: list[list[float]], closed: bool) -> float:
+def polyline_length_mm(points: list[list[float]], closed: bool) -> float:
     total = 0.0
     for (x1, y1), (x2, y2) in zip(points, points[1:]):
         total += math.hypot(x2 - x1, y2 - y1)
@@ -347,7 +360,7 @@ def _semantic(
         return
     doc_order_kind = doc.get("order_kind")
 
-    seen_ids: dict[str, int] = {}
+    seen_ids: set[str] = set()
     orders: list[int] = []
     for i, stroke in enumerate(strokes):
         if not isinstance(stroke, dict):
@@ -359,7 +372,7 @@ def _semantic(
                 _add(diagnostics, "semantic", f"{ptr}/stroke_id", "duplicate_id",
                      f"duplicate stroke_id: {sid}")
             else:
-                seen_ids[sid] = i
+                seen_ids.add(sid)
         order = stroke.get("order")
         if isinstance(order, int) and not isinstance(order, bool):
             orders.append(order)
@@ -382,11 +395,10 @@ def _semantic(
                          f"non-erased stroke must not carry {field}")
 
         effective_order_kind = stroke.get("order_kind", doc_order_kind)
-        if effective_order_kind is not None and stroke.get("order_kind") is not None:
-            if stroke.get("order_kind") != doc_order_kind:
-                _add(diagnostics, "semantic", f"{ptr}/order_kind",
-                     "order_kind_mismatch",
-                     "per-stroke order_kind must equal the document order_kind")
+        if stroke.get("order_kind") is not None and stroke.get("order_kind") != doc_order_kind:
+            _add(diagnostics, "semantic", f"{ptr}/order_kind",
+                 "order_kind_mismatch",
+                 "per-stroke order_kind must equal the document order_kind")
         has_stamps = "t_start_ms" in stroke or "t_end_ms" in stroke
         if has_stamps and effective_order_kind != "temporal-stamps":
             _add(diagnostics, "semantic", ptr, "timestamps_without_stamps",
@@ -451,7 +463,7 @@ def _semantic(
                          f"point ({x}, {y}) is outside the {paper_format} sheet ({paper_width} x {paper_eff_height} mm)")
             length = stroke.get("length_mm")
             if points_ok and _is_number(length) and len(clean) >= 1:
-                expected = _polyline_length_mm(clean, closed)
+                expected = polyline_length_mm(clean, closed)
                 tolerance = max(LENGTH_TOLERANCE_MM, 1e-6 * expected)
                 if abs(float(length) - expected) > tolerance:
                     _add(diagnostics, "semantic", f"{ptr}/length_mm",
@@ -474,13 +486,9 @@ def _check_previous(
     doc: dict[str, Any],
     previous: dict[str, Any],
     strokes: Any,
-    seen_ids: dict[str, int],
+    seen_ids: set[str],
     diagnostics: list[Diagnostic],
 ) -> None:
-    if not isinstance(previous, dict):
-        _add(diagnostics, "semantic", "", "invalid_previous_document",
-             "previous document must be a draw.paper.v1 object")
-        return
     if doc.get("doc_id") != previous.get("doc_id"):
         _add(diagnostics, "semantic", "/doc_id", "doc_id_changed",
              "doc_id is immutable across revisions")
@@ -498,7 +506,7 @@ def _check_previous(
                  "revision must increase by exactly 1 per mutation")
 
     prev_strokes = previous.get("strokes")
-    if not isinstance(prev_strokes, list) or not isinstance(strokes, list):
+    if not isinstance(prev_strokes, list):
         return
     prev_by_id: dict[str, dict[str, Any]] = {}
     for stroke in prev_strokes:
@@ -559,11 +567,13 @@ def validate_draw_document(
         parsed = None
 
     expected_digest: str | None = None
+    legacy_digests: tuple[str, ...] = ()
     schema_version = SCHEMA_VERSION
     schema_doc: dict[str, Any] | None = None
     if schema is None:
         try:
-            schema_doc, schema_version, expected_digest = load_bundled_schema()
+            (schema_doc, schema_version, expected_digest,
+             legacy_digests) = load_bundled_schema()
         except (OSError, ValueError, RecursionError) as exc:
             _add(diagnostics, "structural", "", "schema_unavailable", str(exc))
     else:
@@ -591,10 +601,10 @@ def validate_draw_document(
     if parsed is not None and expected_digest is not None:
         declared = parsed.get("schema_sha256")
         if isinstance(declared, str) and SHA256_RE.fullmatch(declared):
-            if declared != expected_digest:
+            if declared != expected_digest and declared not in legacy_digests:
                 _add(diagnostics, "schema-lock", "/schema_sha256",
                      "unknown_schema_digest",
-                     "schema_sha256 does not match the locked draw.paper.v1 schema")
+                     "schema_sha256 does not match a locked draw.paper.v1 schema digest")
 
     prev_parsed: dict[str, Any] | None = None
     if previous is not None:

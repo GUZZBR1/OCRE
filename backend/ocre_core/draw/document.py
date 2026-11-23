@@ -16,7 +16,6 @@ from __future__ import annotations
 
 import copy
 import hashlib
-import json
 import math
 import uuid
 from datetime import datetime, timezone
@@ -26,7 +25,10 @@ from .paper import DEFAULT_SPEC, PaperSpec, resolve_paper
 from .validator_draw import (
     SCHEMA_NAME,
     StrictJSONError,
+    _canonical_bytes,
     bundled_schema_sha256,
+    parse_json_strict,
+    polyline_length_mm,
 )
 
 ERASE_REASONS = ("hand-erase", "page-turn", "manual")
@@ -46,39 +48,13 @@ def _parse_rfc3339(value: str) -> datetime:
         raise ValueError(f"not an RFC 3339 date-time: {value!r}") from exc
 
 
-def _pairs_no_duplicates(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
-    result: dict[str, Any] = {}
-    for key, value in pairs:
-        if key in result:
-            raise StrictJSONError(f"duplicate object key: {key}")
-        result[key] = value
-    return result
-
-
-def _reject_constant(value: str) -> None:
-    raise StrictJSONError(f"non-finite JSON number: {value}")
-
-
-def compute_length_mm(points_mm: list[list[float]], closed: bool) -> float:
-    """Polyline length in mm; the closing segment counts when closed."""
-    total = 0.0
-    for (x1, y1), (x2, y2) in zip(points_mm, points_mm[1:]):
-        total += math.hypot(x2 - x1, y2 - y1)
-    if closed and len(points_mm) > 1:
-        (x1, y1), (x2, y2) = points_mm[-1], points_mm[0]
-        total += math.hypot(x2 - x1, y2 - y1)
-    return total
-
-
 def canonical_document_bytes(doc: dict[str, Any]) -> bytes:
     """Canonical serialisation of a document, for hashing only.
 
     Plain ``json.dumps(sort_keys=True)`` — deterministic for a given parsed
     document. This is NOT the JCS/RFC 8785 encoding used by fingerprints.
     """
-    return json.dumps(
-        doc, sort_keys=True, separators=(",", ":"), ensure_ascii=False
-    ).encode("utf-8")
+    return _canonical_bytes(doc)
 
 
 def document_sha256(doc: dict[str, Any]) -> str:
@@ -93,11 +69,7 @@ def dumps(doc: dict[str, Any]) -> str:
 
 def loads(text: str | bytes) -> dict[str, Any]:
     """Parse document JSON strictly (duplicate keys and NaN/Inf rejected)."""
-    if isinstance(text, (bytes, bytearray)):
-        text = bytes(text).decode("utf-8", errors="strict")
-    parsed = json.loads(
-        text, object_pairs_hook=_pairs_no_duplicates, parse_constant=_reject_constant
-    )
+    parsed = parse_json_strict(text)
     if not isinstance(parsed, dict):
         raise StrictJSONError("draw.paper.v1 document must be a JSON object")
     return parsed
@@ -288,7 +260,7 @@ def add_stroke(
         "status": status,
         "points_mm": points,
         "closed": bool(closed),
-        "length_mm": compute_length_mm(points, closed),
+        "length_mm": polyline_length_mm(points, closed),
         "order_kind": doc["order_kind"],
     }
     if shape is not None:

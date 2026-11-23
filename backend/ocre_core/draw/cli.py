@@ -87,6 +87,7 @@ from .sidecar import build_draw_sidecar
 from .validator_draw import (
     SCHEMA_NAME,
     SCHEMA_VERSION,
+    _canonical_bytes,
     bundled_schema_sha256,
     validate_draw_document,
     validate_draw_document_or_raise,
@@ -102,12 +103,6 @@ UNIT_POLICY_VERSION = "0.1.0"
 DXF_ADAPTER_VERSION = "0.1.0"
 _HEX40_RE = re.compile(r"^[0-9a-f]{40}$")
 _ORIGINS = ("fork-session-v2", "upstream-vectorize", "upstream-canvas-png")
-
-
-def _canonical_bytes(value: Any) -> bytes:
-    return json.dumps(
-        value, sort_keys=True, separators=(",", ":"), ensure_ascii=False
-    ).encode("utf-8")
 
 
 def _atomic_write_bytes(path: Path, data: bytes) -> None:
@@ -157,6 +152,8 @@ def _resolve_ai_adapter(factory_spec: str):
 
 
 def _build_parser() -> argparse.ArgumentParser:
+    from .step_export import OPEN_STROKES_POLICIES
+
     parser = argparse.ArgumentParser(
         prog="ocre-draw-export",
         description="F0 Draw export: PNG -> draw.paper.v1 -> DXF R2000 + sidecar + fingerprint.",
@@ -247,12 +244,13 @@ def _build_parser() -> argparse.ArgumentParser:
     beta.add_argument("--material", default=None,
                       help="DECLARED material name (required; missing "
                            "blocks the job, never estimated)")
-    beta.add_argument("--open-strokes-policy",
-                      choices=("fail", "skip-all"), default="fail",
-                      help="policy for stable OPEN strokes in the STEP export: "
-                           "'fail' (default) refuses the export; 'skip-all' "
-                           "records and skips them, still failing if no "
-                           "closed stable stroke remains")
+    beta.add_argument("--open-strokes-policy", default="fail",
+                      choices=list(OPEN_STROKES_POLICIES),
+                      help="policy for open 'stable' strokes in the STEP "
+                           "step: 'fail' refuses the export (default, "
+                           "fail-closed); 'skip-open' records them in the "
+                           "STEP report's skipped list — a document with "
+                           "no closed 'stable' stroke is still refused")
     beta.add_argument("--ai-adapter-factory", default=None,
                       help="optional module:callable returning a ModelAdapter; injectable provider seam")
     beta.add_argument("--proposal-file", default=None,
@@ -690,7 +688,6 @@ def _beta_step_export(ctx: dict[str, Any]) -> dict[str, Any]:
         )
     ctx["export_doc"] = doc
     ctx["export_doc_sha256"] = document_sha256(doc)
-    ctx["export_dxf"] = export_dir / "document.dxf"
     ctx["export_dir"] = export_dir
     detail = {
         "doc_id": doc["doc_id"],
@@ -837,7 +834,6 @@ def _beta_step_step(ctx: dict[str, Any]) -> dict[str, Any]:
     staging = ctx["observe_conversions"]
     temp_context = None
     if staging:
-        import tempfile
         temp_context = tempfile.TemporaryDirectory(dir=step_dir)
         step_path = Path(temp_context.name) / "drawing.step"
     try:
@@ -849,14 +845,16 @@ def _beta_step_step(ctx: dict[str, Any]) -> dict[str, Any]:
         return _beta_step_report(
             "step", "blocked", time.perf_counter() - started,
             {"thickness_mm": args.thickness_mm,
-             "material": args.material},
+             "material": args.material,
+             "open_strokes_policy": args.open_strokes_policy},
             error=f"STEP export refused (fail-closed): {exc}",
         )
     except StepWorkerError as exc:
         return _beta_step_report(
             "step", "failed", time.perf_counter() - started,
             {"thickness_mm": args.thickness_mm,
-             "material": args.material},
+             "material": args.material,
+             "open_strokes_policy": args.open_strokes_policy},
             error=f"STEP worker failed: {exc}",
         )
     if staging:
@@ -902,8 +900,6 @@ def _beta_step_step(ctx: dict[str, Any]) -> dict[str, Any]:
         step_path = final_step_path
         report["output_path"] = str(step_path)
         report["material_manifest_path"] = str(final_manifest)
-    ctx["step_path"] = step_path
-    ctx["step_report"] = report
     detail = {"step": report, "brepcheck": brepcheck, "oracle": oracle}
     if ctx.get("step_observation") is not None:
         detail["observation"] = ctx["step_observation"]
@@ -1249,6 +1245,7 @@ def _cmd_beta_run(args: argparse.Namespace) -> int:
             "draw_commit": args.draw_commit,
             "thickness_mm": args.thickness_mm,
             "material": args.material,
+            "open_strokes_policy": args.open_strokes_policy,
             "ocs_binary": args.ocs_binary,
             "draw_config": args.draw_config,
             "document": args.document,
@@ -1561,16 +1558,12 @@ def main(argv: list[str] | None = None) -> int:
         # argparse exits on --help / bad usage; as a library entry point
         # return the code instead of raising.
         return int(exc.code or 0)
-    if args.command == "export":
-        return _cmd_export(args)
-    if args.command == "validate":
-        return _cmd_validate(args)
-    if args.command == "fea-axial":
-        return _cmd_fea_axial(args)
-    if args.command == "beta-run":
-        return _cmd_beta_run(args)
-    parser.error(f"unknown command: {args.command!r}")
-    return 2
+    return {
+        "export": _cmd_export,
+        "validate": _cmd_validate,
+        "fea-axial": _cmd_fea_axial,
+        "beta-run": _cmd_beta_run,
+    }[args.command](args)
 
 
 if __name__ == "__main__":

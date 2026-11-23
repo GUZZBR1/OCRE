@@ -306,15 +306,15 @@ class OcsClient:
             except json.JSONDecodeError:
                 parsed = {}
             raise _error_from_body(parsed, exc.code) from exc
-        except (urllib.error.URLError, ConnectionError, OSError) as exc:
-            raise OcsUnavailableError(
-                f"OpenCADStudio não acessível em {self.base_url} "
-                f"(servidor fora do ar?): {exc}"
-            ) from exc
         except TimeoutError as exc:
             raise OcsUnavailableError(
                 f"OpenCADStudio não respondeu em {self.timeout_s}s "
                 f"({method} {path})"
+            ) from exc
+        except OSError as exc:
+            raise OcsUnavailableError(
+                f"OpenCADStudio não acessível em {self.base_url} "
+                f"(servidor fora do ar?): {exc}"
             ) from exc
 
     def _envelope(
@@ -420,9 +420,7 @@ class OcsClient:
 
     # -- XDATA (o id do traço) ----------------------------------------------
 
-    def set_stroke_id(
-        self, handle: str, stroke_id: str, *, request_id: str | None = None
-    ) -> dict:
+    def set_stroke_id(self, handle: str, stroke_id: str) -> dict:
         """Grava ``stroke_id`` em XDATA sob o APPID próprio ``DRAW``.
 
         Código DXF 1000 (string). Devolve o ``result`` do servidor

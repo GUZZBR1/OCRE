@@ -19,6 +19,7 @@ import math
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from ocre_core.draw import step_export
 from ocre_core.draw.step_export import (
@@ -85,11 +86,11 @@ class StepExportHostTests(unittest.TestCase):
             document_to_step(doc, THICKNESS_MM, "PLA", Path("x.step"),
                              open_strokes_policy="skip-aux")
 
-    def test_skip_all_without_closed_stroke_is_refused(self):
+    def test_skip_open_without_closed_stroke_is_refused(self):
         doc = make_doc([stroke("s-0001", [[5.0, 5.0], [50.0, 5.0]])])
         with self.assertRaises(StepExportError):
             document_to_step(doc, THICKNESS_MM, "PLA", Path("x.step"),
-                             open_strokes_policy="skip-all")
+                             open_strokes_policy="skip-open")
 
     def test_crossing_contours_are_refused(self):
         doc = make_doc([
@@ -123,6 +124,83 @@ class StepExportHostTests(unittest.TestCase):
     def test_degenerate_closed_ring_is_refused(self):
         doc = make_doc([stroke(
             "s-0001", [[10.0, 10.0], [20.0, 20.0], [10.0, 10.0]], closed=True)])
+        with self.assertRaises(StepExportError):
+            document_to_step(doc, THICKNESS_MM, "PLA", Path("x.step"))
+
+    def _regions_of(self, doc):
+        contours, _ids, _skipped = step_export._closed_stable_profiles(doc)
+        return step_export._regions(contours)
+
+    def test_analytic_circle_boundary_decides_containment(self):
+        """Regressão da revisão: a hierarquia usa a circunferência
+        analítica, não a polilinha de 4 amostras — um quadrado dentro do
+        disco mas fora do losango amostrado é furo, não sólido sobreposto."""
+        cpts = [[60.0, 50.0], [50.0, 60.0], [40.0, 50.0], [50.0, 40.0]]
+        doc = make_doc([
+            stroke("s-0001", cpts, closed=True, shape="circle",
+                   circle={"cx_mm": 50.0, "cy_mm": 50.0, "r_mm": 10.0}),
+            stroke("s-0002", [[56.0, 56.0], [57.0, 56.0],
+                              [57.0, 57.0], [56.0, 57.0]], closed=True),
+        ])
+        regions = self._regions_of(doc)
+        self.assertEqual(len(regions), 1)
+        self.assertEqual(regions[0]["outer"]["stroke_id"], "s-0001")
+        self.assertEqual([h["stroke_id"] for h in regions[0]["holes"]],
+                         ["s-0002"])
+
+    def test_circle_inside_circle_is_a_hole(self):
+        cpts = [[60.0, 50.0], [50.0, 60.0], [40.0, 50.0], [50.0, 40.0]]
+        spts = [[53.0, 50.0], [50.0, 53.0], [47.0, 50.0], [50.0, 47.0]]
+        doc = make_doc([
+            stroke("s-0001", cpts, closed=True, shape="circle",
+                   circle={"cx_mm": 50.0, "cy_mm": 50.0, "r_mm": 10.0}),
+            stroke("s-0002", spts, closed=True, shape="circle",
+                   circle={"cx_mm": 50.0, "cy_mm": 50.0, "r_mm": 3.0}),
+        ])
+        regions = self._regions_of(doc)
+        self.assertEqual(len(regions), 1)
+        self.assertEqual([h["stroke_id"] for h in regions[0]["holes"]],
+                         ["s-0002"])
+
+    def test_hole_covering_circle_center_still_hole_not_outer(self):
+        # O furo contém o centro do círculo: o ponto representativo do
+        # círculo é um ponto da circunferência, não o centro — senão o
+        # disco seria (errado) classificado como furo do quadrado.
+        cpts = [[60.0, 50.0], [50.0, 60.0], [40.0, 50.0], [50.0, 40.0]]
+        doc = make_doc([
+            stroke("s-0001", cpts, closed=True, shape="circle",
+                   circle={"cx_mm": 50.0, "cy_mm": 50.0, "r_mm": 10.0}),
+            stroke("s-0002", [[48.0, 48.0], [52.0, 48.0],
+                              [52.0, 52.0], [48.0, 52.0]], closed=True),
+        ])
+        regions = self._regions_of(doc)
+        self.assertEqual(len(regions), 1)
+        self.assertEqual(regions[0]["outer"]["stroke_id"], "s-0001")
+        self.assertEqual([h["stroke_id"] for h in regions[0]["holes"]],
+                         ["s-0002"])
+
+    def test_polygon_crossing_circle_boundary_is_refused(self):
+        # Quadrado a cavalo da circunferência: vértices dentro e fora.
+        cpts = [[60.0, 50.0], [50.0, 60.0], [40.0, 50.0], [50.0, 40.0]]
+        doc = make_doc([
+            stroke("s-0001", cpts, closed=True, shape="circle",
+                   circle={"cx_mm": 50.0, "cy_mm": 50.0, "r_mm": 10.0}),
+            stroke("s-0002", [[55.0, 45.0], [65.0, 45.0],
+                              [65.0, 55.0], [55.0, 55.0]], closed=True),
+        ])
+        with self.assertRaises(StepExportError):
+            document_to_step(doc, THICKNESS_MM, "PLA", Path("x.step"))
+
+    def test_tangent_circles_are_refused(self):
+        # d = r1 + r2 exatamente: tangência externa = toque = recusa.
+        cpts = [[60.0, 50.0], [50.0, 60.0], [40.0, 50.0], [50.0, 40.0]]
+        tpts = [[80.0, 50.0], [70.0, 60.0], [60.0, 50.0], [70.0, 40.0]]
+        doc = make_doc([
+            stroke("s-0001", cpts, closed=True, shape="circle",
+                   circle={"cx_mm": 50.0, "cy_mm": 50.0, "r_mm": 10.0}),
+            stroke("s-0002", tpts, closed=True, shape="circle",
+                   circle={"cx_mm": 70.0, "cy_mm": 50.0, "r_mm": 10.0}),
+        ])
         with self.assertRaises(StepExportError):
             document_to_step(doc, THICKNESS_MM, "PLA", Path("x.step"))
 
@@ -347,6 +425,27 @@ class StepExportTests(unittest.TestCase):
         check = validate_step(out)
         self.assertTrue(check["brepcheck_valid"])
 
+    def test_square_inside_analytic_circle_is_a_hole_not_a_solid(self):
+        """Regressão e2e da revisão: quadrado dentro do disco r=10 mas
+        fora do losango de 4 amostras é FURO (vol = pi*100 - 1) — antes
+        virava um segundo sólido sobreposto somado ao cilindro."""
+        cpts = [[60.0, 50.0], [50.0, 60.0], [40.0, 50.0], [50.0, 40.0]]
+        doc = make_doc([
+            stroke("s-0001", cpts, closed=True, shape="circle",
+                   circle={"cx_mm": 50.0, "cy_mm": 50.0, "r_mm": 10.0}),
+            stroke("s-0002", [[56.0, 56.0], [57.0, 56.0],
+                              [57.0, 57.0], [56.0, 57.0]], closed=True),
+        ])
+        out = self.dir / "disc-with-square-hole.step"
+        report = document_to_step(doc, THICKNESS_MM, "PLA", out)
+        expected = (math.pi * 100.0 - 1.0) * THICKNESS_MM
+        self.assertAlmostEqual(
+            report["volume_mm3"], expected, delta=expected * VOLUME_REL_TOL
+        )
+        check = validate_step(out)
+        self.assertTrue(check["brepcheck_valid"])
+        self.assertEqual(check["solids"], 1)
+
     def test_circle_shape_without_block_stays_a_polyline(self):
         """shape='circle' sem parâmetros analíticos: compatível — segue a
         polilinha discretizada (volume do prisma de 12 lados, não πr²)."""
@@ -376,8 +475,8 @@ class StepExportTests(unittest.TestCase):
         check = validate_step(out)
         self.assertEqual(check["solids"], 2)
 
-    def test_skip_all_open_stroke_exports_and_reports(self):
-        """``open_strokes_policy="skip-all"``: o traço aberto é pulado e
+    def test_skip_open_open_stroke_exports_and_reports(self):
+        """``open_strokes_policy="skip-open"``: o traço aberto é pulado e
         registrado; o manifesto continua íntegro (só fechados estáveis)."""
         doc = make_doc([
             stroke("s-0001", RECT, closed=True),
@@ -385,11 +484,11 @@ class StepExportTests(unittest.TestCase):
         ])
         out = self.dir / "skip.step"
         report = document_to_step(doc, THICKNESS_MM, "PLA", out,
-                                  open_strokes_policy="skip-all")
+                                  open_strokes_policy="skip-open")
         self.assertEqual(report["stroke_ids"], ["s-0001"])
         self.assertEqual(
             report["skipped"],
-            [{"stroke_id": "s-0002", "reason": "open_stroke"}],
+            [{"stroke_id": "s-0002", "reason": "open"}],
         )
         self.assertAlmostEqual(
             report["volume_mm3"], EXPECTED_VOLUME_MM3,
@@ -506,6 +605,130 @@ class StepExportTests(unittest.TestCase):
         self.assertAlmostEqual(
             oracle["volume_mm3"], EXPECTED_VOLUME_MM3,
             delta=EXPECTED_VOLUME_MM3 * VOLUME_REL_TOL,
+        )
+
+
+class OpenStrokesPolicyTests(unittest.TestCase):
+    """Política de traços abertos (``open_strokes_policy``) — só host.
+
+    Estes testes NÃO precisam do venv ``.venv-beta``: ``_run_worker`` é
+    mockado, então o que se prova é a fronteira do documento (o que sai
+    em ``profiles``/``skipped`` e o que ainda recusa fail-closed), não
+    a geometria OCCT — que a classe ``StepExportTests`` já cobre.
+    """
+
+    # Artefatos temporários ficam dentro do repo (AGENTS.md); ``.tmp/``
+    # na raiz é gitignored.
+    _REPO_TMP = Path(__file__).resolve().parents[3] / ".tmp"
+
+    def setUp(self):
+        self._REPO_TMP.mkdir(exist_ok=True)
+        self.tmp = tempfile.TemporaryDirectory(
+            prefix="ocre-open-policy-", dir=self._REPO_TMP
+        )
+        self.addCleanup(self.tmp.cleanup)
+        self.dir = Path(self.tmp.name)
+
+    def _export(self, doc, **kwargs):
+        """``document_to_step`` com worker fake; devolve (report, job)."""
+        captured = {}
+
+        def fake_worker(job, *, timeout_s, worker_python=None):
+            captured["job"] = job
+            area = sum(
+                step_export._polygon_area_mm2(p) for p in job["profiles"]
+            )
+            return {
+                "ok": True,
+                "sha256": "f" * 64,
+                "bytes": 10,
+                "volume_mm3": area * float(job["thickness_mm"]),
+                "bbox_mm": [[0.0, 0.0, 0.0], [1.0, 1.0, 1.0]],
+                "file_schema": "AP242",
+                "worker_versions": {"build123d": "fake"},
+                "notes": [],
+            }
+
+        with mock.patch.object(
+            step_export, "_run_worker", side_effect=fake_worker
+        ):
+            report = document_to_step(
+                doc, THICKNESS_MM, "PLA", self.dir / "doc.step", **kwargs
+            )
+        return report, captured["job"]
+
+    def test_fail_is_the_default_and_refuses_open_stroke(self):
+        doc = make_doc(
+            [
+                stroke("s-0001", RECT, closed=True),
+                stroke("s-0002", [[10.0, 200.0], [100.0, 200.0]]),
+            ]
+        )
+        with self.assertRaises(StepExportError):
+            self._export(doc)
+        self.assertFalse((self.dir / "doc.step").exists())
+
+    def test_skip_open_records_stroke_and_exports_closed_only(self):
+        doc = make_doc(
+            [
+                stroke("s-0001", RECT, closed=True),
+                stroke("s-0002", [[10.0, 200.0], [100.0, 200.0]]),
+            ]
+        )
+        report, job = self._export(doc, open_strokes_policy="skip-open")
+        self.assertEqual(report["stroke_ids"], ["s-0001"])
+        self.assertEqual(
+            report["skipped"], [{"stroke_id": "s-0002", "reason": "open"}]
+        )
+        self.assertEqual(report["open_strokes_policy"], "skip-open")
+        # Só o perfil fechado chegou ao job do worker.
+        self.assertEqual(len(job["profiles"]), 1)
+        self.assertAlmostEqual(
+            report["volume_mm3"], EXPECTED_VOLUME_MM3,
+            delta=EXPECTED_VOLUME_MM3 * VOLUME_REL_TOL,
+        )
+
+    def test_skip_open_still_refuses_document_without_closed_stable(self):
+        # Só traço aberto: a política não fabrica sólido do nada.
+        doc = make_doc([stroke("s-0001", [[10.0, 20.0], [50.0, 20.0]])])
+        with self.assertRaises(StepExportError):
+            self._export(doc, open_strokes_policy="skip-open")
+
+    def test_unknown_policy_is_refused_fail_closed(self):
+        doc = make_doc([stroke("s-0001", RECT, closed=True)])
+        for bad in ("skip-aux", "ignore", "", None, 3):
+            with self.subTest(policy=bad), self.assertRaises(StepExportError):
+                self._export(doc, open_strokes_policy=bad)
+
+    def test_export_dxf_ac1015_honors_the_same_policy(self):
+        # Default: traço aberto recusa antes de qualquer worker.
+        doc = make_doc([stroke("s-0001", [[10.0, 20.0], [50.0, 20.0]])])
+        with self.assertRaises(StepExportError):
+            export_dxf_ac1015(doc, self.dir / "open.dxf")
+        # skip-open: o traço aberto vai para o relatório, não para o DXF.
+        doc = make_doc(
+            [
+                stroke("s-0001", RECT, closed=True),
+                stroke("s-0002", [[10.0, 200.0], [100.0, 200.0]]),
+            ]
+        )
+        with mock.patch.object(
+            step_export,
+            "_run_worker",
+            return_value={
+                "ok": True,
+                "dxf_path": str(self.dir / "doc.dxf"),
+                "dxf_sha256": "e" * 64,
+                "dxf_bytes": 9,
+                "worker_versions": {},
+            },
+        ):
+            report = export_dxf_ac1015(
+                doc, self.dir / "doc.dxf", open_strokes_policy="skip-open"
+            )
+        self.assertEqual(report["stroke_ids"], ["s-0001"])
+        self.assertEqual(
+            report["skipped"], [{"stroke_id": "s-0002", "reason": "open"}]
         )
 
 

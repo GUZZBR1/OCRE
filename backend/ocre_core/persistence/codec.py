@@ -81,6 +81,6 @@ def loads(payload: bytes):
         doc=json.loads(payload.decode("utf-8"))
         if doc.get("version") != 1 or set(doc) != {"version", "value"}: raise InvalidPersistedValue("unsupported persistence codec version")
         return _decode(doc["value"])
-    except (UnicodeDecodeError, json.JSONDecodeError, KeyError, TypeError, ValueError) as exc:
+    except (KeyError, TypeError, ValueError) as exc:
         if isinstance(exc, InvalidPersistedValue): raise
         raise InvalidPersistedValue("invalid persisted JSON value") from exc
