@@ -291,6 +291,14 @@ class LoadDrawConfigTests(unittest.TestCase):
                 # _spec dentro de função não conta (só top-level)
                 'FORMATS = {"a4": (210.0, 297.0)}\n'
                 'def f():\n    _current = _spec("a4", "retrato")\n',
+                # reatribuição não-literal após literal: recusa, nunca
+                # mantém a grade literal anterior (review PR #54)
+                'FORMATS = {"a4": (210.0, 297.0), "a3": (297.0, 420.0)}\n'
+                '_current = _spec("a4", "retrato")\n'
+                '_current = _spec("a3", orientation_from_env())\n',
+                'FORMATS = {"a4": (210.0, 297.0)}\n'
+                'FORMATS = load_formats()\n'
+                '_current = _spec("a4", "retrato")\n',
             ):
                 path = self._write_config(Path(tmp), text)
                 with self.assertRaises(ValueError, msg=text):

@@ -270,11 +270,11 @@ def _read_draw_canvas(path: str | Path) -> tuple[int, int]:
             if isinstance(value, ast.Constant) and isinstance(value.value, int) and not isinstance(value.value, bool):
                 found[target.id] = value.value
         elif target.id == "FORMATS":
-            parsed = _literal_formats(value)
-            if parsed is not None:
-                formats = parsed
+            # Última atribuição vence — inclusive não-literal: manter o
+            # literal anterior leria a grade errada em vez de recusar.
+            formats = _literal_formats(value)
         elif target.id == "_current":
-            current = _literal_spec_call(value) or current
+            current = _literal_spec_call(value)
     if found:
         for name in ("PAPER_W", "PAPER_H"):
             if name not in found:
