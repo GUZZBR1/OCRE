@@ -723,6 +723,112 @@ def _fail(result: dict[str, Any], failures: list) -> dict[str, Any]:
     return result
 
 
+def _attach_provenance(result: FeaResult, spec: AxialCaseSpec, *,
+                       step_sha: str, document_sha256: str | None,
+                       doc_id: str | None, bc_source: str,
+                       gmsh_bin: str, ccx_bin: str,
+                       ccx_env: dict[str, str] | None,
+                       workdir: Path) -> None:
+    """Sidecar + fingerprint sobre o resumo validado.
+
+    Bloco final de ``run_axial_case``: monta ``summary_for_print`` +
+    digest, ``export_parameters``, ``derived`` e o sidecar
+    ``draw-paper-provenance/0.1``, mutando ``result`` (``fingerprint``,
+    ``sidecar``; falha do sidecar vira ``failures`` e derruba o
+    ``status``). Independente da fisica do caso -- so proveniencia.
+    """
+    summary_for_print = {
+        "case": AXIAL_CASE_ID,
+        "status": result["status"],
+        "reference": result["reference"],
+        "measured": result["measured"],
+        "errors_pct": result["errors_pct"],
+        "gate": result["gate"],
+        "artifacts": result["artifacts"],
+    }
+    digest = _fingerprint_summary(summary_for_print)
+    result["fingerprint"] = {
+        "domain": FINGERPRINT_DOMAIN_LABEL,
+        "algorithm": "sha256(JCS summary, domain-separated)",
+        "digest": digest,
+    }
+    doc_sha = document_sha256 or step_sha
+    doc_label = doc_id or AXIAL_CASE_ID
+    export_parameters: dict[str, Any] = {
+        "case": AXIAL_CASE_ID,
+        "step_sha256": step_sha,
+        "document_sha256_source": ("draw_document" if document_sha256
+                                   else "step_sha256 (no draw document)"),
+        "young_modulus_MPa": spec.young_modulus_mpa,
+        "poisson_ratio": spec.poisson_ratio,
+        "poisson_ratio_source": "OCRE synthetic benchmark "
+                                "(not in library fichas -- Senate errata)",
+        "prescribed_ux_mm": spec.prescribed_ux_mm,
+        "loading_mode": "prescribed displacement (ux on loaded face)",
+        "boundary_conditions": "ux=0 on fixed face; uy=0 on y=0 edge; "
+                               "uz=0 on z=0 edge (minimal constraints)",
+        "bc_source": bc_source,
+        "mesh_size_mm": spec.mesh_size_mm,
+        "element_type": "C3D4",
+        "inp_writer": "ocre_core.draw.fea (own writer; Gmsh .inp not used "
+                      "-- C3D10 node-ordering post-filter issue avoided)",
+        "gate": GATE_ID,
+        "gate_tolerance_pct": GATE_TOLERANCE_PCT,
+        "fea_version": FEA_VERSION,
+    }
+    gmsh_version = _tool_version([gmsh_bin, "--version"], 30.0, workdir)
+    ccx_version = _tool_version([ccx_bin, "-v"], 30.0, workdir, env=ccx_env)
+    fea_file = Path(__file__).resolve()
+    derived: list[dict[str, Any]] = []
+    if "frd" in result["artifacts"]:
+        derived.append({"artifact_id": "job-frd", "sha256":
+                        result["artifacts"]["frd"]["sha256"],
+                        "format": "ccx-frd"})
+    derived.append({"artifact_id": "job-dat", "sha256":
+                    result["artifacts"]["dat"]["sha256"],
+                    "format": "ccx-dat"})
+    try:
+        sidecar = build_draw_sidecar(
+            doc_id=doc_label,
+            document_sha256=doc_sha,
+            revision=0,
+            source_artifacts=[{
+                "artifact_id": "input-step",
+                "uri": "input.step",
+                "sha256": step_sha,
+                "origin": "synthetic",
+                "artifact_kind": "step",
+            }],
+            derived_artifacts=derived,
+            adapters=[
+                {"stage_id": "mesh", "adapter_id": "draw.fea.gmsh",
+                 "version": gmsh_version or "unknown",
+                 "binary_sha256": _sha256_file(gmsh_bin),
+                 "capabilities_sha256": _sha256_bytes(
+                     f"gmsh {gmsh_version} mesh-3d-c3d4".encode("utf-8"))},
+                {"stage_id": "solve", "adapter_id": "draw.fea.ccx",
+                 "version": ccx_version or "unknown",
+                 "binary_sha256": _sha256_file(ccx_bin),
+                 "capabilities_sha256": _sha256_bytes(
+                     f"ccx {ccx_version} static-c3d4".encode("utf-8"))},
+                {"stage_id": "case", "adapter_id": "draw.fea",
+                 "version": FEA_VERSION,
+                 "binary_sha256": _sha256_file(fea_file),
+                 "capabilities_sha256": _sha256_bytes(
+                     f"draw.fea {FEA_VERSION} axial-g4.1".encode("utf-8"))},
+            ],
+            export_parameters=export_parameters,
+            fingerprint_digest=digest,
+        )
+        result["sidecar"] = sidecar
+    except (ValueError, OSError) as exc:
+        # O sidecar nao invalida o resultado numerico, mas a falta dele
+        # e registrada -- sem proveniencia, o resultado nao e auditavel.
+        result["failures"].append(f"sidecar could not be built: {exc}")
+        if result["status"] == "passed":
+            result["status"] = "failed"
+
+
 def run_axial_case(step_path: str | Path, workdir: str | Path, *,
                    spec: AxialCaseSpec | None = None,
                    doc_id: str | None = None,
@@ -846,94 +952,9 @@ def run_axial_case(step_path: str | Path, workdir: str | Path, *,
             f"S11 error {s11_error:.4f}% exceed {GATE_TOLERANCE_PCT}%"]
 
     # --- Sidecar + fingerprint sobre o resumo validado. ---
-    summary_for_print = {
-        "case": AXIAL_CASE_ID,
-        "status": result["status"],
-        "reference": result["reference"],
-        "measured": result["measured"],
-        "errors_pct": result["errors_pct"],
-        "gate": result["gate"],
-        "artifacts": result["artifacts"],
-    }
-    digest = _fingerprint_summary(summary_for_print)
-    result["fingerprint"] = {
-        "domain": FINGERPRINT_DOMAIN_LABEL,
-        "algorithm": "sha256(JCS summary, domain-separated)",
-        "digest": digest,
-    }
-    doc_sha = document_sha256 or step_sha
-    doc_label = doc_id or AXIAL_CASE_ID
-    export_parameters: dict[str, Any] = {
-        "case": AXIAL_CASE_ID,
-        "step_sha256": step_sha,
-        "document_sha256_source": ("draw_document" if document_sha256
-                                   else "step_sha256 (no draw document)"),
-        "young_modulus_MPa": spec.young_modulus_mpa,
-        "poisson_ratio": spec.poisson_ratio,
-        "poisson_ratio_source": "OCRE synthetic benchmark "
-                                "(not in library fichas -- Senate errata)",
-        "prescribed_ux_mm": spec.prescribed_ux_mm,
-        "loading_mode": "prescribed displacement (ux on loaded face)",
-        "boundary_conditions": "ux=0 on fixed face; uy=0 on y=0 edge; "
-                               "uz=0 on z=0 edge (minimal constraints)",
-        "bc_source": inp_info["bc_source"],
-        "mesh_size_mm": spec.mesh_size_mm,
-        "element_type": "C3D4",
-        "inp_writer": "ocre_core.draw.fea (own writer; Gmsh .inp not used "
-                      "-- C3D10 node-ordering post-filter issue avoided)",
-        "gate": GATE_ID,
-        "gate_tolerance_pct": GATE_TOLERANCE_PCT,
-        "fea_version": FEA_VERSION,
-    }
-    gmsh_version = _tool_version([gmsh_bin, "--version"], 30.0, workdir)
-    ccx_version = _tool_version([ccx_bin, "-v"], 30.0, workdir, env=ccx_env)
-    fea_file = Path(__file__).resolve()
-    derived: list[dict[str, Any]] = []
-    if "frd" in result["artifacts"]:
-        derived.append({"artifact_id": "job-frd", "sha256":
-                        result["artifacts"]["frd"]["sha256"],
-                        "format": "ccx-frd"})
-    derived.append({"artifact_id": "job-dat", "sha256":
-                    result["artifacts"]["dat"]["sha256"],
-                    "format": "ccx-dat"})
-    try:
-        sidecar = build_draw_sidecar(
-            doc_id=doc_label,
-            document_sha256=doc_sha,
-            revision=0,
-            source_artifacts=[{
-                "artifact_id": "input-step",
-                "uri": "input.step",
-                "sha256": step_sha,
-                "origin": "synthetic",
-                "artifact_kind": "step",
-            }],
-            derived_artifacts=derived,
-            adapters=[
-                {"stage_id": "mesh", "adapter_id": "draw.fea.gmsh",
-                 "version": gmsh_version or "unknown",
-                 "binary_sha256": _sha256_file(gmsh_bin),
-                 "capabilities_sha256": _sha256_bytes(
-                     f"gmsh {gmsh_version} mesh-3d-c3d4".encode("utf-8"))},
-                {"stage_id": "solve", "adapter_id": "draw.fea.ccx",
-                 "version": ccx_version or "unknown",
-                 "binary_sha256": _sha256_file(ccx_bin),
-                 "capabilities_sha256": _sha256_bytes(
-                     f"ccx {ccx_version} static-c3d4".encode("utf-8"))},
-                {"stage_id": "case", "adapter_id": "draw.fea",
-                 "version": FEA_VERSION,
-                 "binary_sha256": _sha256_file(fea_file),
-                 "capabilities_sha256": _sha256_bytes(
-                     f"draw.fea {FEA_VERSION} axial-g4.1".encode("utf-8"))},
-            ],
-            export_parameters=export_parameters,
-            fingerprint_digest=digest,
-        )
-        result["sidecar"] = sidecar
-    except (ValueError, OSError) as exc:
-        # O sidecar nao invalida o resultado numerico, mas a falta dele
-        # e registrada -- sem proveniencia, o resultado nao e auditavel.
-        result["failures"].append(f"sidecar could not be built: {exc}")
-        if result["status"] == "passed":
-            result["status"] = "failed"
+    _attach_provenance(result, spec, step_sha=step_sha,
+                       document_sha256=document_sha256, doc_id=doc_id,
+                       bc_source=inp_info["bc_source"],
+                       gmsh_bin=gmsh_bin, ccx_bin=ccx_bin,
+                       ccx_env=ccx_env, workdir=workdir)
     return result
