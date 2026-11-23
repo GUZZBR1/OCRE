@@ -9,8 +9,8 @@ export function validateFixture(data: LocalFixture): string[] {
   if (data.metadata.validationStatus !== 'not-validated') issues.push('Demo data cannot claim validation.');
   if (!Number.isFinite(data.metadata.displacementScale)) issues.push('Displacement scale must be finite.');
   if (data.metadata.units.stress !== 'MPa' || data.metadata.units.displacement !== 'mm' || data.metadata.units.length !== 'mm') issues.push('Unsupported fixture units.');
-  const nodes = Array.isArray(data.nodes) ? data.nodes : [];
-  const elements = Array.isArray(data.elements) ? data.elements : [];
+  const nodes: readonly NodeRecord[] = Array.isArray(data.nodes) ? data.nodes : [];
+  const elements: readonly ElementRecord[] = Array.isArray(data.elements) ? data.elements : [];
   if (!nodes.length || !elements.length) issues.push('Fixture must contain at least one node and one element.');
   const nodeIds = new Set(nodes.map((node) => node.id));
   if (nodeIds.size !== nodes.length) issues.push('Node IDs must be unique.');
