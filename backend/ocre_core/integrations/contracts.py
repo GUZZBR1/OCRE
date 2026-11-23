@@ -100,14 +100,6 @@ class CleanupReport:
     retained_paths: tuple[str, ...] = ()
 
 
-@dataclass(frozen=True)
-class AdapterError:
-    code: str
-    message: str
-    retryable: bool = False
-    details: tuple[tuple[str, str], ...] = ()
-
-
 class ExecutionPort(Protocol):
     """Persistence/event port using the specialized adapter execution vocabulary.
 
