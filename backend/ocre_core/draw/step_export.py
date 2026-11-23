@@ -247,15 +247,22 @@ def _paper_size(document: dict) -> tuple[float, float]:
         raise StepExportError(str(exc)) from exc
 
 
-def _fit_circle_mm(points: list[list[float]]) -> dict[str, Any] | None:
+def _fit_circle_mm(
+    points: list[list[float]], width_mm: float, height_mm: float
+) -> dict[str, Any] | None:
     """Círculo ajustado (Kåsa) sobre pontos CAD, ou None se não couber.
 
     Ajuste algébrico centrado no baricentro (sistema 2x2 bem
     condicionado). Exige raio finito e coerente com a dispersão dos
     pontos — sem essa trava um arco fino ajustaria um círculo enorme —
     e desvio radial máximo dentro de ``max(_CIRCLE_FIT_TOL_MM,
-    _CIRCLE_FIT_TOL_REL * r)``. Devolve o mesmo descritor do bloco
-    ``circle`` declarado, mais ``"fitted": True`` para o relatório.
+    _CIRCLE_FIT_TOL_REL * r)``. Três gates antes de promover o
+    descritor: cobertura angular quase completa (arco parcial viraria
+    disco inteiro), anel fonte sem auto-interseção (``circle`` pula a
+    checagem intra-anel de ``_check_no_crossings``) e a circunferência
+    ajustada dentro da folha (os vértices estar dentro não basta —
+    borda entre amostras pode sair). Devolve o mesmo descritor do
+    bloco ``circle`` declarado, mais ``"fitted": True``.
     """
     n = len(points)
     mean_x = sum(p[0] for p in points) / n
@@ -285,6 +292,31 @@ def _fit_circle_mm(points: list[list[float]]) -> dict[str, Any] | None:
     max_dev = max(abs(math.hypot(x - cx, y - cy) - radius) for x, y in points)
     if max_dev > tol:
         return None
+    # Cobertura angular: sem gap > 60° entre amostras consecutivas.
+    # Sem isso um arco parcial (semicírculo etc.) ajusta com desvio
+    # zero e vira disco inteiro em vez do segmento da polilinha.
+    angles = sorted(math.atan2(y - cy, x - cx) for x, y in points)
+    gaps = [b - a for a, b in zip(angles, angles[1:])]
+    gaps.append(angles[0] + 2.0 * math.pi - angles[-1])
+    if max(gaps) > math.pi / 3.0:
+        return None
+    # Anel auto-intersectante (bow tie et al.) também ajusta bem —
+    # ``circle`` depois escaparia da checagem intra-anel.
+    ring = list(points)
+    segs = list(zip(ring, ring[1:] + ring[:1]))
+    n = len(segs)
+    for i in range(n):
+        for j in range(i + 2, n):
+            if i == 0 and j == n - 1:
+                continue  # arestas adjacentes dividem o vértice do anel
+            if _segments_cross(*segs[i], *segs[j]):
+                return None
+    # Folha: a circunferência inteira (não só os vértices) deve caber.
+    if not (
+        0.0 <= cx - radius and cx + radius <= width_mm
+        and 0.0 <= cy - radius and cy + radius <= height_mm
+    ):
+        return None
     return {"center_mm": [cx, cy], "radius_mm": radius, "fitted": True}
 
 
@@ -311,7 +343,7 @@ def _stroke_circle(
         return None
     circle = stroke.get("circle")
     if circle is None:
-        return _fit_circle_mm(points_cad)
+        return _fit_circle_mm(points_cad, width_mm, height_mm)
     if (
         not isinstance(circle, dict)
         or not all(

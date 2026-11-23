@@ -241,6 +241,43 @@ class StepExportHostTests(unittest.TestCase):
         contours, _ids, _skipped = step_export._closed_stable_profiles(doc)
         self.assertIsNone(contours[0]["circle"])
 
+    def test_partial_arc_marked_circle_stays_a_polyline(self):
+        """Arco de 180° com vértices todos na circunferência ajusta
+        com desvio radial zero, mas a cobertura angular incompleta
+        impede a promoção — senão viraria disco inteiro (cilindro)
+        em vez do segmento circular da polilinha."""
+        apts = [[55.0 + 5.0 * math.cos(math.pi * i / 23),
+                 30.0 + 5.0 * math.sin(math.pi * i / 23)]
+                for i in range(24)]
+        doc = make_doc([stroke("s-0001", apts, closed=True, shape="circle")])
+        contours, _ids, _skipped = step_export._closed_stable_profiles(doc)
+        self.assertIsNone(contours[0]["circle"])
+
+    def test_self_intersecting_ring_marked_circle_is_refused(self):
+        """Polígono estrelado: vértices na circunferência e todos os
+        setores cobertos, mas o anel auto-intersecta. Promovê-lo
+        pularia a checagem intra-anel — cai para a polilinha e segue
+        recusado fail-closed."""
+        pts = [[55.0 + 5.0 * math.cos(2 * math.pi * (5 * i % 24) / 24),
+                30.0 + 5.0 * math.sin(2 * math.pi * (5 * i % 24) / 24)]
+               for i in range(24)]
+        doc = make_doc([stroke("s-0001", pts, closed=True, shape="circle")])
+        contours, _ids, _skipped = step_export._closed_stable_profiles(doc)
+        self.assertIsNone(contours[0]["circle"])
+        with self.assertRaises(StepExportError):
+            document_to_step(doc, THICKNESS_MM, "PLA", Path("x.step"))
+
+    def test_fitted_circle_out_of_sheet_stays_a_polyline(self):
+        """Vértices dentro da folha não bastam: a circunferência
+        ajustada inteira precisa caber — losango com vértices dentro
+        cujo círculo excede x=0 segue a polilinha."""
+        dpts = [[4.0 + 5.0 * math.cos(math.pi / 4 + math.pi / 2 * i),
+                 30.0 + 5.0 * math.sin(math.pi / 4 + math.pi / 2 * i)]
+                for i in range(4)]
+        doc = make_doc([stroke("s-0001", dpts, closed=True, shape="circle")])
+        contours, _ids, _skipped = step_export._closed_stable_profiles(doc)
+        self.assertIsNone(contours[0]["circle"])
+
     def test_declared_circle_block_beats_fit(self):
         """O bloco ``circle`` declarado tem prioridade: pontos fora da
         circunferência declarada não disparam o ajuste Kåsa."""
