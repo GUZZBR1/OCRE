@@ -14,7 +14,6 @@ from ocre_core.jobs import (
     TERMINAL_STATES,
     AdapterExecutionState,
     CancellationUnsupportedInPhase,
-    ConcurrentJobUpdate,
     InvalidJobTransition,
     JobState,
     transition_job,
@@ -207,25 +206,22 @@ class OCREApplication:
         report = self.preflight.evaluate(request)
         if report.execution_readiness != "ready":
             raise ApplicationError("preparation_failed", 422, "Execution preflight is blocked", report=report.as_dict())
-        fingerprint = _fingerprint({
+        submission = {
             "project_id": project_id,
             "design_revision_id": request.design_revision_id,
             "case_ref": request.case_ref,
             "adapter_id": request.adapter_id,
             "adapter_version": request.adapter_version,
+        }
+        fingerprint = _fingerprint({
+            **submission,
             "eir": request.eir,
             "bundle": request.bundle,
             "group_manifest": request.group_manifest,
         })
         job_id, execution_id, event_id = _new_id("job"), _new_id("exec"), _new_id("evt")
         now = self.clock()
-        payload = json.dumps({
-            "project_id": project_id,
-            "design_revision_id": request.design_revision_id,
-            "case_ref": request.case_ref,
-            "adapter_id": request.adapter_id,
-            "adapter_version": request.adapter_version,
-        }, sort_keys=True).encode()
+        payload = json.dumps(submission, sort_keys=True).encode()
         job = JobSnapshot(job_id, JobState.QUEUED, 1, now, payload, tenant_id=principal.tenant_id)
         execution = AdapterExecutionSnapshot(execution_id, job_id, AdapterExecutionState.QUEUED, 1, now, payload, tenant_id=principal.tenant_id)
         event = ExecutionSubmitted(job_id, execution_id, event_id, 1, now)
@@ -259,7 +255,7 @@ class OCREApplication:
             metadata = json.loads(snapshot.payload or b"{}")
         except (TypeError, ValueError):
             raise ApplicationError("resource_not_found", 404, "Resource not found")
-        if metadata.get("project_id") != project_id:
+        if not isinstance(metadata, dict) or metadata.get("project_id") != project_id:
             raise ApplicationError("resource_not_found", 404, "Resource not found")
         return snapshot, metadata
 
@@ -306,7 +302,7 @@ class OCREApplication:
             receipt = self.job_store.commit_transition(expected_sequence=snapshot.sequence, snapshot=updated, event=event, idempotency=idem, outbox=outbox)
         except IdempotencyConflict as exc:
             raise ApplicationError("idempotency_key_reused", 409, "Idempotency key was reused") from exc
-        except (ConcurrentJobUpdate, PersistenceConflict) as exc:
+        except PersistenceConflict as exc:
             raise ApplicationError("sequence_conflict", 409, "Job sequence changed; reload the current status") from exc
         return {"job_id": job_id, "state": receipt.snapshot.state.value, "sequence": receipt.snapshot.sequence, "replayed": receipt.replayed}
 

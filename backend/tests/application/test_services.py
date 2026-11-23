@@ -77,6 +77,49 @@ def test_sync_identity_comes_from_principal_and_cross_tenant_is_not_found(tmp_pa
     assert error.value.status == 404
 
 
+def test_job_with_non_object_payload_reads_as_not_found(tmp_path):
+    app = application(tmp_path, authorizer=AUTH, preflight=FixedPreflight(READY), clock=FIXED_CLOCK)
+    principal = Principal("t1", "u1")
+    job_id = app.submit_job(principal, "p1", submission(), "k")["job_id"]
+    snapshot = app.job_store.get_snapshot(job_id, tenant_id="t1")
+    forged = replace(snapshot, payload=b"[1]")
+    with app.job_store._connect() as db:
+        db.execute(
+            "UPDATE snapshots SET body=? WHERE tenant='t1' AND kind='job' AND id=?",
+            (app.job_store._dump(forged), job_id),
+        )
+    with pytest.raises(ApplicationError) as error:
+        app.job_status(principal, "p1", job_id)
+    assert (error.value.status, error.value.code) == (404, "resource_not_found")
+
+
+def test_cancel_reports_sequence_conflict_when_commit_finds_stale_snapshot(tmp_path):
+    app = application(tmp_path, authorizer=AUTH, preflight=FixedPreflight(READY), clock=FIXED_CLOCK)
+    principal = Principal("t1", "u1")
+    job_id = app.submit_job(principal, "p1", submission(), "submit-key")["job_id"]
+    stale = app.job_store.get_snapshot(job_id, tenant_id="t1")
+    event = transition_job(
+        job_id=job_id,
+        event_id="advance",
+        current_state=stale.state,
+        current_sequence=stale.sequence,
+        expected_sequence=stale.sequence,
+        target_state=JobState.PREPARING,
+        occurred_at=NOW,
+    )
+    app.job_store.commit_transition(
+        expected_sequence=stale.sequence,
+        snapshot=replace(stale, state=event.to_state, sequence=event.sequence, updated_at=NOW),
+        event=event,
+        idempotency=None,
+        outbox=OutboxMessage("m-advance", job_id, event.event_id, "t", b""),
+    )
+    app.job_store.get_snapshot = lambda *args, **kwargs: stale
+    with pytest.raises(ApplicationError) as error:
+        app.cancel_job(principal, "p1", job_id, "cancel-key")
+    assert (error.value.status, error.value.code) == (409, "sequence_conflict")
+
+
 def test_job_project_mismatch_and_cross_tenant_are_indistinguishable_not_found(tmp_path):
     app = application(tmp_path, authorizer=AUTH, preflight=FixedPreflight(READY), clock=FIXED_CLOCK)
     owner = Principal("t1", "u1")

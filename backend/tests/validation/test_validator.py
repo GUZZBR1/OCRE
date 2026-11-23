@@ -7,7 +7,7 @@ from pathlib import Path
 from unittest import mock
 
 import ocre_core.validation.validator as validator
-from ocre_core.validation.validator import ArtifactTooLarge, parse_json_strict, validate
+from ocre_core.validation.validator import ArtifactTooLarge, StrictJSONError, parse_json_strict, validate
 
 ROOT = Path(__file__).resolve().parents[3]
 EXAMPLES = ROOT / "schemas/eir/examples/0.2.0"
@@ -27,6 +27,18 @@ class StrictJsonTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             parse_json_strict({"x": float("inf")})
 
+    def test_rejects_oversized_integer_literal_as_strict_json_error(self):
+        with self.assertRaises(StrictJSONError):
+            parse_json_strict("[" + "9" * 5000 + "]")
+
+    def test_rejects_lone_surrogate_strings(self):
+        for source in ('"\\ud800"', '{"\\ud800": 1}', '{"a": "\\udfff"}', '["\\udc00"]'):
+            with self.subTest(source=source), self.assertRaises(StrictJSONError):
+                parse_json_strict(source)
+        for value in ({"a": "\ud800"}, {"\ud800": 1}, ["\udfff"]):
+            with self.subTest(value=value), self.assertRaises(StrictJSONError):
+                parse_json_strict(value)
+
     def test_deep_json_inputs_become_diagnostics_for_all_document_kinds(self):
         deep = b"[" * 2500 + b"0" + b"]" * 2500
         examples = load("eir.json"), load("input-bundle.json"), load("mesh-group-manifest.json")
@@ -41,6 +53,20 @@ class StrictJsonTests(unittest.TestCase):
         with mock.patch.object(validator, "_schema", side_effect=RecursionError("nested schema")):
             report = validate(load("eir.json"), load("input-bundle.json"), load("mesh-group-manifest.json"))
         self.assertEqual(3, sum(d.code == "schema_unavailable" for d in report.diagnostics))
+
+    def test_unavailable_profile_is_a_fail_closed_diagnostic_not_a_crash(self):
+        real_read_text = Path.read_text
+        for missing in ("structural.axial_bar.v1.json", "ucum.structural_axial.v1.json"):
+            def fail_profile(self, *args, **kwargs):
+                if self.name == missing:
+                    raise OSError("profile unavailable")
+                return real_read_text(self, *args, **kwargs)
+            with self.subTest(missing=missing), mock.patch.object(Path, "read_text", fail_profile):
+                report = validate(load("eir.json"), load("input-bundle.json"), load("mesh-group-manifest.json"))
+            self.assertEqual("invalid", report.status)
+            self.assertIn("schema_unavailable", {d.code for d in report.diagnostics})
+            self.assertFalse(any(d.stage == "semantic" for d in report.diagnostics))
+            self.assertEqual("structural.axial_bar.v1", report.profile_id)
 
     def test_bounded_read_detects_growth_using_the_same_descriptor(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -159,6 +185,17 @@ class ValidatorTests(unittest.TestCase):
         bundle["artifacts"][1]["uri"] = "%2e%2e/outside.step"
         report = validate(load("eir.json"), bundle, load("mesh-group-manifest.json"))
         self.assertIn("unsafe_uri", {d.code for d in report.diagnostics})
+
+    def test_non_list_capability_values_cannot_substring_match(self):
+        caps = {"calculix.batch": {"supported": True, "domains": "structural",
+                                 "analyses": ["static_linear"], "target_versions": ["2.23"],
+                                 "element_types": {"C3D10": True}, "element_orders": [2]}}
+        report = validate(load("eir.json"), load("input-bundle.json"), load("mesh-group-manifest.json"),
+                          purpose="execution_preflight", adapter_capabilities=caps)
+        messages = {d.message for d in report.diagnostics if d.code == "adapter_capability_mismatch"}
+        self.assertIn("adapter does not declare support for domains", messages)
+        self.assertIn("adapter does not declare support for element_types", messages)
+        self.assertNotIn("adapter does not declare support for analyses", messages)
 
     def test_preflight_never_ready_without_capabilities_and_verified_files(self):
         report = validate(load("eir.json"), load("input-bundle.json"), load("mesh-group-manifest.json"), purpose="execution_preflight")

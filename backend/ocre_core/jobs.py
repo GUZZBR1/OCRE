@@ -134,6 +134,25 @@ class AdapterExecutionTransition:
     cancellation_origin: AdapterExecutionState | None = None
 
 
+def _check_transition_inputs(
+    kind: str,
+    aggregate_id: str,
+    event_id: str,
+    current_sequence: int,
+    expected_sequence: int,
+) -> None:
+    if not aggregate_id:
+        raise ValueError(f"{kind}_id must not be empty")
+    if not event_id:
+        raise ValueError("event_id must not be empty")
+    if current_sequence < 0 or expected_sequence < 0:
+        raise ValueError(f"{kind} sequences must be non-negative")
+    if current_sequence != expected_sequence:
+        raise ConcurrentJobUpdate(
+            f"expected {kind} sequence {expected_sequence}, found {current_sequence}"
+        )
+
+
 def _validate_transition(*, current_state: Enum, target_state: Enum, transitions: dict) -> None:
     if current_state == target_state:
         raise InvalidJobTransition(f"state is unchanged: {current_state}")
@@ -169,16 +188,7 @@ def transition_job(
     CAS sequence provides event linearization; adapters must report observed
     process completion before accepting a cancellation acknowledgement.
     """
-    if not job_id:
-        raise ValueError("job_id must not be empty")
-    if not event_id:
-        raise ValueError("event_id must not be empty")
-    if current_sequence < 0 or expected_sequence < 0:
-        raise ValueError("job sequences must be non-negative")
-    if current_sequence != expected_sequence:
-        raise ConcurrentJobUpdate(
-            f"expected job sequence {expected_sequence}, found {current_sequence}"
-        )
+    _check_transition_inputs("job", job_id, event_id, current_sequence, expected_sequence)
     _validate_transition(
         current_state=current_state,
         target_state=target_state,
@@ -221,16 +231,7 @@ def transition_adapter_execution(
     `cancelled` is an observed outcome, never the cancel request itself.
     Collecting deliberately has no cancellation transition.
     """
-    if not execution_id:
-        raise ValueError("execution_id must not be empty")
-    if not event_id:
-        raise ValueError("event_id must not be empty")
-    if current_sequence < 0 or expected_sequence < 0:
-        raise ValueError("execution sequences must be non-negative")
-    if current_sequence != expected_sequence:
-        raise ConcurrentJobUpdate(
-            f"expected execution sequence {expected_sequence}, found {current_sequence}"
-        )
+    _check_transition_inputs("execution", execution_id, event_id, current_sequence, expected_sequence)
     _validate_transition(
         current_state=current_state,
         target_state=target_state,
