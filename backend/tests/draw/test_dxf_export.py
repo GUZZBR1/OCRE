@@ -62,9 +62,10 @@ class DxfExportTests(unittest.TestCase):
         self.assertTrue(polyline.closed)
         self.assertEqual(polyline.dxf.flags & 1, 1)
 
-    def test_circle_shape_stays_a_closed_polyline_never_circle(self):
-        # Um círculo vetorizado chega como polilinha fechada; o escritor
-        # NUNCA emite CIRCLE, mesmo com shape="circle" no documento.
+    def test_circle_shape_stays_a_closed_polyline_by_default(self):
+        # Um círculo vetorizado chega como polilinha fechada; por padrão
+        # o escritor não emite CIRCLE, mesmo com shape="circle" e bloco
+        # analítico no documento — CIRCLE é opt-in (emit_circles).
         doc = make_doc(
             [
                 stroke(
@@ -72,13 +73,109 @@ class DxfExportTests(unittest.TestCase):
                     [[10.0, 10.0], [20.0, 10.0], [20.0, 20.0], [10.0, 20.0]],
                     closed=True,
                     shape="circle",
+                    circle={"cx_mm": 15.0, "cy_mm": 15.0, "r_mm": 7.0},
                 )
             ]
         )
-        dxf, _ = build_dxf(doc)
+        dxf, report = build_dxf(doc)
         msp = dxf.modelspace()
         self.assertEqual(len(list(msp.query("CIRCLE"))), 0)
         self.assertEqual(len(list(msp.query("LWPOLYLINE"))), 1)
+        self.assertEqual(report["circles"], [])
+
+    def test_emit_circles_optin_writes_circle_from_analytic_block(self):
+        doc = make_doc(
+            [
+                stroke(
+                    "s-0001",
+                    [[125.0, 150.0], [150.0, 125.0], [175.0, 150.0], [150.0, 175.0]],
+                    closed=True,
+                    shape="circle",
+                    circle={"cx_mm": 150.0, "cy_mm": 150.0, "r_mm": 25.0},
+                )
+            ]
+        )
+        dxf, report = build_dxf(doc, emit_circles=True)
+        msp = dxf.modelspace()
+        circles = list(msp.query("CIRCLE"))
+        self.assertEqual(len(circles), 1)
+        self.assertEqual(len(list(msp.query("LWPOLYLINE"))), 0)
+        entity = circles[0]
+        self.assertEqual(entity.dxf.layer, LAYER)
+        # Centro em coords CAD: y_cad = altura_folha - cy_papel.
+        self.assertAlmostEqual(entity.dxf.center.x, 150.0)
+        self.assertAlmostEqual(entity.dxf.center.y, HEIGHT - 150.0)
+        self.assertAlmostEqual(entity.dxf.radius, 25.0)
+        self.assertEqual(
+            [v for _, v in entity.get_xdata(APPID)], ["s-0001"]
+        )
+        self.assertEqual(report["circles"], ["s-0001"])
+        self.assertEqual(report["included_stroke_ids"], ["s-0001"])
+
+    def test_emit_circles_keeps_polyline_without_analytic_block(self):
+        # shape="circle" sem bloco "circle": nada analítico a preservar
+        # — o traço segue polilinha (o ajuste Kåsa é caminho do STEP).
+        doc = make_doc(
+            [
+                stroke(
+                    "s-0001",
+                    [[125.0, 150.0], [150.0, 125.0], [175.0, 150.0], [150.0, 175.0]],
+                    closed=True,
+                    shape="circle",
+                )
+            ]
+        )
+        dxf, report = build_dxf(doc, emit_circles=True)
+        msp = dxf.modelspace()
+        self.assertEqual(len(list(msp.query("CIRCLE"))), 0)
+        self.assertEqual(len(list(msp.query("LWPOLYLINE"))), 1)
+        self.assertEqual(report["circles"], [])
+
+    def test_emit_circles_fail_closed_on_malformed_block(self):
+        # Bloco presente mas corrompido: o fit nunca vira polilinha por
+        # engano — recusa fail-closed (mesma regra do step_export).
+        for bad_circle in (
+            {"cx_mm": 150.0, "cy_mm": 150.0},
+            {"cx_mm": "150", "cy_mm": 150.0, "r_mm": 25.0},
+            {"cx_mm": 150.0, "cy_mm": 150.0, "r_mm": 0.0},
+            {"cx_mm": 150.0, "cy_mm": 150.0, "r_mm": -5.0},
+            {"cx_mm": float("nan"), "cy_mm": 150.0, "r_mm": 25.0},
+            {"cx_mm": 5.0, "cy_mm": 150.0, "r_mm": 25.0},
+            "not-a-dict",
+        ):
+            with self.subTest(circle=bad_circle):
+                doc = make_doc(
+                    [
+                        stroke(
+                            "s-0001",
+                            [[125.0, 150.0], [150.0, 125.0], [175.0, 150.0]],
+                            closed=True,
+                            shape="circle",
+                            circle=bad_circle,
+                        )
+                    ]
+                )
+                with self.assertRaises(DxfExportError):
+                    build_dxf(doc, emit_circles=True)
+
+    def test_emit_circles_ignores_malformed_block_when_off(self):
+        # O default continua ignorando "shape"/"circle": um bloco
+        # malformado não afeta a exportação compatível (o documento é o
+        # mestre; a validação do bloco é do validator/document).
+        doc = make_doc(
+            [
+                stroke(
+                    "s-0001",
+                    [[125.0, 150.0], [150.0, 125.0], [175.0, 150.0]],
+                    closed=True,
+                    shape="circle",
+                    circle={"cx_mm": "lixo", "cy_mm": None, "r_mm": -1},
+                )
+            ]
+        )
+        dxf, report = build_dxf(doc)
+        self.assertEqual(len(list(dxf.modelspace().query("LWPOLYLINE"))), 1)
+        self.assertEqual(report["circles"], [])
 
     def test_stroke_id_in_xdata_under_own_appid_draw(self):
         doc = make_doc([stroke("s-0007", [[10.0, 20.0], [50.0, 20.0]])])

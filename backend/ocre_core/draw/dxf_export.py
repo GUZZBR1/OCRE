@@ -11,8 +11,15 @@ Regras do plano (``PLANO-INTEGRACAO-OCRE-DRAW.md`` §4), implementadas aqui:
   CAD usa y-up, logo ``y_cad = altura_papel_mm - y_papel``. A altura
   usada é a EFETIVA da folha declarada no documento.
 - Traço fechado: flag 70 = 1 (``closed=True`` na LWPOLYLINE).
-- NUNCA CIRCLE: um círculo vetorizado continua sendo uma polilinha
-  fechada; o campo ``shape`` do documento é ignorado na escrita.
+- CIRCLE é OPT-IN: por padrão um círculo vetorizado continua sendo uma
+  polilinha fechada e o campo ``shape`` é ignorado na escrita. Com
+  ``emit_circles=True``, um traço ``shape == "circle"`` que traz o
+  bloco analítico ``circle`` (``cx_mm``/``cy_mm``/``r_mm``) vira uma
+  entidade ``CIRCLE`` real; sem o bloco segue polilinha (nada analítico
+  a preservar); bloco malformado recusa fail-closed. Atenção: um DXF
+  com ``CIRCLE`` NÃO serve ao sync do CAD vivo — o pareamento do
+  ``OcsClient.sync_strokes`` é por vértices e recusa entidades sem
+  vértices legíveis. O opt-in existe para consumidores CAD externos.
 - ``stroke_id`` em XDATA sob APPID próprio do Draw, ``DRAW`` (o APPID é
   criado antes de usar; NUNCA sob APPID do IngeCAD ou de outro alvo).
 - Traços ``erased`` NUNCA vão para o DXF. Por padrão só ``stable`` vai;
@@ -38,6 +45,7 @@ from typing import Any
 import ezdxf
 
 from .paper import DEFAULT_SPEC, paper_size_mm
+from .validator_draw import CIRCLE_SHEET_EPS_MM
 
 __all__ = [
     "APPID",
@@ -117,11 +125,60 @@ def _paper_to_cad(points: list[tuple[float, float]], height_mm: float) -> list[t
     return [(x, height_mm - y) for x, y in points]
 
 
-def build_dxf(document: dict, *, include_pending: bool = False):
+def _circle_center_radius_mm(
+    stroke_id: str, stroke: dict, width_mm: float, height_mm: float
+) -> tuple[float, float, float] | None:
+    """Centro CAD (x, y_cad) e raio do bloco ``circle`` do traço, ou None.
+
+    Mesma validação do ``_analytic_circle`` do step_export: bloco
+    malformado, não finito, ``r_mm <= 0`` ou fora da folha recusa
+    fail-closed — um fit corrompido nunca vira polilinha por engano.
+    Sem bloco devolve ``None``: nada analítico a preservar, o traço
+    segue como polilinha (o ajuste Kåsa de traço sem bloco é caminho
+    do STEP, não do DXF).
+    """
+    circle = stroke.get("circle")
+    if circle is None:
+        return None
+    if (
+        not isinstance(circle, dict)
+        or not all(
+            isinstance(circle.get(k), (int, float)) and not isinstance(circle.get(k), bool)
+            for k in ("cx_mm", "cy_mm", "r_mm")
+        )
+    ):
+        raise DxfExportError(
+            f"traço {stroke_id}: 'circle' exige cx_mm/cy_mm/r_mm numéricos"
+        )
+    cx, cy, r = float(circle["cx_mm"]), float(circle["cy_mm"]), float(circle["r_mm"])
+    if not (math.isfinite(cx) and math.isfinite(cy) and math.isfinite(r)) or r <= 0:
+        raise DxfExportError(
+            f"traço {stroke_id}: 'circle' exige valores finitos e r_mm > 0"
+        )
+    if not (
+        -CIRCLE_SHEET_EPS_MM <= cx - r
+        and cx + r <= width_mm + CIRCLE_SHEET_EPS_MM
+        and -CIRCLE_SHEET_EPS_MM <= cy - r
+        and cy + r <= height_mm + CIRCLE_SHEET_EPS_MM
+    ):
+        raise DxfExportError(
+            f"traço {stroke_id}: círculo (cx={cx}, cy={cy}, r={r}) fora da "
+            f"folha {width_mm} x {height_mm} mm"
+        )
+    return cx, height_mm - cy, r
+
+
+def build_dxf(
+    document: dict, *, include_pending: bool = False, emit_circles: bool = False
+):
     """Constrói o documento ezdxf (R2000) a partir de ``document``.
 
     Devolve ``(doc, report)``; não escreve arquivo. ``report`` registra
-    traços incluídos e pulados, para auditoria no sidecar.
+    traços incluídos e pulados, para auditoria no sidecar. Com
+    ``emit_circles=True`` (opt-in), traços ``shape == "circle"`` com
+    bloco analítico ``circle`` válido viram entidades ``CIRCLE`` —
+    registrados em ``report["circles"]``. O default ``False`` mantém
+    tudo LWPOLYLINE, a forma que o sync do CAD vivo pareia.
     """
     schema = document.get("schema")
     if schema is not None and schema != "draw.paper.v1":
@@ -144,6 +201,7 @@ def build_dxf(document: dict, *, include_pending: bool = False):
 
     included: list[str] = []
     skipped: list[dict[str, str]] = []
+    circles: list[str] = []
     seen_ids: set[str] = set()
     for stroke in strokes:
         if not isinstance(stroke, dict):
@@ -179,17 +237,29 @@ def build_dxf(document: dict, *, include_pending: bool = False):
             skipped.append({"stroke_id": stroke_id, "reason": "single_point"})
             continue
 
-        closed = bool(stroke.get("closed", False))
-        cad_points = _paper_to_cad(points, height_mm)
-        polyline = msp.add_lwpolyline(
-            cad_points,
-            close=closed,
-            dxfattribs={"layer": LAYER},
-        )
+        analytic = None
+        if emit_circles and stroke.get("shape") == "circle":
+            analytic = _circle_center_radius_mm(
+                stroke_id, stroke, width_mm, height_mm
+            )
+        if analytic is not None:
+            cx_cad, cy_cad, r = analytic
+            entity = msp.add_circle(
+                (cx_cad, cy_cad), radius=r, dxfattribs={"layer": LAYER}
+            )
+            circles.append(stroke_id)
+        else:
+            closed = bool(stroke.get("closed", False))
+            cad_points = _paper_to_cad(points, height_mm)
+            entity = msp.add_lwpolyline(
+                cad_points,
+                close=closed,
+                dxfattribs={"layer": LAYER},
+            )
         # stroke_id em XDATA sob APPID próprio do Draw ("DRAW").
-        # Grupo 1000 = string. Nunca CIRCLE: círculo vetorizado já chega
-        # aqui como polilinha fechada; o campo "shape" é ignorado.
-        polyline.set_xdata(APPID, [(1000, stroke_id)])
+        # Grupo 1000 = string. CIRCLE só é emitida no opt-in
+        # ``emit_circles``; o default segue polilinha fechada.
+        entity.set_xdata(APPID, [(1000, stroke_id)])
         included.append(stroke_id)
 
     report = {
@@ -201,6 +271,7 @@ def build_dxf(document: dict, *, include_pending: bool = False):
         "paper_height_mm": height_mm,
         "entities": len(included),
         "included_stroke_ids": included,
+        "circles": circles,
         "skipped": skipped,
     }
     return doc, report
@@ -211,13 +282,17 @@ def export_dxf(
     output_path: str | Path,
     *,
     include_pending: bool = False,
+    emit_circles: bool = False,
 ) -> dict:
     """Escreve o DXF em ``output_path`` e devolve o relatório da escrita.
 
     O relatório inclui ``output_path`` e o ``sha256`` do arquivo escrito,
-    para o sidecar de proveniência.
+    para o sidecar de proveniência. ``emit_circles`` é o opt-in de
+    entidades ``CIRCLE`` (ver ``build_dxf``).
     """
-    doc, report = build_dxf(document, include_pending=include_pending)
+    doc, report = build_dxf(
+        document, include_pending=include_pending, emit_circles=emit_circles
+    )
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     doc.saveas(output_path)

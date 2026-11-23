@@ -318,6 +318,11 @@ def _build_parser() -> argparse.ArgumentParser:
                      help="fidelity gate: refuse the export when the "
                           "vectorizer's p95 distance (px, either "
                           "direction) exceeds this value")
+    exp.add_argument("--dxf-circles", action="store_true",
+                     help="opt-in: emit DXF CIRCLE entities for circle "
+                          "strokes carrying the analytic block; the "
+                          "result is for external CAD consumers — the "
+                          "live-CAD (OCS) sync path expects LWPOLYLINE")
     exp.add_argument("--librecad-check", action="store_true",
                      help="also run the LibreCAD gate G0.2 on the DXF (unavailable without the binary)")
 
@@ -654,6 +659,7 @@ def _cmd_export(args: argparse.Namespace) -> int:
         "origin": args.origin,
         "order_kind": order_kind,
         "include_pending": False,
+        "emit_circles": bool(args.dxf_circles),
         "strokes_stabilized": True,
         "paper": {"format": spec.format, "width_mm": spec.width_mm,
                   "height_mm": spec.height_mm,
@@ -715,7 +721,9 @@ def _cmd_export(args: argparse.Namespace) -> int:
     dxf_tmp = out_dir / ".document.dxf.tmp"
     dxf_path = out_dir / "document.dxf"
     try:
-        dxf_report = export_dxf(doc, dxf_tmp, include_pending=False)
+        dxf_report = export_dxf(
+            doc, dxf_tmp, include_pending=False,
+            emit_circles=args.dxf_circles)
     except ValueError as exc:
         dxf_tmp.unlink(missing_ok=True)
         return _fail(f"DXF export failed: {exc}", 1)
@@ -994,6 +1002,9 @@ def _beta_step_export(ctx: dict[str, Any]) -> dict[str, Any]:
         thinning=None,
         max_p95_px=None,
         stamps=getattr(args, "stamps", None),
+        # DXFs do beta servem ao fluxo live-CAD (sync por vértices):
+        # CIRCLE opt-in não se aplica aqui — sempre LWPOLYLINE.
+        dxf_circles=False,
         librecad_check=True,
         ai_adapter=ctx.get("ai_adapter"),
         observe_conversions=ctx["observe_conversions"],
