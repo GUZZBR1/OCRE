@@ -780,6 +780,26 @@ class OpenStrokesPolicyTests(unittest.TestCase):
             delta=EXPECTED_VOLUME_MM3 * VOLUME_REL_TOL,
         )
 
+    def test_single_point_stroke_is_skipped_under_both_policies(self):
+        # 1 ponto não tem representação em sólido: mesma regra do DXF
+        # (reason="single_point"), registrada nas duas políticas — um
+        # traço ``point`` estável nunca derruba a exportação inteira.
+        for policy in ("fail", "skip-open"):
+            with self.subTest(policy=policy):
+                doc = make_doc(
+                    [
+                        stroke("s-0001", RECT, closed=True),
+                        stroke("s-0002", [[200.0, 250.0]]),
+                    ]
+                )
+                report, job = self._export(doc, open_strokes_policy=policy)
+                self.assertEqual(report["stroke_ids"], ["s-0001"])
+                self.assertEqual(
+                    report["skipped"],
+                    [{"stroke_id": "s-0002", "reason": "single_point"}],
+                )
+                self.assertEqual(len(job["regions"]), 1)
+
     def test_skip_open_still_refuses_document_without_closed_stable(self):
         # Só traço aberto: a política não fabrica sólido do nada.
         doc = make_doc([stroke("s-0001", [[10.0, 20.0], [50.0, 20.0]])])

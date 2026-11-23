@@ -87,6 +87,20 @@ class NormalizeTests(unittest.TestCase):
         self.assertEqual(polylines, [])
         self.assertEqual(without, 4)
 
+    def test_non_dict_primitives_are_counted_not_crashed(self):
+        # Elemento não-dict (null, string, número) no JSON do vetorizador
+        # era AttributeError cru; agora conta como tipo não reconhecido.
+        polylines, without = normalize_primitives(
+            [
+                None,
+                "x",
+                5,
+                {"type": "polyline", "points_mm": [[0, 0], [1, 1]]},
+            ]
+        )
+        self.assertEqual(len(polylines), 1)
+        self.assertEqual(without, 3)
+
     def test_stamps_are_preserved_and_validated(self):
         polylines, without = normalize_primitives([
             {"type": "line", "x1_mm": 1, "y1_mm": 2, "x2_mm": 3, "y2_mm": 4,
