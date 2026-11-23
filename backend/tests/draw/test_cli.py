@@ -14,10 +14,11 @@ import io
 import json
 import tempfile
 import unittest
-from contextlib import redirect_stdout
+from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from unittest import mock
 
+from draw.png_helper import write_png
 from ocre_core.draw.cli import main
 from ocre_core.draw.fingerprint import parse_encoded
 from ocre_core.draw.sidecar import validate_draw_sidecar
@@ -37,9 +38,11 @@ def _run_cli(argv: list[str]) -> tuple[int, str]:
 
 
 class CliExportTests(unittest.TestCase):
-    def _export(self, out_dir: Path, extra: list[str] | None = None) -> tuple[int, str, dict]:
+    def _export(self, out_dir: Path, extra: list[str] | None = None,
+                canvas: tuple[int, int] | None = (850, 1200)) -> tuple[int, str, dict]:
         png = out_dir / "canvas.png"
-        png.write_bytes(b"\x89PNG\r\n\x1a\nfake")
+        if canvas is not None:
+            write_png(png, *canvas)
         argv = [
             "export",
             "--png", str(png),
@@ -82,16 +85,28 @@ class CliExportTests(unittest.TestCase):
             doc = json.loads((out_dir / "document.json").read_text(encoding="utf-8"))
             report = validate_draw_document(doc)
             self.assertTrue(report.valid, report.as_dict())
-            # Fake vectorize: rectangle + polyline + line -> 3 strokes,
-            # all stabilized; the circle has no points and is skipped.
-            self.assertEqual(len(doc["strokes"]), 3)
+            # Fake vectorize: rectangle + polyline + circle + line +
+            # point -> 5 strokes, all stabilized; the circle arrives
+            # closed with shape="circle"; the point is a 1-pt stroke.
+            self.assertEqual(len(doc["strokes"]), 5)
             self.assertTrue(all(s["status"] == "stable" for s in doc["strokes"]))
+            circle = next(s for s in doc["strokes"] if s.get("shape") == "circle")
+            self.assertTrue(circle["closed"])
+            self.assertEqual(len(circle["points_mm"]), 64)
+            point_stroke = next(
+                s for s in doc["strokes"] if len(s["points_mm"]) == 1)
+            self.assertFalse(point_stroke["closed"])
+            self.assertNotIn("shape", point_stroke)
             self.assertEqual(doc["source"]["origin"], "upstream-canvas-png")
             self.assertEqual(doc["source"]["commit"], COMMIT)
 
             sidecar = json.loads((out_dir / "sidecar.json").read_text(encoding="utf-8"))
             self.assertEqual(validate_draw_sidecar(sidecar), [])
-            self.assertEqual(sidecar["export_parameters"]["vectorize"]["skipped_primitive_types"], ["circle"])
+            self.assertEqual(sidecar["export_parameters"]["vectorize"]["skipped_primitive_types"], [])
+            fidelity = sidecar["export_parameters"]["vectorize"]["summary"]
+            self.assertEqual(fidelity["polilinhas"], 5)
+            self.assertIn("distancias", fidelity)
+            self.assertNotIn("svg", fidelity)  # chaves voláteis ficam fora
             self.assertEqual(sidecar["document_sha256"], summary["document_sha256"])
             self.assertEqual(sidecar["fingerprint"]["digest"], summary["fingerprint_digest"])
             self.assertEqual(sidecar["draw_source"], {"repo": "santleme/draw", "commit": COMMIT})
@@ -106,7 +121,7 @@ class CliExportTests(unittest.TestCase):
             self.assertEqual(
                 fp["inputs"]["export_parameters"], sidecar["export_parameters"])
             self.assertEqual(
-                fp["inputs"]["export_parameters"]["vectorize"]["primitives_without_points"], 1)
+                fp["inputs"]["export_parameters"]["vectorize"]["primitives_without_points"], 0)
 
             dxf_bytes = (out_dir / "document.dxf").read_bytes()
             self.assertEqual(
@@ -128,8 +143,7 @@ class CliExportTests(unittest.TestCase):
     def test_export_rejects_wrong_vectorize_sha(self):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
-            png = tmp_path / "canvas.png"
-            png.write_bytes(b"\x89PNG\r\n\x1a\nfake")
+            png = write_png(tmp_path / "canvas.png")
             code, out = _run_cli([
                 "export", "--png", str(png),
                 "--vectorize-script", str(FAKE_VECTORIZE),
@@ -145,8 +159,7 @@ class CliExportTests(unittest.TestCase):
     def test_export_requires_full_40_hex_commit(self):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
-            png = tmp_path / "canvas.png"
-            png.write_bytes(b"\x89PNG\r\n\x1a\nfake")
+            png = write_png(tmp_path / "canvas.png")
             code, _out = _run_cli([
                 "export", "--png", str(png),
                 "--vectorize-script", str(FAKE_VECTORIZE),
@@ -158,11 +171,102 @@ class CliExportTests(unittest.TestCase):
             ])
             self.assertNotEqual(code, 0)
 
-    def test_export_requires_explicit_origin(self):
+    def test_export_with_stamps_records_temporal_order(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            stamps = tmp_path / "canvas_stamps.npz"
+            stamps.write_bytes(b"npz fake")
+            code, out, summary = self._export(
+                tmp_path, ["--stamps", str(stamps)])
+            self.assertEqual(code, 0, out)
+            doc = json.loads(
+                (tmp_path / "out" / "document.json").read_text(encoding="utf-8"))
+            self.assertEqual(doc["order_kind"], "temporal-stamps")
+            for stroke in doc["strokes"]:
+                self.assertIn("t_start_ms", stroke)
+                self.assertIn("t_end_ms", stroke)
+            sidecar = json.loads(
+                (tmp_path / "out" / "sidecar.json").read_text(encoding="utf-8"))
+            self.assertEqual(validate_draw_sidecar(sidecar), [])
+            vec = sidecar["export_parameters"]["vectorize"]
+            self.assertEqual(vec["stamps_sha256"], sha256_file(stamps))
+            sources = {a["artifact_id"]: a for a in sidecar["source_artifacts"]}
+            self.assertEqual(
+                sources["canvas-stamps-1"]["artifact_kind"], "stamps_npz")
+            self.assertEqual(
+                sources["canvas-stamps-1"]["sha256"], sha256_file(stamps))
+            fp = json.loads(
+                (tmp_path / "out" / "fingerprint.json").read_text(encoding="utf-8"))
+            consumed = {
+                a["artifact_id"] for a in fp["inputs"]["consumed_artifacts"]}
+            self.assertIn("canvas-stamps-1", consumed)
+
+    def test_export_with_stamps_and_conflicting_order_kind_refuses(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            stamps = tmp_path / "canvas_stamps.npz"
+            stamps.write_bytes(b"npz fake")
+            err = io.StringIO()
+            with redirect_stderr(err):
+                code, _out, _summary = self._export(
+                    tmp_path,
+                    ["--stamps", str(stamps),
+                     "--order-kind", "reading-centroid"])
+            self.assertEqual(code, 2)
+            self.assertIn("temporal-stamps", err.getvalue())
+            self.assertFalse((tmp_path / "out" / "document.json").exists())
+
+    def test_export_with_missing_stamps_fails_fast(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            code, _out, _summary = self._export(
+                tmp_path, ["--stamps", str(tmp_path / "ausente.npz")])
+            self.assertEqual(code, 2)
+            self.assertFalse((tmp_path / "out" / "document.json").exists())
+
+    def test_export_refuses_png_that_is_not_a_png(self):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             png = tmp_path / "canvas.png"
-            png.write_bytes(b"\x89PNG\r\n\x1a\nfake")
+            png.write_bytes(b"not a png at all")
+            code, _out, _summary = self._export(tmp_path, canvas=None)
+            self.assertEqual(code, 2)
+            self.assertFalse((tmp_path / "out" / "document.json").exists())
+
+    def test_export_refuses_png_with_wrong_canvas_size(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            err = io.StringIO()
+            with redirect_stderr(err):
+                code, _out, _summary = self._export(
+                    tmp_path, canvas=(1200, 850))  # paisagem!
+            self.assertEqual(code, 2)
+            self.assertIn("1200x850", err.getvalue())
+
+    def test_max_p95_px_gate_blocks_and_passes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            # fake reporta p95 1.1 e 1.3 px -> limite 1.0 bloqueia.
+            err = io.StringIO()
+            with redirect_stderr(err):
+                code, _out, _summary = self._export(
+                    tmp_path, ["--max-p95-px", "1.0"])
+            self.assertEqual(code, 1)
+            self.assertIn("p95", err.getvalue())
+            self.assertFalse((tmp_path / "out" / "document.json").exists())
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            code, out, _summary = self._export(tmp_path, ["--max-p95-px", "2.0"])
+            self.assertEqual(code, 0, out)
+            sidecar = json.loads(
+                (tmp_path / "out" / "sidecar.json").read_text(encoding="utf-8"))
+            self.assertEqual(
+                sidecar["export_parameters"]["vectorize"]["max_p95_px"], 2.0)
+
+    def test_export_requires_explicit_origin(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            png = write_png(tmp_path / "canvas.png")
             code, _out = _run_cli([
                 "export", "--png", str(png),
                 "--vectorize-script", str(FAKE_VECTORIZE),

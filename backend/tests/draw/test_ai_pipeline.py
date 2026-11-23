@@ -13,6 +13,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from draw.png_helper import write_png
 from ocre_core.draw.step_export import find_step_worker_python
 from ocre_core.draw.document import document_sha256
 
@@ -27,8 +28,7 @@ class AIPipelineIntegrationTests(unittest.TestCase):
         temp_root.mkdir(exist_ok=True)
         with tempfile.TemporaryDirectory(dir=temp_root) as temp:
             base = Path(temp)
-            png = base / "canvas.png"
-            png.write_bytes(b"fake png input")
+            png = write_png(base / "canvas.png")
             vectorizer = base / "fake_vectorizer.py"
             vectorizer.write_text(
                 """import argparse
