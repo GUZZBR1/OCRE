@@ -742,13 +742,7 @@ class OcsClient:
             )
         saved = None
         if out_path is not None:
-            dropped = _audit_dropped(self.audit())
-            if dropped:
-                raise OcsError(
-                    f"audit recusou o save: dropped_on_save={dropped}",
-                    code="audit_lossy",
-                )
-            saved = self.save_verified(out_path)
+            saved, _ = self._save_if_audit_clean(out_path)
         return {
             "erased": erased_now,
             "already_absent": [sid for sid in erased_ids if sid not in current],
@@ -815,6 +809,23 @@ class OcsClient:
                 code="save_failed",
             )
         return result
+
+    def _save_if_audit_clean(self, out_path: str | Path) -> tuple[dict, Any]:
+        """``audit`` → ``save_verified``, recusando perda prevista.
+
+        Guarda compartilhada de ``sync_document``/``sync_strokes``:
+        ``code="audit_lossy"`` e nada escrito quando o audit prevê
+        ``dropped_on_save`` não nulo. Devolve ``(result, dropped_on_save)``
+        — o do audit é 0/falso aqui (senão teria recusado) e segue
+        como evidência do gate G2.3 no relatório do chamador.
+        """
+        dropped = _audit_dropped(self.audit())
+        if dropped:
+            raise OcsError(
+                f"audit recusou o save: dropped_on_save={dropped}",
+                code="audit_lossy",
+            )
+        return self.save_verified(out_path), dropped
 
     # -- Passos em sequência (sem o `batch` do servidor) --------------------
 
@@ -976,13 +987,7 @@ class OcsClient:
                 f"xdata round-trip divergiu: {mismatched}",
                 code="xdata_mismatch",
             )
-        dropped = _audit_dropped(self.audit())
-        if dropped:
-            raise OcsError(
-                f"audit recusou o save: dropped_on_save={dropped}",
-                code="audit_lossy",
-            )
-        saved = self.save_verified(out_path)
+        saved, dropped = self._save_if_audit_clean(out_path)
         return {
             "dxf_path": str(dxf_path),
             "out_path": str(out_path),
