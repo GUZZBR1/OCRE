@@ -183,6 +183,23 @@ def test_consumer_recovers_abandoned_claim_after_restart(tmp_path):
     assert consumer.consume(message)
     assert handled==[message]
 
+def test_already_processed_message_still_drains_outbox(tmp_path):
+    store,snap=setup_store(tmp_path)
+    kick(store, snap, JobState.PREPARING)
+    message=store.pending_outbox()[0]
+    handled=[]
+    db=tmp_path/"consumer.db"
+    # Crash window: the handler ran (consumed='processed') but the dispatcher
+    # died before mark_delivered, leaving outbox.delivered=0.
+    assert FakeMessageConsumer(db,handled.append).consume(message) is True
+    restarted=FakeMessageConsumer(db,handled.append)
+    assert FakeOutboxDispatcher(store,restarted.consume).dispatch()==1
+    assert store.pending_outbox()==()
+    assert handled==[message]
+    with sqlite3.connect(db) as conn:
+        conn.execute("INSERT INTO consumed VALUES('m-claimed','processing')")
+    assert restarted.consume(OutboxMessage("m-claimed","j1","e9","t",b"")) is False
+
 def test_cancel_confirmation_must_match_persisted_origin_and_evidence(tmp_path):
     store,snap=setup_store(tmp_path)
     kick(store, snap, JobState.CANCEL_REQUESTED, "cancel-request")
