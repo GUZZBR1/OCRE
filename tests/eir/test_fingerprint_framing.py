@@ -19,10 +19,16 @@ def record(field_id, value_type, payload=b""):
     return struct.pack(">HBQ", field_id, value_type, len(payload)) + payload
 
 
+def decode_values(records):
+    return {
+        FIELD_NAMES[field_id - 1]: payload if field_id in (1, 2) else None if value_type == 0 else json.loads(payload)
+        for field_id, value_type, payload in records
+    }
+
+
 def fingerprint(records):
     if len(records) != 10 or len({item[0] for item in records}) != len(records):
         raise ValueError("OCRE-AF/1 requires each field ID 1..10 exactly once")
-    values = {}
     for field_id, value_type, payload in records:
         if not 1 <= field_id <= 10:
             raise ValueError("unknown OCRE-AF/1 field")
@@ -31,9 +37,7 @@ def fingerprint(records):
             expected_type = 0x00
         if value_type != expected_type or (value_type == 0x00 and payload):
             raise ValueError(f"invalid type or payload for field {field_id}")
-        name = FIELD_NAMES[field_id - 1]
-        values[name] = payload if field_id in (1, 2) else None if value_type == 0 else json.loads(payload)
-    result = calculate_approval_fingerprint(values)
+    result = calculate_approval_fingerprint(decode_values(records))
     return result.digest, result.encoded
 
 
@@ -183,8 +187,7 @@ class ApprovalFingerprintFramingTests(unittest.TestCase):
             self.assertNotEqual(fingerprint(changed)[0], expected)
 
     def test_set_collections_are_sorted_and_duplicates_or_bad_hashes_rejected(self):
-        values = {FIELD_NAMES[i - 1]: payload if i in (1, 2) else None if value_type == 0 else json.loads(payload)
-                  for i, value_type, payload in self.records}
+        values = decode_values(self.records)
         baseline = calculate_approval_fingerprint(values).digest
         values["schemas"].reverse()
         self.assertEqual(calculate_approval_fingerprint(values).digest, baseline)
@@ -199,8 +202,7 @@ class ApprovalFingerprintFramingTests(unittest.TestCase):
     def test_rejects_non_jcs_values_and_missing_fields(self):
         with self.assertRaises(FingerprintInputError):
             jcs(float("nan"))
-        values = {FIELD_NAMES[i - 1]: payload if i in (1, 2) else None if value_type == 0 else json.loads(payload)
-                  for i, value_type, payload in self.records}
+        values = decode_values(self.records)
         del values["profile"]
         with self.assertRaises(FingerprintInputError):
             calculate_approval_fingerprint(values)
@@ -209,8 +211,7 @@ class ApprovalFingerprintFramingTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             fingerprint([(field_id, 0x02 if field_id == 1 else value_type, payload)
                          for field_id, value_type, payload in self.records])
-        values = {FIELD_NAMES[i - 1]: payload if i in (1, 2) else None if value_type == 0 else json.loads(payload)
-                  for i, value_type, payload in self.records}
+        values = decode_values(self.records)
         values["eir_document_sha256"] = b"short"
         with self.assertRaises(FingerprintInputError):
             calculate_approval_fingerprint(values)
