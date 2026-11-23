@@ -34,6 +34,7 @@ import pytest
 
 import ocre_core.draw.cli as cli_mod
 from ocre_core.draw.cli import main
+from ocre_core.draw.ocs import OcsError
 from ocre_core.draw.vectorize_runner import sha256_file
 
 HERE = Path(__file__).resolve().parent
@@ -100,18 +101,29 @@ class _FakeOcsClient:
         return {sid: "8C" for sid in self.synced
                 if sid not in self.erased}
 
-    def sync_document(self, document, *, out_path=None):
+    def sync_document(self, document, *, expected_live=None, out_path=None):
         erased = [s["stroke_id"] for s in document["strokes"]
                   if s["status"] == "erased" and s["stroke_id"] in self.synced]
         self.erased = erased
         live = [s["stroke_id"] for s in document["strokes"]
                 if s["status"] != "erased"]
+        if expected_live is not None:
+            missing = [sid for sid in expected_live if sid not in self.synced]
+            if missing:
+                raise OcsError(
+                    f"CAD não tem traços vivos do documento: {missing}",
+                    code="stroke_missing_in_cad")
+            live_not_in_cad = [sid for sid in live
+                               if sid not in expected_live]
+        else:
+            live_not_in_cad = []
         return {
             "erased": erased,
             "already_absent": [s["stroke_id"] for s in document["strokes"]
                                if s["status"] == "erased"
                                and s["stroke_id"] not in self.synced],
             "live": live,
+            "live_not_in_cad": live_not_in_cad,
             "remaining": {sid: "8C" for sid in live},
             "verified_absent": True,
             "save_verified": {"verified": True, "sha256": "c" * 64,
@@ -407,6 +419,80 @@ class BetaRunMockedTests(unittest.TestCase):
         self.assertEqual(report["status"], "blocked")
         self.assertIn("--document failed validation",
                       report["steps"][0]["error"])
+
+    def test_ocs_step_uses_dxf_projection_single_point_not_required(self):
+        # Regressão do review: o documento do próprio passo export
+        # carrega um ponto isolado (fake_vectorize emite type=point);
+        # o DXF não o inclui, então o CAD nunca pode carregá-lo. O passo
+        # projeta os ids por included_stroke_ids — sem isso, sync_strokes
+        # abortava com stroke_count_mismatch.
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        out_dir = Path(tmp.name) / "out"
+        argv = _base_argv(out_dir) + ["--cad-only", "--ocs-binary", "/fake/ocs"]
+        idx = argv.index("--document")
+        del argv[idx:idx + 2]
+
+        fake_client = _FakeOcsClient()
+
+        def fake_step(document, thickness_mm, material, out_path, **kwargs):
+            Path(out_path).parent.mkdir(parents=True, exist_ok=True)
+            # --cad-only liga o observer: o STEP fake precisa da
+            # estrutura mínima ISO-10303-21 para passar na checagem.
+            Path(out_path).write_text(
+                "ISO-10303-21;\nHEADER;\n"
+                "FILE_SCHEMA(('AUTOMOTIVE_DESIGN'));\nENDSEC;\n"
+                "DATA;\nENDSEC;\nEND-ISO-10303-21;\n",
+                encoding="utf-8")
+            manifest = Path(str(out_path) + ".manifest.json")
+            manifest.write_text(
+                json.dumps({"material": material}), encoding="utf-8")
+            return {
+                "output_path": str(out_path),
+                "material_manifest_path": str(manifest),
+                "output_sha256": "d" * 64, "output_bytes": 9,
+                "file_schema": "AP242", "thickness_mm": thickness_mm,
+                "material_declared": material,
+                "stroke_ids": ["s-0001"], "skipped": [],
+                "profiles": 1, "expected_volume_mm3": 6400.0,
+                "volume_mm3": 6400.0,
+                "bbox_mm": [[0.0, 0.0, 0.0], [1.0, 1.0, 1.0]],
+                "worker_versions": {"build123d": "fake"},
+            }
+
+        patches = [
+            mock.patch("ocre_core.draw.ocs.find_ocs_binary",
+                       side_effect=lambda b: b),
+            mock.patch("ocre_core.draw.ocs.launch_headless",
+                       side_effect=lambda b, **k: (mock.Mock(), fake_client)),
+            mock.patch("ocre_core.draw.ocs.stop_server", return_value=None),
+            mock.patch("ocre_core.draw.step_export.document_to_step",
+                       side_effect=fake_step),
+            mock.patch("ocre_core.draw.step_export.validate_step",
+                       return_value={"ok": True, "brepcheck_valid": True}),
+            mock.patch("ocre_core.draw.step_export.oracle_step",
+                       return_value={"status": "unavailable",
+                                     "available": False}),
+        ]
+        for patcher in patches:
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+        code, out = _run_cli(argv)
+        report = json.loads(out)
+        self.assertEqual(code, 0, out)
+        ocs = next(s for s in report["steps"] if s["id"] == "ocs")
+        self.assertEqual(ocs["status"], "ok", ocs.get("error"))
+        # O documento produzido pelo export real tem 5 strokes; o DXF
+        # (e portanto o CAD) carrega os 4 com >= 2 pontos.
+        doc = json.loads(
+            (out_dir / "export" / "document.json").read_text(encoding="utf-8"))
+        self.assertEqual(len(doc["strokes"]), 5)
+        one_pt = next(s for s in doc["strokes"]
+                      if len(s["points_mm"]) == 1)
+        self.assertEqual(len(fake_client.synced), 4)
+        self.assertNotIn(one_pt["stroke_id"], fake_client.synced)
+        self.assertEqual(ocs["detail"]["live_ids"], fake_client.synced)
 
     def test_missing_ocs_binary_is_skipped_honestly_without_failing(self):
         calls: list[str] = []

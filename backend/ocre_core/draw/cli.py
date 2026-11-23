@@ -174,6 +174,24 @@ def _fidelity_p95_px(summary: Any) -> float | None:
     return max((float(v) for v in values), default=None)
 
 
+def _json_finite(value: Any) -> bool:
+    """True quando a árvore JSON-like só contém números finitos.
+
+    ``json.loads`` aceita ``NaN``/``Infinity`` literais; se entrarem no
+    summary do vectorize eles chegariam ao fingerprint — que os recusa
+    — DEPOIS do DXF já promovido. Validar cedo mantém fail-closed.
+    """
+    if isinstance(value, bool):
+        return True
+    if isinstance(value, (int, float)):
+        return math.isfinite(value)
+    if isinstance(value, dict):
+        return all(_json_finite(item) for item in value.values())
+    if isinstance(value, (list, tuple)):
+        return all(_json_finite(item) for item in value)
+    return True
+
+
 def _atomic_write_bytes(path: Path, data: bytes) -> None:
     """Write ``data`` to ``path`` atomically (temp file + rename)."""
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -392,6 +410,18 @@ def _cmd_export(args: argparse.Namespace) -> int:
     png_path = Path(args.png)
     if not png_path.is_file():
         return _fail(f"PNG not found: {png_path}", 2)
+    # --max-p95-px is parsed as float, which accepts nan/inf: a nan
+    # limit never blocks the gate and would land in export_parameters
+    # (the fingerprint refuses non-finite numbers) — after the DXF was
+    # already promoted. Refuse before anything is written.
+    max_p95_px = getattr(args, "max_p95_px", None)
+    if max_p95_px is not None and not math.isfinite(max_p95_px):
+        print(
+            f"error: --max-p95-px must be a finite number, got "
+            f"{max_p95_px!r}",
+            file=sys.stderr,
+        )
+        return 2
     out_dir = Path(args.out_dir).resolve()
     out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -458,7 +488,15 @@ def _cmd_export(args: argparse.Namespace) -> int:
     except VectorizeError as exc:
         return _fail(f"vectorize failed: {exc}", 1)
 
-    max_p95_px = getattr(args, "max_p95_px", None)
+    # O recorte do summary vai para export_parameters (fingerprint):
+    # números não-finitos seriam recusados lá, depois do DXF promovido.
+    fidelity_summary = _fidelity_summary(vectorized.get("summary"))
+    if not _json_finite(fidelity_summary):
+        return _fail(
+            "vectorizer summary carries non-finite numbers; refusing "
+            "to build a package that cannot be fingerprinted", 1,
+        )
+
     if max_p95_px is not None:
         p95_px = _fidelity_p95_px(vectorized.get("summary"))
         if p95_px is None:
@@ -506,11 +544,21 @@ def _cmd_export(args: argparse.Namespace) -> int:
     try:
         for polyline in polylines:
             shape = polyline.get("type")
+            # O fit analítico do círculo (cx_mm/cy_mm/r_mm) sobe ao
+            # documento mestre — a Fase 2 o usa no STEP analítico.
+            # add_stroke valida na folha e implica shape="circle".
+            circle_mm = polyline.get("circle_mm")
+            circle = (
+                {key: circle_mm[key] for key in ("cx_mm", "cy_mm", "r_mm")}
+                if circle_mm is not None
+                else None
+            )
             stroke = add_stroke(
                 doc,
                 polyline["points_mm"],
                 closed=bool(polyline.get("closed", False)),
                 shape=shape if shape in SHAPES else None,
+                circle=circle,
                 t_start_ms=polyline.get("t_start_ms"),
                 t_end_ms=polyline.get("t_end_ms"),
             )
@@ -535,7 +583,7 @@ def _cmd_export(args: argparse.Namespace) -> int:
         "polylines_total": vectorized["polylines_total"],
         "primitives_without_points": vectorized["primitives_without_points"],
         "skipped_primitive_types": vectorized["skipped_primitive_types"],
-        "summary": _fidelity_summary(vectorized.get("summary")),
+        "summary": fidelity_summary,
     }
     if stamps_sha256 is not None:
         vectorize_parameters["stamps_sha256"] = stamps_sha256
@@ -603,13 +651,16 @@ def _cmd_export(args: argparse.Namespace) -> int:
         },
     ]
 
-    # DXF first (to a temp file, then atomic move), so its hash can go
-    # into the bundle manifest and the sidecar.
+    # DXF first (to a temp file — promoted only after every metadata
+    # file is ready), so its hash can go into the bundle manifest and
+    # the sidecar. Promoting earlier would leave a new DXF over an old
+    # package when a later stage (fingerprint, sidecar) fails.
     dxf_tmp = out_dir / ".document.dxf.tmp"
     dxf_path = out_dir / "document.dxf"
     try:
         dxf_report = export_dxf(doc, dxf_tmp, include_pending=False)
     except ValueError as exc:
+        dxf_tmp.unlink(missing_ok=True)
         return _fail(f"DXF export failed: {exc}", 1)
     adapter = getattr(args, "ai_adapter", None)
     if adapter is None and getattr(args, "ai_adapter_factory", None):
@@ -627,8 +678,6 @@ def _cmd_export(args: argparse.Namespace) -> int:
             return _fail("DXF observer confirmed a conversion error", 1)
         dxf_report["observation"] = observation
     dxf_sha_hex = dxf_report["output_sha256"]
-    os.replace(dxf_tmp, dxf_path)
-    dxf_report["output_path"] = str(dxf_path)
 
     manifest = {
         "document_sha256": doc_sha_hex,
@@ -658,6 +707,7 @@ def _cmd_export(args: argparse.Namespace) -> int:
     try:
         fingerprint = compute_fingerprint(fingerprint_inputs)
     except ValueError as exc:
+        dxf_tmp.unlink(missing_ok=True)
         return _fail(f"DRAW-AF/1 fingerprint failed: {exc}", 1)
 
     try:
@@ -678,9 +728,13 @@ def _cmd_export(args: argparse.Namespace) -> int:
             draw_source={"repo": args.draw_repo, "commit": args.draw_commit},
         )
     except ValueError as exc:
+        dxf_tmp.unlink(missing_ok=True)
         return _fail(f"sidecar failed: {exc}", 1)
 
-    # Write the remaining derivatives atomically.
+    # Every metadata input is ready: promote the DXF and write the
+    # remaining derivatives atomically.
+    os.replace(dxf_tmp, dxf_path)
+    dxf_report["output_path"] = str(dxf_path)
     _atomic_write_bytes(out_dir / "document.json", dumps_document(doc).encode("utf-8"))
     _atomic_write_json(out_dir / "sidecar.json", sidecar)
     _atomic_write_json(out_dir / "fingerprint.json", {
@@ -960,8 +1014,10 @@ def _beta_step_ocs(ctx: dict[str, Any]) -> dict[str, Any]:
             f"the OCS step: {exc}",
         )
     ctx["ocs_dxf"] = dxf_path
-    live_ids = [s["stroke_id"] for s in doc.get("strokes", [])
-                if s.get("status") != "erased"]
+    # The CAD live set is exactly what the DXF carried: pending strokes
+    # and 1-point strokes stay in the document master but never reach
+    # the CAD — they are live_not_in_cad, not divergences.
+    live_ids = dxf_report["included_stroke_ids"]
     erased_ids = [s["stroke_id"] for s in doc.get("strokes", [])
                   if s.get("status") == "erased"]
     try:
@@ -980,7 +1036,8 @@ def _beta_step_ocs(ctx: dict[str, Any]) -> dict[str, Any]:
                 out_path=ocs_dir / "ocs-verified.dxf")
             scan_after_sync = client.scan_stroke_ids()
             sync_doc_report = client.sync_document(
-                doc, out_path=ocs_dir / "ocs-after-erase.dxf")
+                doc, out_path=ocs_dir / "ocs-after-erase.dxf",
+                expected_live=live_ids)
             scan_after_document = client.scan_stroke_ids()
         except OcsError as exc:
             detail.update(code=exc.code, dxf_report=dxf_report)

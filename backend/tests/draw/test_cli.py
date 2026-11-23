@@ -93,6 +93,12 @@ class CliExportTests(unittest.TestCase):
             circle = next(s for s in doc["strokes"] if s.get("shape") == "circle")
             self.assertTrue(circle["closed"])
             self.assertEqual(len(circle["points_mm"]), 64)
+            # O fit analítico sobe ao documento mestre (Fase 2 o usa no
+            # STEP analítico); radial_rmse_px fica fora — o schema exige
+            # exatamente cx_mm/cy_mm/r_mm.
+            self.assertEqual(
+                circle["circle"],
+                {"cx_mm": 150.0, "cy_mm": 150.0, "r_mm": 25.0})
             point_stroke = next(
                 s for s in doc["strokes"] if len(s["points_mm"]) == 1)
             self.assertFalse(point_stroke["closed"])
@@ -262,6 +268,68 @@ class CliExportTests(unittest.TestCase):
                 (tmp_path / "out" / "sidecar.json").read_text(encoding="utf-8"))
             self.assertEqual(
                 sidecar["export_parameters"]["vectorize"]["max_p95_px"], 2.0)
+
+    def test_max_p95_px_rejects_non_finite_and_preserves_package(self):
+        # float() do argparse aceita nan/inf: um limite nan nunca
+        # bloquearia o gate e ainda iria para export_parameters — o
+        # fingerprint recusa não-finito DEPOIS do DXF promovido. O
+        # argumento é recusado antes de qualquer escrita, então uma
+        # reexportação inválida preserva o pacote anterior byte a byte.
+        for bad in ("nan", "inf", "-inf"):
+            with self.subTest(limit=bad), tempfile.TemporaryDirectory() as tmp:
+                tmp_path = Path(tmp)
+                code, out, _summary = self._export(tmp_path)
+                self.assertEqual(code, 0, out)
+                out_dir = tmp_path / "out"
+                dxf_before = (out_dir / "document.dxf").read_bytes()
+                sidecar_before = (out_dir / "sidecar.json").read_bytes()
+
+                err = io.StringIO()
+                with redirect_stderr(err):
+                    code, _out, _ = self._export(
+                        tmp_path, [f"--max-p95-px={bad}"])
+                self.assertEqual(code, 2, err.getvalue())
+                self.assertIn("finite", err.getvalue())
+                self.assertEqual(
+                    (out_dir / "document.dxf").read_bytes(), dxf_before)
+                self.assertEqual(
+                    (out_dir / "sidecar.json").read_bytes(), sidecar_before)
+                self.assertFalse((out_dir / ".document.dxf.tmp").exists())
+
+    def test_export_refuses_non_finite_vectorizer_summary(self):
+        # json.loads aceita NaN literal: um summary corrompido chegaria
+        # ao fingerprint (que recusa) após o DXF promovido — a checagem
+        # é feita antes de qualquer artefato.
+        def fake_run(*_a, **_k):
+            return {
+                "polylines": [{
+                    "points_mm": [[10.0, 10.0], [50.0, 50.0]],
+                    "closed": False, "type": "polyline"}],
+                "summary": {
+                    "polilinhas": 1,
+                    "distancias": {"ink2vec": {"p95_px": float("nan")}},
+                },
+                "script_sha256": "a" * 64,
+                "primitives_total": 1,
+                "polylines_total": 1,
+                "primitives_without_points": 0,
+                "skipped_primitive_types": [],
+            }
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            err = io.StringIO()
+            with redirect_stderr(err), mock.patch(
+                "ocre_core.draw.vectorize_runner.run_vectorize",
+                side_effect=fake_run,
+            ):
+                code, _out, _summary = self._export(tmp_path)
+            self.assertEqual(code, 1, err.getvalue())
+            self.assertIn("non-finite", err.getvalue())
+            out_dir = tmp_path / "out"
+            self.assertFalse((out_dir / "document.dxf").exists())
+            self.assertFalse((out_dir / "document.json").exists())
+            self.assertFalse((out_dir / ".document.dxf.tmp").exists())
 
     def test_export_requires_explicit_origin(self):
         with tempfile.TemporaryDirectory() as tmp:

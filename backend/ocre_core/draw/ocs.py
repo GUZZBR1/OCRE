@@ -540,6 +540,7 @@ class OcsClient:
         self,
         document: dict,
         *,
+        expected_live: list[str] | None = None,
         out_path: str | Path | None = None,
     ) -> dict:
         """Re-sincroniza o CAD a partir do documento ``draw.paper.v1``.
@@ -554,6 +555,14 @@ class OcsClient:
         (``unknown_stroke_in_cad``) — divergência silenciosa não é
         resolvida adivinhando. Com ``out_path``, roda ``audit`` +
         ``save_verified`` ao fim (recusa se ``dropped_on_save > 0``).
+
+        ``expected_live`` restringe os traços vivos que o CAD deve
+        carregar: sem ele, todos os não-``erased`` são exigidos; com
+        ele (ex.: o ``included_stroke_ids`` do escritor DXF, que omite
+        traços de 1 ponto e ``pending``), um traço vivo fora da lista
+        é registrado em ``live_not_in_cad`` em vez de falhar — o CAD
+        nunca recebeu esse traço, não é divergência. Ids desconhecidos
+        ou ``erased`` em ``expected_live`` são recusados.
         """
         if not isinstance(document, dict) or not isinstance(
             document.get("strokes"), list
@@ -574,7 +583,25 @@ class OcsClient:
                 )
             doc_ids[sid] = status
         erased_ids = [sid for sid, st in doc_ids.items() if st == "erased"]
-        live_ids = [sid for sid, st in doc_ids.items() if st != "erased"]
+        if expected_live is None:
+            live_ids = [sid for sid, st in doc_ids.items() if st != "erased"]
+        else:
+            if not isinstance(expected_live, list) or any(
+                not isinstance(sid, str) for sid in expected_live
+            ):
+                raise ValueError("expected_live deve ser uma lista de stroke_ids")
+            if len(set(expected_live)) != len(expected_live):
+                raise ValueError("expected_live com stroke_id duplicado")
+            bad = [
+                sid for sid in expected_live
+                if doc_ids.get(sid) in (None, "erased")
+            ]
+            if bad:
+                raise ValueError(
+                    f"expected_live com ids que não são traços vivos do "
+                    f"documento: {bad}"
+                )
+            live_ids = list(expected_live)
         current = self.scan_stroke_ids()
         unknown_in_cad = [sid for sid in current if sid not in doc_ids]
         if unknown_in_cad:
@@ -616,6 +643,10 @@ class OcsClient:
             "erased": erased_now,
             "already_absent": [sid for sid in erased_ids if sid not in current],
             "live": live_ids,
+            "live_not_in_cad": [
+                sid for sid, st in doc_ids.items()
+                if st != "erased" and sid not in live_ids
+            ],
             "remaining": after,
             "verified_absent": True,
             "save_verified": saved,
