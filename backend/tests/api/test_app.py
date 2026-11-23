@@ -226,6 +226,12 @@ def test_openapi_documents_sync_batch_request_body_with_resolvable_refs(tmp_path
     assert schema["type"] == "object"
     assert {"batch_id", "operations"} <= set(schema["required"])
 
+    job_post = spec["paths"]["/v1/projects/{project_id}/jobs"]["post"]
+    assert job_post["requestBody"]["required"] is True
+    job_schema = job_post["requestBody"]["content"]["application/json"]["schema"]
+    assert job_schema["type"] == "object"
+    assert {"design_revision_id", "case_ref", "adapter_id", "adapter_version"} <= set(job_schema["required"])
+
     refs = []
     _collect_refs(spec, refs)
     assert schema["properties"]["operations"]["items"]["$ref"] in refs

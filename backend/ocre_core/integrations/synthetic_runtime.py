@@ -53,6 +53,8 @@ class _TenantOutboxView:
             after_cursor = page[-1].cursor
 
     def pending_outbox(self, limit=100):
+        if limit < 1:
+            raise ValueError("limit must be positive")
         with self._store._connect() as db:
             rows = db.execute(
                 "SELECT message_id,aggregate_id,event_id,topic,body FROM outbox "

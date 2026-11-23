@@ -85,6 +85,8 @@ def create_app(application: OCREApplication, *, principal_dependency: Callable[.
 
     sync_request_schema = SyncBatchBody.model_json_schema(ref_template="#/components/schemas/{model}")
     sync_request_defs = sync_request_schema.pop("$defs", {})
+    job_request_schema = JobSubmitBody.model_json_schema(ref_template="#/components/schemas/{model}")
+    job_request_defs = job_request_schema.pop("$defs", {})
 
     @app.post(
         "/v1/projects/{project_id}/sync-batches",
@@ -107,7 +109,16 @@ def create_app(application: OCREApplication, *, principal_dependency: Callable[.
     def get_sync_receipt(project_id: str, batch_id: str, principal: Principal = Depends(principal_dependency)):
         return application.get_sync_receipt(principal, project_id, batch_id)
 
-    @app.post("/v1/projects/{project_id}/jobs", status_code=202)
+    @app.post(
+        "/v1/projects/{project_id}/jobs",
+        status_code=202,
+        openapi_extra={
+            "requestBody": {
+                "required": True,
+                "content": {"application/json": {"schema": job_request_schema}},
+            }
+        },
+    )
     async def submit_job(
         project_id: str,
         request: Request,
@@ -156,8 +167,9 @@ def create_app(application: OCREApplication, *, principal_dependency: Callable[.
         # must resolve under ``#/components/schemas`` for /docs and codegen.
         schema = default_openapi()
         schemas = schema.setdefault("components", {}).setdefault("schemas", {})
-        for name, definition in sync_request_defs.items():
-            schemas.setdefault(name, definition)
+        for defs in (sync_request_defs, job_request_defs):
+            for name, definition in defs.items():
+                schemas.setdefault(name, definition)
         return schema
 
     app.openapi = openapi

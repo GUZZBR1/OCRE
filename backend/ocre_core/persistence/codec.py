@@ -49,12 +49,21 @@ def _matches(value, hint):
     if not isinstance(value, origin):
         return False
     args = get_args(hint)
-    if args and args[-1] is Ellipsis:
+    if not args:
+        return True
+    if args[-1] is Ellipsis:
         return all(_matches(item, args[0]) for item in value)
-    if origin is tuple and args:
+    if origin is tuple:
         return len(value) == len(args) and all(
             _matches(item, arg) for item, arg in zip(value, args)
         )
+    if origin is dict:
+        return all(
+            _matches(key, args[0]) and _matches(item, args[1])
+            for key, item in value.items()
+        )
+    if origin in (list, set, frozenset):
+        return all(_matches(item, args[0]) for item in value)
     return True
 
 

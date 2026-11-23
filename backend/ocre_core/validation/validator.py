@@ -406,12 +406,13 @@ def _semantic(eir: dict[str, Any], bundle: dict[str, Any], groups: dict[str, Any
     elif group_ref_ids:
         _add(diagnostics, "semantic", "/simulation_cases", "group_manifest_unavailable", "group manifest document was not supplied or safely loaded", "warning" if purpose == "authoring" else "error")
 
-    manifest_refs = {c.get("group_manifest_ref") for c in _seq(eir.get("simulation_cases")) if isinstance(c, dict)}
-    consumed = {bundle.get("eir_artifact_id")}
-    consumed.update(ref for ref in manifest_refs if ref)
+    manifest_refs = {c.get("group_manifest_ref") for c in _seq(eir.get("simulation_cases"))
+                     if isinstance(c, dict) and c.get("group_manifest_ref")}
+    consumed = {ref for ref in (bundle.get("eir_artifact_id"),) if ref}
+    consumed.update(manifest_refs)
     consumed.update(g.get("artifact_id") for g in eir.get("geometry", []) if isinstance(g, dict) and g.get("artifact_id"))
     if groups is not None:
-        consumed.update((groups.get("source_artifact_id"), groups.get("mesh_artifact_id")))
+        consumed.update(ref for ref in (groups.get("source_artifact_id"), groups.get("mesh_artifact_id")) if ref)
     migration = eir.get("migration")
     if isinstance(migration, dict) and migration.get("report_artifact_id"):
         consumed.add(migration["report_artifact_id"])
