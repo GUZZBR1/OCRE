@@ -25,6 +25,9 @@ from ocre_core.draw.cli import main
 from ocre_core.draw.document import add_stroke, new_document, stabilize_stroke
 from ocre_core.draw.dxf_export import build_dxf
 from ocre_core.draw.paper import (
+    A4_PAISAGEM,
+    A5_PAISAGEM,
+    CARTA_PAISAGEM,
     DEFAULT_PAPER,
     DEFAULT_SPEC,
     PaperSpec,
@@ -224,6 +227,74 @@ class LoadDrawConfigTests(unittest.TestCase):
     def test_missing_file_is_refused(self):
         with self.assertRaises((ValueError, FileNotFoundError, OSError)):
             load_draw_config(Path("/nonexistent/config.py"))
+
+    # draw-core HEAD: PAPER_W/PAPER_H viraram PaperSpec frozen +
+    # FORMATS + `_current = _spec(name, orientation)`; o loader deve
+    # ler essa forma sem executar o arquivo.
+    _NEW_STYLE = (
+        'FORMATS = {\n'
+        '    "a4": (210.0, 297.0),\n'
+        '    "a5": (148.0, 210.0),\n'
+        '    "a3": (297.0, 420.0),\n'
+        '    "carta": (216.0, 279.0),\n'
+        '    "caderno": (200.0, 275.0),\n'
+        '}\n'
+        'ORIENTATIONS = ("retrato", "paisagem")\n'
+        '_current = _spec("%s", "%s")\n'
+    )
+
+    def test_new_style_a4_retrato_returns_default_spec(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = self._write_config(
+                Path(tmp), self._NEW_STYLE % ("a4", "retrato"))
+            self.assertIs(load_draw_config(path), DEFAULT_SPEC)
+
+    def test_new_style_paisagem_swaps_the_axes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            for fmt, expected in (
+                ("a4", A4_PAISAGEM), ("a5", A5_PAISAGEM), ("carta", CARTA_PAISAGEM),
+            ):
+                with self.subTest(fmt=fmt):
+                    path = self._write_config(
+                        Path(tmp), self._NEW_STYLE % (fmt, "paisagem"))
+                    self.assertIs(load_draw_config(path), expected)
+
+    def test_new_style_unknown_canvas_derives_mm(self):
+        # Formato presente em FORMATS mas fora do registry OCRE: a grade
+        # deriva pela regra do paper_grid e os mm pelo mapeamento A4.
+        with tempfile.TemporaryDirectory() as tmp:
+            path = self._write_config(
+                Path(tmp),
+                'FORMATS = {"tabloide": (279.0, 432.0)}\n'
+                '_current = _spec("tabloide", "retrato")\n')
+            spec = load_draw_config(path)
+            # short = round(1200 * 279/432) = 775; grid (775, 1200)
+            self.assertEqual(spec.format, "DRAW-775x1200")
+            self.assertEqual((spec.canvas_width_px, spec.canvas_height_px), (775, 1200))
+            self.assertAlmostEqual(spec.width_mm, 775 * 210.0 / 850.0)
+
+    def test_new_style_refusals(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            for text in (
+                # _spec referencia formato ausente em FORMATS
+                'FORMATS = {"a4": (210.0, 297.0)}\n'
+                '_current = _spec("a2", "retrato")\n',
+                # orientação fora de retrato/paisagem
+                'FORMATS = {"a4": (210.0, 297.0)}\n'
+                '_current = _spec("a4", "deitado")\n',
+                # FORMATS não-literal (chamada) -> recusa
+                'FORMATS = build_formats()\n'
+                '_current = _spec("a4", "retrato")\n',
+                # _current sem chamada _spec literal -> recusa
+                'FORMATS = {"a4": (210.0, 297.0)}\n'
+                '_current = PaperSpec("a4", "retrato")\n',
+                # _spec dentro de função não conta (só top-level)
+                'FORMATS = {"a4": (210.0, 297.0)}\n'
+                'def f():\n    _current = _spec("a4", "retrato")\n',
+            ):
+                path = self._write_config(Path(tmp), text)
+                with self.assertRaises(ValueError, msg=text):
+                    load_draw_config(path)
 
 
 class PaperSizeMmTests(unittest.TestCase):
