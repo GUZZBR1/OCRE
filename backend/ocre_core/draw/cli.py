@@ -72,7 +72,7 @@ import tempfile
 import time
 from contextlib import redirect_stdout
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple
 
 from .document import (
     SHAPES,
@@ -84,7 +84,7 @@ from .document import (
     stabilize_stroke,
 )
 from .fingerprint import compute_fingerprint
-from .paper import DEFAULT_SPEC, load_draw_config, resolve_paper
+from .paper import DEFAULT_SPEC, PaperSpec, load_draw_config, resolve_paper
 from .sidecar import build_draw_sidecar
 from .validator_draw import (
     SCHEMA_NAME,
@@ -436,15 +436,47 @@ def _build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _cmd_export(args: argparse.Namespace) -> int:
-    # Lazy imports: `validate` must work without ezdxf installed.
-    from .dxf_export import export_dxf
-    from .librecad_gate import check_dxf
-    from .vectorize_runner import (
-        VectorizeError,
-        _resolve_pythonpath,
-        run_vectorize,
-    )
+class _ExportInputs(NamedTuple):
+    """Phase-1 outputs: resolved paths, paper spec and input hashes."""
+    png_path: Path
+    out_dir: Path
+    spec: PaperSpec
+    paper_mm: tuple[float, float] | None
+    png_sha256: str
+    stamps_path: Path | None
+    stamps_sha256: str | None
+    max_p95_px: float | None
+
+
+class _ExportVectorize(NamedTuple):
+    """Phase-2 outputs: the raw vectorizer result and derived values."""
+    output: dict[str, Any]
+    fidelity_summary: dict[str, Any]
+    polylines: list[dict[str, Any]]
+    order_kind: str
+
+
+class _ExportDocument(NamedTuple):
+    """Phase-3 outputs: the validated master document and its digests."""
+    doc: dict[str, Any]
+    doc_sha256: str
+    schema_sha256: str
+
+
+class _ExportProvenance(NamedTuple):
+    """Phase-4 outputs: the metadata shared by sidecar and fingerprint."""
+    export_parameters: dict[str, Any]
+    consumed_artifacts: list[dict[str, Any]]
+    source_artifacts: list[dict[str, Any]]
+    adapters: list[dict[str, Any]]
+
+
+def _export_resolve_and_probe(args: argparse.Namespace) -> _ExportInputs | int:
+    """Phase 1 — check flags and probe inputs before anything is written.
+
+    Returns the resolved inputs, or the exit code with the error already
+    reported.
+    """
     if not _HEX40_RE.fullmatch(args.draw_commit):
         return _fail(
             "--draw-commit must be a full 40-hex git revision "
@@ -523,6 +555,34 @@ def _cmd_export(args: argparse.Namespace) -> int:
         if spec is not DEFAULT_SPEC
         else None
     )
+    return _ExportInputs(
+        png_path=png_path,
+        out_dir=out_dir,
+        spec=spec,
+        paper_mm=paper_mm,
+        png_sha256=png_sha256,
+        stamps_path=stamps_path,
+        stamps_sha256=stamps_sha256,
+        max_p95_px=max_p95_px,
+    )
+
+
+def _export_vectorize(
+    args: argparse.Namespace,
+    inputs: _ExportInputs,
+) -> _ExportVectorize | int:
+    """Phase 2 — run the pinned vectorizer and gate its fidelity.
+
+    Returns the vectorizer outcome, or the exit code with the error
+    already reported.
+    """
+    # Lazy import, kept from the original single-body _cmd_export.
+    from .vectorize_runner import VectorizeError, run_vectorize
+
+    png_path = inputs.png_path
+    stamps_path = inputs.stamps_path
+    paper_mm = inputs.paper_mm
+    max_p95_px = inputs.max_p95_px
 
     try:
         vectorized = run_vectorize(
@@ -589,6 +649,28 @@ def _cmd_export(args: argparse.Namespace) -> int:
     order_kind = args.order_kind or (
         "temporal-stamps" if has_stamps else "unknown"
     )
+    return _ExportVectorize(
+        output=vectorized,
+        fidelity_summary=fidelity_summary,
+        polylines=polylines,
+        order_kind=order_kind,
+    )
+
+
+def _export_build_document(
+    args: argparse.Namespace,
+    inputs: _ExportInputs,
+    vectorize: _ExportVectorize,
+) -> _ExportDocument | int:
+    """Phase 3 — build the draw.paper document and validate fail-closed.
+
+    Returns the document and its digests, or the exit code with the
+    error already reported.
+    """
+    spec = inputs.spec
+    polylines = vectorize.polylines
+    order_kind = vectorize.order_kind
+
     # Build the document (master) from the vectorizer polylines.
     doc = new_document(
         {"repo": args.draw_repo, "commit": args.draw_commit, "origin": args.origin},
@@ -631,6 +713,37 @@ def _cmd_export(args: argparse.Namespace) -> int:
 
     doc_sha_hex = document_sha256(doc)
     schema_sha = bundled_schema_sha256()
+    return _ExportDocument(
+        doc=doc,
+        doc_sha256=doc_sha_hex,
+        schema_sha256=schema_sha,
+    )
+
+
+def _export_provenance(
+    args: argparse.Namespace,
+    inputs: _ExportInputs,
+    vectorize: _ExportVectorize,
+) -> _ExportProvenance:
+    """Phase 4 — assemble the provenance metadata (pure assembly).
+
+    The same objects feed the bundle manifest, the DRAW-AF/1
+    fingerprint inputs and the sidecar, so the three can never disagree
+    about what ran.
+    """
+    # Lazy import, kept from the original single-body _cmd_export.
+    from .vectorize_runner import _resolve_pythonpath
+
+    vectorized = vectorize.output
+    fidelity_summary = vectorize.fidelity_summary
+    order_kind = vectorize.order_kind
+    spec = inputs.spec
+    png_path = inputs.png_path
+    png_sha256 = inputs.png_sha256
+    stamps_path = inputs.stamps_path
+    stamps_sha256 = inputs.stamps_sha256
+    paper_mm = inputs.paper_mm
+    max_p95_px = inputs.max_p95_px
 
     vectorize_parameters: dict[str, Any] = {
         "script_sha256": vectorized["script_sha256"],
@@ -716,6 +829,36 @@ def _cmd_export(args: argparse.Namespace) -> int:
                  "layer": "DRAW_STROKES"})),
         },
     ]
+    return _ExportProvenance(
+        export_parameters=export_parameters,
+        consumed_artifacts=consumed_artifacts,
+        source_artifacts=source_artifacts,
+        adapters=adapters,
+    )
+
+
+def _export_write_outputs(
+    args: argparse.Namespace,
+    inputs: _ExportInputs,
+    document: _ExportDocument,
+    provenance: _ExportProvenance,
+) -> int:
+    """Phase 5 — DXF to a temp path, observer, fingerprint and sidecar,
+    then promote the DXF and write the remaining derivatives atomically,
+    run the opt-in LibreCAD gate and print the summary."""
+    # Lazy imports: `validate` must work without ezdxf installed.
+    from .dxf_export import export_dxf
+    from .librecad_gate import check_dxf
+
+    out_dir = inputs.out_dir
+    png_sha256 = inputs.png_sha256
+    doc = document.doc
+    doc_sha_hex = document.doc_sha256
+    schema_sha = document.schema_sha256
+    export_parameters = provenance.export_parameters
+    consumed_artifacts = provenance.consumed_artifacts
+    source_artifacts = provenance.source_artifacts
+    adapters = provenance.adapters
 
     # DXF first (to a temp file — promoted only after every metadata
     # file is ready), so its hash can go into the bundle manifest and
@@ -852,6 +995,22 @@ def _cmd_export(args: argparse.Namespace) -> int:
     if librecad_status == "fail":
         return _fail("LibreCAD gate G0.2 failed for the exported DXF", 1)
     return 0
+
+
+def _cmd_export(args: argparse.Namespace) -> int:
+    # Phase helpers return their payload, or the exit code (int) with
+    # the error already reported.
+    inputs = _export_resolve_and_probe(args)
+    if isinstance(inputs, int):
+        return inputs
+    vectorize = _export_vectorize(args, inputs)
+    if isinstance(vectorize, int):
+        return vectorize
+    document = _export_build_document(args, inputs, vectorize)
+    if isinstance(document, int):
+        return document
+    provenance = _export_provenance(args, inputs, vectorize)
+    return _export_write_outputs(args, inputs, document, provenance)
 
 
 def _cmd_fea_axial(args: argparse.Namespace) -> int:
