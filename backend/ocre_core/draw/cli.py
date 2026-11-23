@@ -416,6 +416,9 @@ def _build_parser() -> argparse.ArgumentParser:
                       help="OpenCADStudio binary for the live-CAD step "
                            "(default: OCS_BINARY env or PATH; without it "
                            "the step is skipped-unavailable, honestly)")
+    beta.add_argument("--paper", default=None,
+                      help="paper format from the paper registry (operator flag; "
+                           "default: the current Draw paper, today A4)")
     beta.add_argument("--draw-config", default=None,
                       help="path to Draw's config.py (paper source; "
                            "overrides the default paper)")
@@ -993,7 +996,7 @@ def _beta_step_export(ctx: dict[str, Any]) -> dict[str, Any]:
         draw_repo=args.draw_repo,
         draw_commit=args.draw_commit,
         order_kind=None,
-        paper=None,
+        paper=args.paper,
         draw_config=args.draw_config,
         doc_id=None,
         timeout_s=args.timeout_s,

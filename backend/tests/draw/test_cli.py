@@ -534,7 +534,8 @@ class CliExportTests(unittest.TestCase):
             vectorize_module=None, vectorize_pythonpath=None,
             document=None, origin="upstream-canvas-png",
             draw_repo="santleme/draw", draw_commit=COMMIT,
-            draw_config=None, timeout_s=300.0, clean=False, stamps=None,
+            draw_config=None, paper=None, timeout_s=300.0, clean=False,
+            stamps=None,
         )
         with tempfile.TemporaryDirectory() as tmp:
             ctx = {
