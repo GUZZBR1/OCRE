@@ -28,6 +28,8 @@ from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from typing import Any
 
+from ..document import document_sha256
+
 PROPOSAL_KINDS = (
     "semantic-classification",
     "coherence-correction",
@@ -133,10 +135,14 @@ def reject(proposal: Proposal, *, by: str) -> Proposal:
 def apply_proposal(proposal: Proposal, document: dict[str, Any]) -> ApplicationResult:
     """Apply a CONFIRMED proposal — a separate, explicit step.
 
-    Refuses (fail-closed) when the proposal is not confirmed, and when
-    the document's revision no longer matches the proposal's revision.
-    Returns an application record; it does NOT mutate the document
-    (no agreed document field exists yet for proposal kinds — D6).
+    Refuses (fail-closed) when the proposal is not confirmed, when the
+    document's revision no longer matches the proposal's revision, and
+    when the document hashes differently than the document the proposal
+    refers to (same revision on another document is still a refusal —
+    the same binding rule ``material_for_step`` and the CLI proposal
+    ledger already apply). Returns an application record; it does NOT
+    mutate the document (no agreed document field exists yet for
+    proposal kinds — D6).
     """
     if proposal.state != "confirmed":
         raise ValueError(
@@ -149,6 +155,13 @@ def apply_proposal(proposal: Proposal, document: dict[str, Any]) -> ApplicationR
             f"proposal {proposal.proposal_id} refers to revision "
             f"{proposal.document_revision}, but the document is at "
             f"revision {revision!r}: re-propose against the current revision"
+        )
+    digest = document_sha256(document)
+    if digest != proposal.document_sha256:
+        raise ValueError(
+            f"proposal {proposal.proposal_id} refers to document "
+            f"{proposal.document_sha256}, but the document hashes to "
+            f"{digest}: re-propose against this document"
         )
     return ApplicationResult(
         proposal_id=proposal.proposal_id,
