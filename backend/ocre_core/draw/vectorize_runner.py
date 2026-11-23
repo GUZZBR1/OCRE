@@ -355,13 +355,14 @@ def _build_module_env(pythonpath: str | Path | None) -> dict[str, str] | None:
 
 _MODULE_PROBE = (
     "import importlib.util, json, sys\n"
-    "name = sys.argv[1]\n"
+    "from pathlib import Path\n"
+    "name, report_path = sys.argv[1], Path(sys.argv[2])\n"
     "spec = importlib.util.find_spec(name)\n"
     "if spec is not None and spec.submodule_search_locations is not None:\n"
     "    spec = importlib.util.find_spec(f'{name}.__main__')\n"
     "if spec is None or not spec.has_location or not spec.origin:\n"
     "    raise SystemExit(f'módulo sem arquivo executável: {name!r}')\n"
-    "print(json.dumps({'origin': spec.origin}))\n"
+    "report_path.write_text(json.dumps({'origin': spec.origin}))\n"
 )
 
 
@@ -380,10 +381,16 @@ def _resolve_module_entry(
     ``find_spec`` depende do ``sys.path`` de QUEM executa — sondar num
     venv e rodar ``-m`` noutro poderia verificar um arquivo e executar
     outro, esvaziando o pin.
+
+    A resposta da sonda vai por arquivo em ``out_dir``, não por
+    stdout: ``find_spec`` importa os pacotes-pai do módulo e um
+    ``__init__`` que imprima misturaria lixo ao JSON — resposta
+    ausente ou inválida continua sendo recusa.
     """
+    probe_report = out_dir / ".vectorize-module-probe.json"
     try:
         completed = subprocess.run(
-            [str(python), "-c", _MODULE_PROBE, module],
+            [str(python), "-c", _MODULE_PROBE, module, str(probe_report)],
             cwd=str(out_dir),
             capture_output=True,
             text=True,
@@ -403,11 +410,13 @@ def _resolve_module_entry(
             f"verificação do pin: {stderr!r}"
         )
     try:
-        origin = json.loads(completed.stdout)["origin"]
-    except (ValueError, KeyError, TypeError) as exc:
+        origin = json.loads(probe_report.read_text(encoding="utf-8"))["origin"]
+    except (OSError, ValueError, KeyError, TypeError) as exc:
         raise VectorizeError(
             f"saída inválida ao resolver o módulo {module!r}: {exc}"
         ) from exc
+    finally:
+        probe_report.unlink(missing_ok=True)
     resolved = Path(origin).resolve()
     if not resolved.is_file():
         raise VectorizeError(

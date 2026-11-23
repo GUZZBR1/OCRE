@@ -636,6 +636,28 @@ class RunVectorizeModuleModeTests(unittest.TestCase):
             str(extra_dir.resolve()) + os.pathsep + str(self.mod_dir.resolve()),
         )
 
+    def test_module_mode_tolerates_noisy_package_init(self):
+        # find_spec importa os pacotes-pai do módulo: um __init__ que
+        # imprime em stdout não pode corromper a resposta da sonda,
+        # que vai por arquivo em out_dir — não por stdout.
+        pkg = self.mod_dir / "noisypkg"
+        pkg.mkdir()
+        (pkg / "__init__.py").write_text(
+            "print('Carregando exportadores')\n", encoding="utf-8"
+        )
+        shutil.copyfile(FAKE, pkg / "mod.py")
+        result = run_vectorize(
+            self.png, FAKE, self.fake_sha, self.tmp / "out",
+            module="noisypkg.mod", pythonpath=self.mod_dir,
+        )
+        self.assertEqual(result["returncode"], 0)
+        self.assertEqual(
+            result["module_origin"], str((pkg / "mod.py").resolve())
+        )
+        # O __init__ barulhento rodou de verdade (a importação acontece
+        # tanto na sonda quanto no `-m`) — e nada quebrou.
+        self.assertIn("Carregando exportadores", result["stdout"])
+
 
 if __name__ == "__main__":
     unittest.main()
