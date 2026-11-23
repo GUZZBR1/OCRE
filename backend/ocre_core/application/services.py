@@ -334,6 +334,8 @@ class OCREApplication:
             )
         except IdempotencyConflict as exc:
             raise ApplicationError("idempotency_key_reused", 409, "Idempotency key was reused") from exc
+        except PersistenceConflict as exc:
+            raise ApplicationError("sequence_conflict", 409, "Job sequence changed; reload the current status") from exc
         return {
             "job_id": receipt.snapshot.job_id,
             "project_id": project_id,
