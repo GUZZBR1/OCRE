@@ -13,7 +13,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from draw.png_helper import write_png
+from tests.draw.png_helper import write_png
 from ocre_core.draw.step_export import find_step_worker_python
 from ocre_core.draw.document import document_sha256
 

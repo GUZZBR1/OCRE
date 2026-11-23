@@ -20,7 +20,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from draw.png_helper import write_png
+from tests.draw.png_helper import write_png
 from ocre_core.draw.cli import main
 from ocre_core.draw.document import add_stroke, new_document, stabilize_stroke
 from ocre_core.draw.dxf_export import build_dxf

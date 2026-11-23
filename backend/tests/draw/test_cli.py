@@ -18,7 +18,7 @@ from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from unittest import mock
 
-from draw.png_helper import write_png
+from tests.draw.png_helper import write_png
 from ocre_core.draw.cli import main
 from ocre_core.draw.fingerprint import parse_encoded
 from ocre_core.draw.sidecar import validate_draw_sidecar
