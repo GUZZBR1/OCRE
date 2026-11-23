@@ -88,10 +88,6 @@ OPEN_STROKES_POLICIES = ("fail", "skip-open")
 # Epsilon geométrico do host (mm): separa "encostado" de "claramente
 # separado/contido" nos testes de cruzamento e contenção.
 _GEOM_EPS = 1e-9
-# Tolerância de borda para círculos analíticos: o fit arredonda a 3
-# casas e um círculo tangente à folha pode exceder cx±r em ~1µm —
-# ruído numérico, não geometria fora da folha.
-CIRCLE_SHEET_EPS_MM = 1e-3
 # Traço ``shape="circle"`` SEM bloco ``circle``: o ajuste Kåsa só
 # promove a polilinha a circunferência analítica quando o desvio radial
 # máximo cabe em ``max(0.05 mm, 0.1% do raio)`` — senão segue a
@@ -383,6 +379,36 @@ def _stroke_circle(
     return {"center_mm": [cx, height_mm - cy], "radius_mm": r}
 
 
+def _check_stroke_point(
+    stroke_id: str, point: Any, width_mm: float, height_mm: float
+) -> list[float]:
+    """Ponto [x, y] validado, já com o flip CAD (``y_cad = height - y``).
+
+    Mesma regra de ``document._check_points``: bool e não-número (str,
+    None, ...) recusam ANTES do ``float()`` — bool não é número aqui e
+    ``float()`` deixaria ``TypeError`` escapar cru.
+    """
+    if (
+        not isinstance(point, (list, tuple))
+        or len(point) != 2
+        or any(
+            isinstance(v, bool) or not isinstance(v, (int, float))
+            for v in point
+        )
+    ):
+        raise StepExportError(f"traço {stroke_id}: ponto inválido {point!r}")
+    x, y = float(point[0]), float(point[1])
+    if not (math.isfinite(x) and math.isfinite(y)):
+        raise StepExportError(f"traço {stroke_id}: ponto não finito {point!r}")
+    if not (0.0 <= x <= width_mm and 0.0 <= y <= height_mm):
+        raise StepExportError(
+            f"traço {stroke_id}: ponto fora da folha ({x}, {y}) "
+            f"para papel {width_mm} x {height_mm} mm"
+        )
+    # Papel y-down -> CAD y-up (mesma regra do DXF F0).
+    return [x, height_mm - y]
+
+
 def _closed_stable_profiles(
     document: dict,
     *,
@@ -434,6 +460,17 @@ def _closed_stable_profiles(
         if status != "stable":
             raise StepExportError(f"traço {stroke_id}: status desconhecido {status!r}")
         if not stroke.get("closed", False):
+            points_mm = stroke.get("points_mm")
+            if isinstance(points_mm, list) and len(points_mm) == 1:
+                # 1 ponto não vira aresta nem sólido — mesma regra do
+                # escritor DXF (reason="single_point"): o ponto ainda é
+                # validado e o traço registrado como pulado em qualquer
+                # política, nunca aborta a exportação.
+                _check_stroke_point(
+                    stroke_id, points_mm[0], width_mm, height_mm)
+                skipped.append(
+                    {"stroke_id": stroke_id, "reason": "single_point"})
+                continue
             if open_strokes_policy == "fail":
                 # Traço aberto NUNCA vira sólido — recusa fail-closed,
                 # mesmo que haja outros traços fechados no documento.
@@ -450,30 +487,10 @@ def _closed_stable_profiles(
             raise StepExportError(
                 f"traço {stroke_id}: traço fechado com menos de 3 pontos"
             )
-        clean: list[list[float]] = []
-        for point in points:
-            # Mesma regra de document._check_points: bool e não-número
-            # (str, None, ...) são recusados ANTES do float() — bool não
-            # é número aqui e float() deixaria TypeError escapar cru.
-            if (
-                not isinstance(point, (list, tuple))
-                or len(point) != 2
-                or any(
-                    isinstance(v, bool) or not isinstance(v, (int, float))
-                    for v in point
-                )
-            ):
-                raise StepExportError(f"traço {stroke_id}: ponto inválido {point!r}")
-            x, y = float(point[0]), float(point[1])
-            if not (math.isfinite(x) and math.isfinite(y)):
-                raise StepExportError(f"traço {stroke_id}: ponto não finito {point!r}")
-            if not (0.0 <= x <= width_mm and 0.0 <= y <= height_mm):
-                raise StepExportError(
-                    f"traço {stroke_id}: ponto fora da folha ({x}, {y}) "
-                    f"para papel {width_mm} x {height_mm} mm"
-                )
-            # Papel y-down -> CAD y-up (mesma regra do DXF F0).
-            clean.append([x, height_mm - y])
+        clean = [
+            _check_stroke_point(stroke_id, point, width_mm, height_mm)
+            for point in points
+        ]
         contours.append({
             "stroke_id": stroke_id,
             "points": clean,

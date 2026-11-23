@@ -269,7 +269,7 @@ class CliExportTests(unittest.TestCase):
                     self.assertFalse(
                         (tmp_path / "out" / "document.json").exists())
 
-    def test_export_requires_explicit_origin(self):
+    def test_export_fails_when_png_missing(self):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             png = tmp_path / "canvas.png"

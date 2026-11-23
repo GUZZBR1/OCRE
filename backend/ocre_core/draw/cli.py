@@ -1524,6 +1524,7 @@ def _cmd_beta_run(args: argparse.Namespace) -> int:
             "material": args.material,
             "open_strokes_policy": args.open_strokes_policy,
             "ocs_binary": args.ocs_binary,
+            "stamps": args.stamps,
             "draw_config": args.draw_config,
             "document": args.document,
             "fmu": args.fmu,

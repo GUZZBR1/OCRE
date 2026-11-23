@@ -155,6 +155,12 @@ def _normalize_primitives_with_skipped_types(
     polylines: list[dict] = []
     skipped_types: list[str] = []
     for primitive in primitives:
+        if not isinstance(primitive, dict):
+            # Elemento malformado (null, string, número): conta como
+            # tipo não reconhecido, nunca deixa AttributeError escapar
+            # cru — o contrato do runner é VectorizeError/lista de skips.
+            skipped_types.append("non-dict")
+            continue
         polyline_type = str(primitive.get("type", "unknown"))
         stamps = _primitive_stamps(primitive)
         points = primitive.get("points_mm") or primitive.get("corners_mm")
