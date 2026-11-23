@@ -267,6 +267,29 @@ class ValidatorTests(unittest.TestCase):
             report = validate(eir, bundle, groups, bundle_root=root, purpose="execution_preflight", adapter_capabilities=caps)
             self.assertIn("group_manifest_content_mismatch", {d.code for d in report.diagnostics})
 
+    def test_missing_ids_do_not_produce_spurious_manifest_mismatch(self):
+        eir, bundle, groups = load("eir.json"), load("input-bundle.json"), load("mesh-group-manifest.json")
+        del eir["simulation_cases"][0]["group_manifest_ref"]
+        artifact = bundle["artifacts"][0]
+        del artifact["artifact_id"]
+        artifact["usage"] = "required"
+        diagnostics = []
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            for item in bundle["artifacts"]:
+                target = root / item["uri"]
+                target.parent.mkdir(parents=True, exist_ok=True)
+                if item.get("artifact_id") == "groups_axial_bar":
+                    target.write_bytes((EXAMPLES / "mesh-group-manifest.json").read_bytes())
+                else:
+                    target.write_bytes(b"{}")
+                item["sha256"] = hashlib.sha256(target.read_bytes()).hexdigest()
+            profile = json.loads((validator.PROFILE_DIR / "structural.axial_bar.v1.json").read_text(encoding="utf-8"))
+            unit_profile = json.loads((validator.PROFILE_DIR / "ucum.structural_axial.v1.json").read_text(encoding="utf-8"))
+            validator._semantic(eir, bundle, groups, root, "execution_preflight", None,
+                                diagnostics, 1024 * 1024, 1024 * 1024, profile, unit_profile)
+            self.assertNotIn("group_manifest_content_mismatch", {d.code for d in diagnostics})
+
     def test_preflight_hashes_only_confined_bytes_and_checks_groups(self):
         eir, bundle, groups = load("eir.json"), load("input-bundle.json"), load("mesh-group-manifest.json")
         with tempfile.TemporaryDirectory() as temp:

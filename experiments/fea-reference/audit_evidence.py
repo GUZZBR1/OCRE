@@ -152,12 +152,21 @@ def audit_prepared_manifest(root: Path, manifest: dict[str, Any]) -> tuple[list[
     for index, raw_item in enumerate(artifacts):
         item = required_object(raw_item, f"mesh_artifacts[{index}]")
         # `prepare-gmsh` emits geometry/mesh/deck triples; the C3D8 baseline
-        # `prepare` emits a single self-contained deck as input/sha256.
-        pairs = (("input", "sha256"),) if "input" in item or "sha256" in item else (
-            ("geometry", "geometry_sha256"),
-            ("mesh_input", "mesh_sha256"),
-            ("analysis_input", "analysis_sha256"),
-        )
+        # `prepare` emits a single self-contained deck as input/sha256. An
+        # item that mixes both shapes would leave part of its declared paths
+        # unverified, so it is rejected instead of guessed.
+        triple_keys = ("geometry", "mesh_input", "analysis_input")
+        if "input" in item or "sha256" in item:
+            if any(key in item for key in triple_keys):
+                errors.append(f"mesh_artifacts[{index}] mixes single-deck and gmsh triple shapes")
+                continue
+            pairs = (("input", "sha256"),)
+        else:
+            pairs = (
+                ("geometry", "geometry_sha256"),
+                ("mesh_input", "mesh_sha256"),
+                ("analysis_input", "analysis_sha256"),
+            )
         for path_key, digest_key in pairs:
             if path_key not in item or digest_key not in item:
                 errors.append(f"mesh_artifacts[{index}] requires {path_key} and {digest_key}")

@@ -229,6 +229,11 @@ def test_cancellation_records_reject_wrong_field_types():
         CancellationEvidence(
             "", J.QUEUED, CancellationEvidenceKind.WORKER_START_PREVENTED, NOW
         )
+    with pytest.raises(ValueError):
+        CancellationEvidence(
+            "j1", J.QUEUED, CancellationEvidenceKind.WORKER_START_PREVENTED,
+            NOW.replace(tzinfo=None),
+        )
     with pytest.raises(TypeError):
         event(J.CANCEL_REQUESTED, J.COLLECTING, cancellation_origin="queued")
     with pytest.raises(TypeError):

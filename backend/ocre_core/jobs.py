@@ -118,6 +118,8 @@ class CancellationEvidence:
             raise TypeError("kind must be a CancellationEvidenceKind")
         if not isinstance(self.observed_at, datetime):
             raise TypeError("observed_at must be a datetime")
+        if self.observed_at.tzinfo is None or self.observed_at.utcoffset() is None:
+            raise ValueError("observed_at must be timezone-aware")
 
 
 @dataclass(frozen=True)

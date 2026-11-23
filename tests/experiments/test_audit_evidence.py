@@ -91,6 +91,24 @@ class AuditEvidenceTests(unittest.TestCase):
             self.assertTrue(any("mesh_input" in error for error in errors))
             self.assertTrue(any("analysis_input" in error for error in errors))
 
+    def test_prepared_manifest_rejects_mixed_single_deck_and_triple_shapes(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            (root / "deck.inp").write_bytes(b"DECK")
+            (root / "geo.geo").write_bytes(b"GEO")
+            manifest = {"mesh_artifacts": [{
+                "input": "deck.inp",
+                "sha256": sha256(root / "deck.inp"),
+                "geometry": "geo.geo",
+                "geometry_sha256": sha256(root / "geo.geo"),
+                "mesh_input": "mesh.inp",
+                "mesh_sha256": "0" * 64,
+                "analysis_input": "a.inp",
+                "analysis_sha256": "0" * 64,
+            }]}
+            _, _, errors = audit_evidence.audit_manifest(root, manifest)
+            self.assertTrue(any("mixes" in error for error in errors), errors)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -69,3 +69,18 @@ def test_record_decode_enforces_declared_field_types():
     # Encode-side symmetry: a record whose fields break the schema is not writable.
     with pytest.raises(TypeError):
         dumps(JobSnapshot("j", "queued", 1, NOW))
+
+
+def test_field_type_matching_checks_collection_elements():
+    from ocre_core.persistence.codec import _matches
+    assert _matches({"a": 1}, dict[str, int])
+    assert not _matches({"a": "x"}, dict[str, int])
+    assert not _matches({1: 1}, dict[str, int])
+    assert _matches([1, 2], list[int])
+    assert not _matches([1, "x"], list[int])
+    assert _matches({1, 2}, set[int])
+    assert not _matches({1, "x"}, set[int])
+    assert _matches((1, "x"), tuple[int, str])
+    assert not _matches((1, 2), tuple[int, str])
+    assert _matches((1, 2, 3), tuple[int, ...])
+    assert not _matches((1, "x"), tuple[int, ...])

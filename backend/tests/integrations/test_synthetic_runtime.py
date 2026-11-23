@@ -327,3 +327,11 @@ def test_failures_never_expose_approval_or_scientific_result(tmp_path):
     assert status["result_available"] is False
     assert all(report.outcome is SyntheticOutcome.FAILED for report in runtimes[tenant].reports)
     assert all("static result" not in report.result for report in runtimes[tenant].reports)
+
+
+def test_scoped_outbox_rejects_non_positive_limits(tmp_path):
+    _, _, _, runtimes = setup_runtime(tmp_path)
+    with pytest.raises(ValueError):
+        runtimes["tenant-a"].pending_messages(0)
+    with pytest.raises(ValueError):
+        runtimes["tenant-a"].pending_messages(-1)
