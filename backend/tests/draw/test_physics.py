@@ -8,16 +8,27 @@ Engine tests are skipped, not faked, when the engine is not installed in
 the venv: ``pybullet_available`` / ``mujoco_available`` /
 ``pinocchio_available`` decide. Newton is NOT part of this module by user
 decision (2026-11-05) and is never imported here.
+
+Exception to "skipped, not faked": ``CaseResultShapeTests`` injects fake
+engine modules in ``sys.modules`` — not to claim physics results, but to
+reach the result-dict assembly of ``run_pybullet_case`` /
+``run_mujoco_case``, which is otherwise dead code in a venv without the
+engines (characterization for the ``_case_result`` refactor).
 """
 from __future__ import annotations
 
+import contextlib
 import json
 import math
+import sys
+import types
 import unittest
 
 from ocre_core.draw.physics import (
     AXIAL_BAR,
+    DEFAULT_DROP_GAP_M,
     DEFAULT_TOLERANCE,
+    GRAVITY_M_S2,
     BarParams,
     PhysicsModelError,
     bar_mass_inertia,
@@ -230,6 +241,229 @@ class ContactCaseTests(unittest.TestCase):
             self.assertTrue(report["pinocchio_check"]["passed"], report["pinocchio_check"])
         else:
             self.assertFalse(report["pinocchio_check"]["available"])
+
+
+# ---------------------------------------------------------------------------
+# Caracterização do dict de resultado (F-031)
+#
+# Os corpos de ``run_pybullet_case``/``run_mujoco_case`` têm 0% de cobertura
+# neste venv (engines ausentes). Os fakes abaixo implementam SÓ a superfície
+# de API que cada runner usa, para alcançar a montagem do dict de 11 chaves
+# — sem afirmar nada sobre física de verdade. O teste sobrevive à extração
+# de ``_case_result`` porque verifica comportamento observável do runner.
+# ---------------------------------------------------------------------------
+
+CASE_RESULT_KEYS = {
+    "engine", "version", "headless", "model_sha256", "timestep_s",
+    "duration_s", "drop_gap_m", "gravity_m_s2", "envelope", "series",
+    "peak_contact_point_m",
+}
+
+ENVELOPE_KEYS = {
+    "f_max_N", "t_peak_s", "rms_N", "p95_N", "impulse_Ns", "n_steps",
+    "n_contact_steps", "duration_s",
+}
+
+
+def _pb_contact(force_n, pos=(0.01, 0.0, 0.005)):
+    """Tuple no formato ``getContactPoints``: [5]=positionOnA, [9]=normalForce."""
+    return (0, 0, 0, 0, 0, pos, 0, 0, 0, force_n)
+
+
+class _FakePyBullet(types.ModuleType):
+    """``import pybullet`` falso: só a API que ``run_pybullet_case`` usa."""
+
+    DIRECT = "DIRECT"
+
+    def __init__(self, contacts_by_step):
+        super().__init__("pybullet")
+        self.__version__ = "0.0.0-fake"
+        self._contacts_by_step = dict(contacts_by_step)
+        self._step = -1
+
+    def connect(self, mode):
+        return 10
+
+    def disconnect(self, client):
+        pass
+
+    def setAdditionalSearchPath(self, path):
+        pass
+
+    def setGravity(self, gx, gy, gz):
+        pass
+
+    def setTimeStep(self, timestep):
+        pass
+
+    def loadURDF(self, path, basePosition=None, useFixedBase=False):
+        return 1 if path.endswith("plane.urdf") else 2
+
+    def stepSimulation(self):
+        self._step += 1
+
+    def getContactPoints(self, bodyA=None, bodyB=None):
+        return list(self._contacts_by_step.get(self._step, ()))
+
+
+class _FakePybulletData(types.ModuleType):
+    """``import pybullet_data`` falso."""
+
+    def __init__(self):
+        super().__init__("pybullet_data")
+
+    def getDataPath(self):
+        return "/fake/pybullet_data"
+
+
+class _FakeMjContact:
+    """Contato MJCF falso: ``exclude``/``geom*``/``pos`` + força carregada."""
+
+    def __init__(self, *, geom1, geom2, pos, force, exclude=0):
+        self.geom1 = geom1
+        self.geom2 = geom2
+        self.pos = pos
+        self.force = force
+        self.exclude = exclude
+
+
+class _FakeMujoco(types.ModuleType):
+    """``import mujoco`` falso: só a API que ``run_mujoco_case`` usa.
+
+    ``mj_step`` avança um relógio no ``data`` e expõe os contatos
+    programados para aquele passo; ``mj_contactForce`` devolve a força
+    declarada no contato (``force6[0]`` = normal).
+    """
+
+    BAR_GEOM_ID = 42
+
+    def __init__(self, contacts_by_step, timestep=0.001):
+        super().__init__("mujoco")
+        self.__version__ = "0.0.0-fake"
+        self.mjtObj = types.SimpleNamespace(mjOBJ_GEOM="geom")
+        self.MjModel = types.SimpleNamespace(
+            from_xml_string=lambda xml: types.SimpleNamespace(
+                opt=types.SimpleNamespace(timestep=timestep)))
+        self._data = types.SimpleNamespace(step=-1, ncon=0, contact=[])
+        self.MjData = lambda model: self._data
+        self._contacts_by_step = dict(contacts_by_step)
+
+    def mj_name2id(self, model, objtype, name):
+        return self.BAR_GEOM_ID
+
+    def mj_step(self, model, data):
+        data.step += 1
+        data.contact = list(self._contacts_by_step.get(data.step, ()))
+        data.ncon = len(data.contact)
+
+    def mj_contactForce(self, model, data, index, out):
+        out[0] = data.contact[index].force
+
+
+@contextlib.contextmanager
+def _fake_engine_modules(**modules):
+    """Registra módulos fake em ``sys.modules`` e restaura ao sair."""
+    saved = {name: sys.modules.get(name) for name in modules}
+    sys.modules.update(modules)
+    try:
+        yield
+    finally:
+        for name, old in saved.items():
+            if old is None:
+                sys.modules.pop(name, None)
+            else:
+                sys.modules[name] = old
+
+
+class CaseResultShapeTests(unittest.TestCase):
+    """Forma do dict de resultado dos casos de contato (caracterização).
+
+    Roda sem os engines instalados: os fakes entram em ``sys.modules``
+    só durante a chamada. Verifica as 11 chaves, os valores declarados
+    (engine/headless/timestep/duration/gap/gravidade/modelo) e a
+    integração com ``envelope_from_series`` + ``_impulse_per_step``.
+    """
+
+    def test_pybullet_result_dict_shape(self):
+        # Contato a partir do passo 5: força crescente, pico no último.
+        timestep = 1.0 / 240.0
+        duration_s = 0.05  # 12 passos
+        contacts = {i: (_pb_contact(100.0 + i),) for i in range(5, 12)}
+        with _fake_engine_modules(pybullet=_FakePyBullet(contacts),
+                                  pybullet_data=_FakePybulletData()):
+            result = run_pybullet_case(duration_s=duration_s)
+        self.assertEqual(set(result), CASE_RESULT_KEYS)
+        self.assertEqual(result["engine"], "pybullet")
+        self.assertEqual(result["version"], "0.0.0-fake")
+        self.assertEqual(result["headless"], "p.DIRECT")
+        self.assertEqual(result["model_sha256"], model_sha256(AXIAL_BAR))
+        self.assertEqual(result["timestep_s"], timestep)
+        self.assertEqual(result["duration_s"], duration_s)
+        self.assertEqual(result["drop_gap_m"], DEFAULT_DROP_GAP_M)
+        self.assertEqual(result["gravity_m_s2"], GRAVITY_M_S2)
+        series = result["series"]
+        self.assertEqual(len(series), 12)
+        self.assertTrue(all(set(s) == {"t_s", "f_normal_N"} for s in series))
+        self.assertEqual([s["t_s"] for s in series],
+                         [i * timestep for i in range(12)])
+        forces = [s["f_normal_N"] for s in series]
+        self.assertEqual(forces, [0.0] * 5 + [100.0 + i for i in range(5, 12)])
+        envelope = result["envelope"]
+        self.assertEqual(set(envelope), ENVELOPE_KEYS)
+        self.assertEqual(envelope["f_max_N"], 111.0)
+        self.assertEqual(envelope["t_peak_s"], 11 * timestep)
+        self.assertEqual(envelope["n_steps"], 12)
+        self.assertEqual(envelope["n_contact_steps"], 7)
+        self.assertEqual(envelope["duration_s"],
+                         series[-1]["t_s"] - series[0]["t_s"])
+        # Impulso por-passo: soma retangular f·Δt (não trapezoidal).
+        self.assertAlmostEqual(envelope["impulse_Ns"],
+                               sum(forces) * timestep, places=15)
+        self.assertEqual(result["peak_contact_point_m"], [0.01, 0.0, 0.005])
+
+    def test_mujoco_result_dict_shape(self):
+        timestep = 0.001
+        duration_s = 0.02  # 20 passos
+        contacts = {
+            i: (_FakeMjContact(geom1=_FakeMujoco.BAR_GEOM_ID, geom2=0,
+                               pos=(0.02, 0.0, 0.005), force=50.0 + i),)
+            for i in range(8, 20)
+        }
+        with _fake_engine_modules(
+                mujoco=_FakeMujoco(contacts, timestep=timestep)):
+            result = run_mujoco_case(duration_s=duration_s)
+        self.assertEqual(set(result), CASE_RESULT_KEYS)
+        self.assertEqual(result["engine"], "mujoco")
+        self.assertEqual(result["version"], "0.0.0-fake")
+        self.assertEqual(result["headless"], "mj_step (CPU, sem viewer)")
+        self.assertEqual(result["model_sha256"], model_sha256(AXIAL_BAR))
+        self.assertEqual(result["timestep_s"], timestep)
+        self.assertEqual(result["duration_s"], duration_s)
+        self.assertEqual(result["drop_gap_m"], DEFAULT_DROP_GAP_M)
+        self.assertEqual(result["gravity_m_s2"], GRAVITY_M_S2)
+        series = result["series"]
+        self.assertEqual(len(series), 20)
+        self.assertTrue(all(set(s) == {"t_s", "f_normal_N"} for s in series))
+        forces = [s["f_normal_N"] for s in series]
+        self.assertEqual(forces, [0.0] * 8 + [50.0 + i for i in range(8, 20)])
+        envelope = result["envelope"]
+        self.assertEqual(set(envelope), ENVELOPE_KEYS)
+        self.assertEqual(envelope["f_max_N"], 69.0)
+        self.assertEqual(envelope["n_steps"], 20)
+        self.assertEqual(envelope["n_contact_steps"], 12)
+        self.assertAlmostEqual(envelope["impulse_Ns"],
+                               sum(forces) * timestep, places=15)
+        self.assertEqual(result["peak_contact_point_m"], [0.02, 0.0, 0.005])
+
+    def test_no_contact_steps_leaves_peak_point_none(self):
+        # Sem contatos em nenhum passo: série de zeros, pico ausente.
+        with _fake_engine_modules(pybullet=_FakePyBullet({}),
+                                  pybullet_data=_FakePybulletData()):
+            result = run_pybullet_case(duration_s=0.01)
+        self.assertEqual(set(result), CASE_RESULT_KEYS)
+        self.assertIsNone(result["peak_contact_point_m"])
+        self.assertEqual(result["envelope"]["n_contact_steps"], 0)
+        self.assertEqual(result["envelope"]["f_max_N"], 0.0)
 
 
 if __name__ == "__main__":
