@@ -253,6 +253,39 @@ def _resolve_ai_adapter(factory_spec: str):
     return require_model("cli-injected")
 
 
+def _add_common_args(sub: argparse.ArgumentParser) -> None:
+    """Flags shared by ``export`` and ``beta-run``.
+
+    Only flags identical in both subcommands — same option string,
+    required/default/choices AND same help — live here. Flags whose help
+    legitimately differs per subcommand stay inline next to the specific
+    ones.
+    """
+    sub.add_argument("--png", required=True, help="input canvas PNG")
+    sub.add_argument("--vectorize-script", required=True,
+                     help="path to santleme/draw-core src/draw/exporters/vectorize.py (never copied into OCRE)")
+    sub.add_argument("--vectorize-sha256", required=True,
+                     help="pinned SHA-256 of the vectorize script (verified before running)")
+    sub.add_argument("--vectorize-module", default=None,
+                     help="invoke the vectorizer as 'python -m MODULE' instead of "
+                          "executing the script file (required at draw-core HEAD, "
+                          "where vectorize.py uses package-relative imports); the "
+                          "pinned --vectorize-script file is still sha256-verified "
+                          "before running")
+    sub.add_argument("--vectorize-pythonpath", default=None,
+                     help="directories prepended to PYTHONPATH for "
+                          "--vectorize-module (e.g. <draw-core clone>/src); "
+                          "refused without --vectorize-module")
+    sub.add_argument("--origin", required=True, choices=list(_ORIGINS),
+                     help="document source origin (explicit, never a default)")
+    sub.add_argument("--draw-repo", required=True, help="Draw repo the artifacts came from")
+    sub.add_argument("--paper", default=None,
+                     help="paper format from the paper registry (operator flag; "
+                          "default: the current Draw paper, today A4)")
+    sub.add_argument("--clean", action="store_true",
+                     help="request clean vectorization")
+
+
 def _build_parser() -> argparse.ArgumentParser:
     from .step_export import OPEN_STROKES_POLICIES
 
@@ -263,30 +296,13 @@ def _build_parser() -> argparse.ArgumentParser:
     sub = parser.add_subparsers(dest="command", required=True)
 
     exp = sub.add_parser("export", help="vectorize a PNG and export DXF + sidecar + fingerprint")
-    exp.add_argument("--png", required=True, help="input canvas PNG")
-    exp.add_argument("--vectorize-script", required=True,
-                     help="path to santleme/draw-core src/draw/exporters/vectorize.py (never copied into OCRE)")
-    exp.add_argument("--vectorize-sha256", required=True,
-                     help="pinned SHA-256 of the vectorize script (verified before running)")
+    _add_common_args(exp)
     exp.add_argument("--vectorize-python", default=None,
                      help="python interpreter for the vectorize subprocess "
                           "(default: OCRE_VECTORIZE_PYTHON env, else the "
                           "interpreter running this CLI); the resolved path is "
                           "recorded in export_parameters")
-    exp.add_argument("--vectorize-module", default=None,
-                     help="invoke the vectorizer as 'python -m MODULE' instead of "
-                          "executing the script file (required at draw-core HEAD, "
-                          "where vectorize.py uses package-relative imports); the "
-                          "pinned --vectorize-script file is still sha256-verified "
-                          "before running")
-    exp.add_argument("--vectorize-pythonpath", default=None,
-                     help="directories prepended to PYTHONPATH for "
-                          "--vectorize-module (e.g. <draw-core clone>/src); "
-                          "refused without --vectorize-module")
     exp.add_argument("--out-dir", required=True, help="output directory for the derivatives")
-    exp.add_argument("--origin", required=True, choices=list(_ORIGINS),
-                     help="document source origin (explicit, never a default)")
-    exp.add_argument("--draw-repo", required=True, help="Draw repo the artifacts came from")
     exp.add_argument("--draw-commit", required=True,
                      help="pinned Draw revision, full 40-hex git SHA (sidecar requires it)")
     exp.add_argument("--order-kind", default=None,
@@ -298,9 +314,6 @@ def _build_parser() -> argparse.ArgumentParser:
                      help="carimbos temporais do Draw (.npz), repassados "
                           "ao vectorize; primitivas com t_start_ms/t_end_ms "
                           "implicam order_kind temporal-stamps")
-    exp.add_argument("--paper", default=None,
-                     help="paper format from the paper registry (operator flag; "
-                          "default: the current Draw paper, today A4)")
     exp.add_argument("--ai-adapter-factory", default=None,
                      help="optional module:callable returning a ModelAdapter")
     exp.add_argument("--draw-config", default=None,
@@ -310,8 +323,6 @@ def _build_parser() -> argparse.ArgumentParser:
     exp.add_argument("--doc-id", default=None, help="document UUID v4 (generated if omitted)")
     exp.add_argument("--timeout-s", type=float, default=300.0,
                      help="vectorize subprocess timeout in seconds")
-    exp.add_argument("--clean", action="store_true",
-                     help="request clean vectorization")
     exp.add_argument("--epsilon", type=float, default=None)
     exp.add_argument("--thinning", default=None)
     exp.add_argument("--max-p95-px", type=float, default=None,
@@ -353,37 +364,15 @@ def _build_parser() -> argparse.ArgumentParser:
         "beta-run",
         help="run the whole beta v0.1 chain end-to-end (PNG -> CAD -> "
              "STEP -> FEA -> physics -> viz/PDF)")
-    beta.add_argument("--png", required=True, help="input canvas PNG")
-    beta.add_argument("--vectorize-script", required=True,
-                      help="path to santleme/draw-core src/draw/exporters/vectorize.py (never copied "
-                           "into OCRE)")
-    beta.add_argument("--vectorize-sha256", required=True,
-                      help="pinned SHA-256 of the vectorize script "
-                           "(verified before running)")
+    _add_common_args(beta)
     beta.add_argument("--vectorize-python", default=None,
                       help="python interpreter for the vectorize subprocess "
                            "(default: OCRE_VECTORIZE_PYTHON env, else the "
                            "interpreter running this CLI)")
-    beta.add_argument("--vectorize-module", default=None,
-                      help="invoke the vectorizer as 'python -m MODULE' instead "
-                           "of executing the script file (required at draw-core "
-                           "HEAD, where vectorize.py uses package-relative "
-                           "imports); the pinned --vectorize-script file is "
-                           "still sha256-verified before running")
-    beta.add_argument("--vectorize-pythonpath", default=None,
-                      help="directories prepended to PYTHONPATH for "
-                           "--vectorize-module (e.g. <draw-core clone>/src); "
-                           "refused without --vectorize-module")
     beta.add_argument("--out-dir", required=True,
                       help="output directory (report + step subdirs)")
-    beta.add_argument("--origin", required=True, choices=list(_ORIGINS),
-                      help="document source origin (explicit, never a default)")
-    beta.add_argument("--draw-repo", required=True,
-                      help="Draw repo the artifacts came from")
     beta.add_argument("--draw-commit", required=True,
                       help="pinned Draw revision, full 40-hex git SHA")
-    beta.add_argument("--clean", action="store_true",
-                      help="request clean vectorization")
     beta.add_argument("--stamps", default=None, metavar="STAMPS.npz",
                       help="carimbos temporais do Draw (.npz) para o "
                            "vectorize (passo export)")
@@ -416,9 +405,6 @@ def _build_parser() -> argparse.ArgumentParser:
                       help="OpenCADStudio binary for the live-CAD step "
                            "(default: OCS_BINARY env or PATH; without it "
                            "the step is skipped-unavailable, honestly)")
-    beta.add_argument("--paper", default=None,
-                      help="paper format from the paper registry (operator flag; "
-                           "default: the current Draw paper, today A4)")
     beta.add_argument("--draw-config", default=None,
                       help="path to Draw's config.py (paper source; "
                            "overrides the default paper)")
