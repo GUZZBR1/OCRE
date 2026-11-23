@@ -267,6 +267,17 @@ class StepExportHostTests(unittest.TestCase):
         with self.assertRaises(StepExportError):
             document_to_step(doc, THICKNESS_MM, "PLA", Path("x.step"))
 
+    def test_fit_ignores_repeated_closing_point(self):
+        """Primeiro ponto repetido no fim do anel: a aresta degenerada
+        não é auto-interseção — o círculo ajusta normalmente."""
+        cpts = [[55.0 + 5.0 * math.cos(2 * math.pi * i / 16),
+                 30.0 + 5.0 * math.sin(2 * math.pi * i / 16)]
+                for i in range(16)]
+        cpts.append(list(cpts[0]))
+        doc = make_doc([stroke("s-0001", cpts, closed=True, shape="circle")])
+        contours, _ids, _skipped = step_export._closed_stable_profiles(doc)
+        self.assertIsNotNone(contours[0]["circle"])
+
     def test_fitted_circle_out_of_sheet_stays_a_polyline(self):
         """Vértices dentro da folha não bastam: a circunferência
         ajustada inteira precisa caber — losango com vértices dentro

@@ -305,8 +305,10 @@ def _fit_circle_mm(
     if max(gaps) > math.pi / 3.0:
         return None
     # Anel auto-intersectante (bow tie et al.) também ajusta bem —
-    # ``circle`` depois escaparia da checagem intra-anel.
-    ring = list(points)
+    # ``circle`` depois escaparia da checagem intra-anel. ``_ring``
+    # tira o ponto de fechamento repetido (aresta degenerada seria
+    # falso positivo de toque).
+    ring = _ring(points)
     segs = list(zip(ring, ring[1:] + ring[:1]))
     n = len(segs)
     for i in range(n):
@@ -315,12 +317,14 @@ def _fit_circle_mm(
                 continue  # arestas adjacentes dividem o vértice do anel
             if _segments_cross(*segs[i], *segs[j]):
                 return None
-    # Folha: a circunferência inteira (não só os vértices) deve caber.
+    # Folha: a circunferência inteira (não só os vértices) deve caber
+    # ESTRITO — diferente do bloco declarado, o fit é promoção
+    # inferida: um círculo ajustado que saia ~1µm para fora poderia
+    # cruzar o contorno da chapa na borda da folha e derrubar o STEP
+    # inteiro; cair para a polilinha documentada é sempre seguro.
     if not (
-        -CIRCLE_SHEET_EPS_MM <= cx - radius
-        and cx + radius <= width_mm + CIRCLE_SHEET_EPS_MM
-        and -CIRCLE_SHEET_EPS_MM <= cy - radius
-        and cy + radius <= height_mm + CIRCLE_SHEET_EPS_MM
+        0.0 <= cx - radius and cx + radius <= width_mm
+        and 0.0 <= cy - radius and cy + radius <= height_mm
     ):
         return None
     return {"center_mm": [cx, cy], "radius_mm": radius, "fitted": True}
