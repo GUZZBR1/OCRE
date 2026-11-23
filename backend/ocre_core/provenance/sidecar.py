@@ -148,30 +148,9 @@ def _safe_local_file(root: Path, uri: Any) -> tuple[Path | None, str | None]:
     return resolved, None
 
 
-def audit_sidecar(evidence_root: Path, sidecar: dict[str, Any]) -> dict[str, Any]:
-    """Audit structure, local artifact confinement, hashes, and lineage.
-
-    Status is ``complete`` when all evidence links resolve, ``incomplete`` for
-    missing evidence/references, and ``invalid`` for malformed or contradictory
-    evidence. This status never means engineering readiness or mesh acceptance.
-    """
-    try:
-        root = evidence_root.resolve(strict=True)
-    except (OSError, RuntimeError) as exc:
-        raise ValueError("evidence root must be a resolvable directory") from exc
-    if not root.is_dir():
-        raise ValueError("evidence root must be a directory")
-    issues: list[dict[str, str]] = []
-    checks: list[dict[str, str]] = []
-    if not isinstance(sidecar, dict):
-        return {"status": "invalid", "checks": [],
-                "issues": [_issue("sidecar_type", "sidecar must be an object")]}
-    if sidecar.get("sidecar_version") != SIDECAR_VERSION:
-        issues.append(_issue("version", f"sidecar_version must be {SIDECAR_VERSION}"))
-    for field in ("case_id", "revision_id", "manifest_id"):
-        if not isinstance(sidecar.get(field), str) or not sidecar[field].strip():
-            issues.append(_issue("identity", f"{field} must be a non-empty string"))
-
+def _audit_manifest_ref(root: Path, sidecar: dict[str, Any],
+                        issues: list[dict[str, str]],
+                        checks: list[dict[str, str]]) -> dict[str, Any] | None:
     manifest_reference = sidecar.get("manifest_reference")
     prepared_manifest: dict[str, Any] | None = None
     if not isinstance(manifest_reference, dict):
@@ -202,7 +181,12 @@ def audit_sidecar(evidence_root: Path, sidecar: dict[str, Any]) -> dict[str, Any
                         issues.append(_issue("manifest_content", "prepared manifest root must be an object"))
                 checks.append({"artifact_id": str(sidecar.get("manifest_id", "")),
                                "uri": str(manifest_reference.get("uri")), "sha256": actual})
+    return prepared_manifest
 
+
+def _audit_sources(root: Path, sidecar: dict[str, Any],
+                   issues: list[dict[str, str]],
+                   checks: list[dict[str, str]]) -> tuple[dict[str, str], dict[str, dict[str, Any]]]:
     source_artifacts = sidecar.get("source_artifacts")
     sources_by_id: dict[str, str] = {}
     source_records_by_id: dict[str, dict[str, Any]] = {}
@@ -238,7 +222,11 @@ def audit_sidecar(evidence_root: Path, sidecar: dict[str, Any]) -> dict[str, Any
                 issues.append(_issue("source_hash_mismatch", f"source artifact {source_id or index} SHA-256 does not match"))
             else:
                 checks.append({"artifact_id": source_id or "", "uri": str(source.get("uri")), "sha256": actual})
+    return sources_by_id, source_records_by_id
 
+
+def _audit_groups(sidecar: dict[str, Any],
+                  issues: list[dict[str, str]]) -> tuple[Any, set[tuple[str, str]]]:
     groups = sidecar.get("groups")
     seen_groups: set[tuple[str, str]] = set()
     if not isinstance(groups, list):
@@ -259,7 +247,16 @@ def audit_sidecar(evidence_root: Path, sidecar: dict[str, Any]) -> dict[str, Any
             seen_groups.add(group_key)
             if not isinstance(group.get("mesh_artifact_id"), str) or not group["mesh_artifact_id"]:
                 issues.append(_issue("group_mesh_link", f"group {semantic_id} requires mesh_artifact_id"))
+    return groups, seen_groups
 
+
+def _audit_meshes(root: Path, sidecar: dict[str, Any], *,
+                 prepared_manifest: dict[str, Any] | None,
+                 sources_by_id: dict[str, str],
+                 source_records_by_id: dict[str, dict[str, Any]],
+                 groups: Any, seen_groups: set[tuple[str, str]],
+                 issues: list[dict[str, str]],
+                 checks: list[dict[str, str]]) -> None:
     meshes = sidecar.get("mesh_artifacts")
     mesh_ids: set[str] = set()
     manifest_meshes = prepared_manifest.get("mesh_artifacts") if prepared_manifest else None
@@ -377,6 +374,43 @@ def audit_sidecar(evidence_root: Path, sidecar: dict[str, Any]) -> dict[str, Any
                 expected = 1
             if expected is not None and observed != expected:
                 issues.append(_issue("manifest_group_mismatch", f"group {group.get('semantic_id')} count differs from the prepared manifest"))
+
+
+def audit_sidecar(evidence_root: Path, sidecar: dict[str, Any]) -> dict[str, Any]:
+    """Audit structure, local artifact confinement, hashes, and lineage.
+
+    Status is ``complete`` when all evidence links resolve, ``incomplete`` for
+    missing evidence/references, and ``invalid`` for malformed or contradictory
+    evidence. This status never means engineering readiness or mesh acceptance.
+    """
+    try:
+        root = evidence_root.resolve(strict=True)
+    except (OSError, RuntimeError) as exc:
+        raise ValueError("evidence root must be a resolvable directory") from exc
+    if not root.is_dir():
+        raise ValueError("evidence root must be a directory")
+    issues: list[dict[str, str]] = []
+    checks: list[dict[str, str]] = []
+    if not isinstance(sidecar, dict):
+        return {"status": "invalid", "checks": [],
+                "issues": [_issue("sidecar_type", "sidecar must be an object")]}
+    if sidecar.get("sidecar_version") != SIDECAR_VERSION:
+        issues.append(_issue("version", f"sidecar_version must be {SIDECAR_VERSION}"))
+    for field in ("case_id", "revision_id", "manifest_id"):
+        if not isinstance(sidecar.get(field), str) or not sidecar[field].strip():
+            issues.append(_issue("identity", f"{field} must be a non-empty string"))
+
+    prepared_manifest = _audit_manifest_ref(root, sidecar, issues, checks)
+
+    sources_by_id, source_records_by_id = _audit_sources(root, sidecar, issues, checks)
+
+    groups, seen_groups = _audit_groups(sidecar, issues)
+
+    _audit_meshes(root, sidecar, prepared_manifest=prepared_manifest,
+                  sources_by_id=sources_by_id,
+                  source_records_by_id=source_records_by_id,
+                  groups=groups, seen_groups=seen_groups,
+                  issues=issues, checks=checks)
 
     if any(item["state"] == "invalid" for item in issues):
         status = "invalid"
