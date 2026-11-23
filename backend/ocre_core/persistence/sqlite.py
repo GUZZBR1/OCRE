@@ -1,6 +1,7 @@
 """SQLite proof adapter for local atomicity and restart behavior only."""
 from __future__ import annotations
 
+import contextlib
 import sqlite3
 from dataclasses import dataclass, replace
 from datetime import datetime
@@ -29,6 +30,17 @@ class PersistedEvent:
     cursor: int
 
 
+@contextlib.contextmanager
+def _connection(database, **kwargs):
+    """`with sqlite3.connect()` alone only commits/rolls back; this also closes."""
+    db = sqlite3.connect(database, **kwargs)
+    try:
+        with db:
+            yield db
+    finally:
+        db.close()
+
+
 class SQLiteJobStore(JobPersistencePort):
     """Local SQLite adapter; no PostgreSQL/cloud compatibility is implied."""
 
@@ -42,11 +54,12 @@ class SQLiteJobStore(JobPersistencePort):
             CREATE TABLE IF NOT EXISTS outbox(message_id TEXT PRIMARY KEY, tenant TEXT, aggregate_id TEXT, event_id TEXT, topic TEXT, body BLOB, delivered INTEGER NOT NULL DEFAULT 0);
             """)
 
+    @contextlib.contextmanager
     def _connect(self):
-        db = sqlite3.connect(self.database, timeout=15, isolation_level=None)
-        db.execute("PRAGMA foreign_keys=ON")
-        db.execute("PRAGMA busy_timeout=15000")
-        return db
+        with _connection(self.database, timeout=15, isolation_level=None) as db:
+            db.execute("PRAGMA foreign_keys=ON")
+            db.execute("PRAGMA busy_timeout=15000")
+            yield db
 
     @staticmethod
     def _dump(value): return sqlite3.Binary(codec.dumps(value))
@@ -215,7 +228,7 @@ class FakeMessageConsumer:
     """Dedupe fake consumer whose processed IDs survive process recreation."""
     def __init__(self, database, handle):
         self.database,self.handle=database,handle
-        with sqlite3.connect(database) as db: db.execute("CREATE TABLE IF NOT EXISTS consumed(message_id TEXT PRIMARY KEY, status TEXT NOT NULL CHECK(status IN ('processing','processed')))")
+        with _connection(database) as db: db.execute("CREATE TABLE IF NOT EXISTS consumed(message_id TEXT PRIMARY KEY, status TEXT NOT NULL CHECK(status IN ('processing','processed')))")
 
     def recover_abandoned(self):
         """Make claims from an interrupted fake consumer eligible for redelivery.
@@ -223,7 +236,7 @@ class FakeMessageConsumer:
         Call during controlled restart recovery, after the previous consumer has
         stopped. Concurrent live consumers must not invoke this operation.
         """
-        with sqlite3.connect(self.database) as db:
+        with _connection(self.database) as db:
             return db.execute("DELETE FROM consumed WHERE status='processing'").rowcount
 
     def consume(self, message):
@@ -234,7 +247,7 @@ class FakeMessageConsumer:
         'processing' row is a contested or abandoned claim; redelivery only
         resumes after recover_abandoned clears it.
         """
-        with sqlite3.connect(self.database) as db:
+        with _connection(self.database) as db:
             try: db.execute("INSERT INTO consumed VALUES(?,'processing')",(message.message_id,))
             except sqlite3.IntegrityError:
                 row=db.execute("SELECT status FROM consumed WHERE message_id=?",(message.message_id,)).fetchone()
@@ -242,8 +255,8 @@ class FakeMessageConsumer:
         try:
             self.handle(message)
         except Exception:
-            with sqlite3.connect(self.database) as db: db.execute("DELETE FROM consumed WHERE message_id=? AND status='processing'",(message.message_id,))
+            with _connection(self.database) as db: db.execute("DELETE FROM consumed WHERE message_id=? AND status='processing'",(message.message_id,))
             raise
-        with sqlite3.connect(self.database) as db:
+        with _connection(self.database) as db:
             db.execute("UPDATE consumed SET status='processed' WHERE message_id=? AND status='processing'",(message.message_id,))
         return True
