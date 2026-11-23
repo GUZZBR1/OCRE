@@ -298,6 +298,14 @@ def _selected_case(eir: Mapping[str, Any], case_id: str | None) -> dict[str, Any
     return cases[0] if len(cases) == 1 else None
 
 
+def _jcs_differs(left: Any, right: Any) -> bool:
+    """Canonical-JSON inequality; unencodable content counts as different."""
+    try:
+        return jcs(left) != jcs(right)
+    except (FingerprintInputError, TypeError, ValueError):
+        return True
+
+
 def _semantic(eir: dict[str, Any], bundle: dict[str, Any], groups: dict[str, Any] | None,
               root: Path | None, purpose: str, capabilities: Mapping[str, Any] | None,
               diagnostics: list[Diagnostic], max_artifact_bytes: int, max_document_bytes: int,
@@ -482,12 +490,12 @@ def _semantic(eir: dict[str, Any], bundle: dict[str, Any], groups: dict[str, Any
                     if aid == bundle.get("eir_artifact_id"):
                         if len(artifact_bytes) > max_document_bytes:
                             _add(diagnostics, "semantic", f"/artifacts/{aid}", "document_too_large", "EIR artifact exceeds the configured document byte limit")
-                        elif jcs(parse_json_strict(artifact_bytes)) != jcs(eir):
+                        elif _jcs_differs(parse_json_strict(artifact_bytes), eir):
                             _add(diagnostics, "semantic", f"/artifacts/{aid}", "eir_artifact_content_mismatch", "bundle EIR artifact does not match the validated EIR document")
                     if groups is not None and aid in (manifest_refs & consumed):
                         if len(artifact_bytes) > max_document_bytes:
                             _add(diagnostics, "semantic", f"/artifacts/{aid}", "document_too_large", "group manifest artifact exceeds the configured document byte limit")
-                        elif jcs(parse_json_strict(artifact_bytes)) != jcs(groups):
+                        elif _jcs_differs(parse_json_strict(artifact_bytes), groups):
                             _add(diagnostics, "semantic", f"/artifacts/{aid}", "group_manifest_content_mismatch", "hashed group artifact does not match the validated group manifest")
                 except FileNotFoundError:
                     _add(diagnostics, "semantic", f"/artifacts/{aid}/uri", "artifact_missing", "artifact file does not exist")
@@ -503,7 +511,8 @@ def _semantic(eir: dict[str, Any], bundle: dict[str, Any], groups: dict[str, Any
             _add(diagnostics, "semantic", "/simulation_cases", "adapter_capabilities_unavailable", "execution readiness cannot be established without declared adapter capabilities")
         else:
             for i, case in enumerate(eir.get("simulation_cases", [])):
-                if not isinstance(case, dict): continue
+                if not isinstance(case, dict) or (selected is not None and case is not selected):
+                    continue
                 adapter = case.get("solver", {}).get("adapter_id")
                 supported = capabilities.get(adapter)
                 if not isinstance(supported, Mapping) or supported.get("supported") is not True:
@@ -717,7 +726,7 @@ def _approval_inputs(eir: dict[str, Any], bundle: dict[str, Any], bundle_raw: An
             staged_manifest = parse_json_strict(bundle_bytes)
         except StrictJSONError:
             staged_manifest = None
-        if staged_manifest is None or jcs(staged_manifest) != jcs(bundle):
+        if staged_manifest is None or _jcs_differs(staged_manifest, bundle):
             _add(diagnostics, "semantic", "/", "bundle_manifest_content_mismatch",
                  "staged bundle manifest bytes do not encode the validated bundle document")
             return None

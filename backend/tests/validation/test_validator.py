@@ -458,6 +458,9 @@ class ApprovalFingerprintTests(unittest.TestCase):
             reencoded = self._validate(eir, bundle, groups, root)
             (Path(root) / BUNDLE_MANIFEST_NAME).write_bytes(jcs({"unrelated": 1}))
             unrelated = self._validate(eir, bundle, groups, root)
+            (Path(root) / BUNDLE_MANIFEST_NAME).write_bytes(
+                b'{"unencodable": 1152921504606846976}')
+            unencodable = self._validate(eir, bundle, groups, root)
         self.assertEqual("incomplete", missing.status)
         self.assertEqual("blocked", missing.execution_readiness)
         self.assertIn("approval_fingerprint_inputs_missing",
@@ -465,11 +468,12 @@ class ApprovalFingerprintTests(unittest.TestCase):
         self.assertEqual("ready", reencoded.execution_readiness)
         self.assertNotEqual(canonical.approval_fingerprint,
                             reencoded.approval_fingerprint)
-        self.assertEqual("invalid", unrelated.status)
-        self.assertEqual("blocked", unrelated.execution_readiness)
-        self.assertIsNone(unrelated.approval_fingerprint)
-        self.assertIn("bundle_manifest_content_mismatch",
-                      {d.code for d in unrelated.diagnostics})
+        for report in (unrelated, unencodable):
+            self.assertEqual("invalid", report.status)
+            self.assertEqual("blocked", report.execution_readiness)
+            self.assertIsNone(report.approval_fingerprint)
+            self.assertIn("bundle_manifest_content_mismatch",
+                          {d.code for d in report.diagnostics})
 
     def test_preparation_policy_key_must_be_present(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -490,6 +494,8 @@ class ApprovalFingerprintTests(unittest.TestCase):
             other_case = copy.deepcopy(eir["simulation_cases"][0])
             other_case["case_id"] = "axial_bar_other"
             other_case["group_manifest_ref"] = "groups_other"
+            other_case["solver"] = dict(other_case["solver"],
+                                        proposed_target_version="9.9")
             eir["simulation_cases"].append(other_case)
             manifest_entry = next(a for a in bundle["artifacts"]
                                   if a["artifact_id"] == "groups_axial_bar")

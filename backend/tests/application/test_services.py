@@ -1,3 +1,4 @@
+import json
 from dataclasses import replace
 
 import pytest
@@ -109,6 +110,15 @@ def test_validator_preflight_blocks_submission_fields_diverging_from_approval(tm
     assert report.execution_readiness == "blocked"
     assert "project_id" in {d["pointer"].lstrip("/") for d in report.diagnostics
                             if d["code"] == "submission_binding_mismatch"}
+
+
+def test_validator_preflight_binds_submission_with_string_eir(tmp_path):
+    root, eir, bundle, groups = stage_eir_example_bundle(tmp_path / "bundle")
+    preflight = ValidatorPreflight(StaticPreflightInputs(_ready_inputs(root)))
+    request = _ready_submission(json.dumps(eir), bundle, groups)
+    report = preflight.evaluate(request)
+    assert report.execution_readiness == "ready"
+    assert report.approval_fingerprint is not None
 
 
 def test_empty_idempotency_keys_are_rejected_before_any_write(tmp_path):

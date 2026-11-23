@@ -127,7 +127,7 @@ class ValidatorPreflight:
         self._inputs_provider = inputs_provider
 
     def evaluate(self, request: JobSubmission, *, project_id: str | None = None) -> PreflightReport:
-        from ocre_core.validation.validator import validate
+        from ocre_core.validation.validator import StrictJSONError, parse_json_strict, validate
 
         inputs = self._inputs_provider.resolve(request) if self._inputs_provider is not None else None
         report = validate(
@@ -150,7 +150,15 @@ class ValidatorPreflight:
         # produce one, so the unavailable diagnostic is reported even if a
         # future validator stops emitting it itself.
         ready = report.execution_readiness == "ready" and report.approval_fingerprint is not None
-        mismatches = _submission_mismatches(request, inputs, project_id) if ready else ()
+        mismatches = ()
+        if ready:
+            eir_doc = request.eir
+            if not isinstance(eir_doc, Mapping):
+                try:
+                    eir_doc = parse_json_strict(request.eir)
+                except (StrictJSONError, TypeError):
+                    eir_doc = {}
+            mismatches = _submission_mismatches(request, inputs, project_id, eir_doc)
         if mismatches:
             ready = False
             diagnostics += tuple(
@@ -171,7 +179,7 @@ class ValidatorPreflight:
 
 
 def _submission_mismatches(request: "JobSubmission", inputs: PreflightInputs | None,
-                           project_id: str | None) -> tuple[str, ...]:
+                           project_id: str | None, eir: Any) -> tuple[str, ...]:
     """Request fields that diverge from what the approval fingerprint bound.
 
     The fingerprint binds the EIR revision and the single approved adapter
@@ -187,7 +195,7 @@ def _submission_mismatches(request: "JobSubmission", inputs: PreflightInputs | N
         mismatched.append("adapter_id")
     if request.adapter_version != approved.get("version"):
         mismatched.append("adapter_version")
-    eir = request.eir if isinstance(request.eir, Mapping) else {}
+    eir = eir if isinstance(eir, Mapping) else {}
     revision = eir.get("revision") if isinstance(eir.get("revision"), Mapping) else {}
     project = eir.get("project") if isinstance(eir.get("project"), Mapping) else {}
     if request.design_revision_id != revision.get("revision_id"):
