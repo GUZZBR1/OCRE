@@ -8,16 +8,31 @@ from tests.helpers import BLOCKED_APPROVAL, FixedPreflight, RuleAuthorizer, appl
 AUTH = RuleAuthorizer(
     lambda p, proj: p.tenant_id == "tenant-a" and proj == "project-a"
 )
+PRINCIPAL = Principal("tenant-a", "actor-a")
+
+
+def client_for(service):
+    return TestClient(create_app(service, principal_dependency=lambda: PRINCIPAL))
+
+
+def job_json(**overrides):
+    return {
+        "design_revision_id": "rev1",
+        "case_ref": "case",
+        "adapter_id": "a",
+        "adapter_version": "1",
+        "eir": {},
+        "bundle": {},
+        **overrides,
+    }
 
 
 def test_local_transport_injects_principal_and_exposes_only_six_operations(tmp_path):
-    principal = Principal("tenant-a", "actor-a")
     service = application(tmp_path, authorizer=AUTH, preflight=FixedPreflight(BLOCKED_APPROVAL))
-    app = create_app(service, principal_dependency=lambda: principal)
-    client = TestClient(app)
+    client = client_for(service)
     operations = {
         (method, route.path)
-        for route in app.routes
+        for route in client.app.routes
         if route.path.startswith("/v1/")
         for method in getattr(route, "methods", set())
         if method in {"GET", "POST"}
@@ -42,18 +57,16 @@ def test_local_transport_injects_principal_and_exposes_only_six_operations(tmp_p
     assert service.sync_store.lookup(tenant_id="tenant-attacker", project_id="project-a", batch_id="b1") is None
     denied = client.get("/v1/projects/other/sync-batches/b1")
     assert denied.status_code == 404
-    blocked = client.post("/v1/projects/project-a/jobs", headers={"Idempotency-Key": "k"}, json={
-        "design_revision_id": "rev1", "case_ref": "case", "adapter_id": "a", "adapter_version": "1",
-        "eir": {}, "bundle": {}, "adapter_capabilities": {"a": {"supported": True}},
-    })
+    blocked = client.post("/v1/projects/project-a/jobs", headers={"Idempotency-Key": "k"}, json=job_json(
+        adapter_capabilities={"a": {"supported": True}},
+    ))
     assert blocked.status_code == 422
     assert blocked.json()["report"]["diagnostics"][0]["code"] == "approval_fingerprint_unavailable"
 
 
 def test_http_sync_replay_returns_original_receipt_and_rejects_reused_identity(tmp_path):
-    principal = Principal("tenant-a", "actor-a")
     service = application(tmp_path, authorizer=AUTH, preflight=FixedPreflight(BLOCKED_APPROVAL))
-    client = TestClient(create_app(service, principal_dependency=lambda: principal))
+    client = client_for(service)
     path = "/v1/projects/project-a/sync-batches"
     batch = {
         "batch_id": "batch-replay",
@@ -73,15 +86,10 @@ def test_http_sync_replay_returns_original_receipt_and_rejects_reused_identity(t
 
 
 def test_cancel_accepts_empty_body_and_job_submit_rejects_non_strict_json_before_preflight(tmp_path):
-    principal = Principal("tenant-a", "actor-a")
     preflight = FixedPreflight()
     service = application(tmp_path, authorizer=AUTH, preflight=preflight)
-    app = create_app(service, principal_dependency=lambda: principal)
-    client = TestClient(app)
-    job = client.post("/v1/projects/project-a/jobs", headers={"Idempotency-Key": "submit"}, json={
-        "design_revision_id": "rev1", "case_ref": "case", "adapter_id": "a", "adapter_version": "1",
-        "eir": {}, "bundle": {},
-    })
+    client = client_for(service)
+    job = client.post("/v1/projects/project-a/jobs", headers={"Idempotency-Key": "submit"}, json=job_json())
     assert job.status_code == 202
 
     cancelled = client.post(
@@ -104,18 +112,10 @@ def test_cancel_accepts_empty_body_and_job_submit_rejects_non_strict_json_before
 
 
 def test_http_job_submit_cancel_and_event_replay_are_idempotent(tmp_path):
-    principal = Principal("tenant-a", "actor-a")
     service = application(tmp_path, authorizer=AUTH, preflight=FixedPreflight())
-    client = TestClient(create_app(service, principal_dependency=lambda: principal))
+    client = client_for(service)
     submit_path = "/v1/projects/project-a/jobs"
-    submission = {
-        "design_revision_id": "rev1",
-        "case_ref": "case",
-        "adapter_id": "adapter",
-        "adapter_version": "1",
-        "eir": {},
-        "bundle": {},
-    }
+    submission = job_json(adapter_id="adapter")
     submit_headers = {"Idempotency-Key": "submit-key"}
 
     first = client.post(submit_path, headers=submit_headers, json=submission)
@@ -123,7 +123,7 @@ def test_http_job_submit_cancel_and_event_replay_are_idempotent(tmp_path):
     conflicting = client.post(
         submit_path,
         headers=submit_headers,
-        json={**submission, "case_ref": "different-case"},
+        json=job_json(adapter_id="adapter", case_ref="different-case"),
     )
 
     assert first.status_code == 202

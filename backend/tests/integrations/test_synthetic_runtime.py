@@ -22,6 +22,23 @@ AUTH = RuleAuthorizer(
 )
 
 
+def restart_runtime(
+    store, tmp_path, *, tenant_id, job_id, outcome,
+    before_transition=None, after_transition=None,
+):
+    """Runtime factory: same wiring for initial spawn and crash-restart."""
+    return SyntheticRuntime(
+        store,
+        tenant_id=tenant_id,
+        job_id=job_id,
+        consumer_database=tmp_path / f"consumer-{tenant_id}.db",
+        outcome=outcome,
+        clock=FIXED_CLOCK,
+        before_transition=before_transition,
+        after_transition=after_transition,
+    )
+
+
 def setup_runtime(
     tmp_path,
     *,
@@ -47,30 +64,15 @@ def setup_runtime(
             f"submit-{tenant}",
         )
     runtimes = {
-        tenant: SyntheticRuntime(
-            store,
-            tenant_id=tenant,
-            job_id=result["job_id"],
-            consumer_database=tmp_path / f"consumer-{tenant}.db",
+        tenant: restart_runtime(
+            store, tmp_path, tenant_id=tenant, job_id=result["job_id"],
             outcome=outcome,
-            clock=FIXED_CLOCK,
             before_transition=before_transition,
             after_transition=after_transition,
         )
         for tenant, result in submitted.items()
     }
     return app, store, submitted, runtimes
-
-
-def restart_runtime(store, tmp_path, *, tenant_id, job_id, outcome):
-    return SyntheticRuntime(
-        store,
-        tenant_id=tenant_id,
-        job_id=job_id,
-        consumer_database=tmp_path / f"consumer-{tenant_id}.db",
-        outcome=outcome,
-        clock=FIXED_CLOCK,
-    )
 
 
 def assert_monotonic_single_terminal(store, tenant, job_id, terminal):
@@ -128,13 +130,9 @@ def test_outbox_routing_is_tenant_scoped_even_with_colliding_job_and_event_ids(t
             )
 
     runtimes = {
-        tenant: SyntheticRuntime(
-            store,
-            tenant_id=tenant,
-            job_id=job_id,
-            consumer_database=tmp_path / f"consumer-{tenant}.db",
+        tenant: restart_runtime(
+            store, tmp_path, tenant_id=tenant, job_id=job_id,
             outcome=SyntheticOutcome.SUCCEEDED,
-            clock=FIXED_CLOCK,
         )
         for tenant in ("tenant-a", "tenant-b")
     }

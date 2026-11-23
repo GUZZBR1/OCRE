@@ -61,6 +61,7 @@ from __future__ import annotations
 import argparse
 import io
 import json
+import math
 import os
 import re
 import shutil
@@ -128,6 +129,20 @@ def _atomic_write_json(path: Path, value: Any) -> None:
         path,
         (json.dumps(value, sort_keys=True, indent=2, ensure_ascii=False) + "\n").encode("utf-8"),
     )
+
+
+def _fail(message: str, code: int) -> int:
+    """Print ``error: <message>`` to stderr and return the exit code."""
+    print(f"error: {message}", file=sys.stderr)
+    return code
+
+
+def _utc_now() -> str:
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+
+
+def _material_declared(material: Any) -> bool:
+    return isinstance(material, str) and bool(material.strip())
 
 
 def _module_file_sha256(module_name: str) -> str:
@@ -290,16 +305,12 @@ def _cmd_export(args: argparse.Namespace) -> int:
     from .librecad_gate import check_dxf
     from .vectorize_runner import VectorizeError, run_vectorize
     if not _HEX40_RE.fullmatch(args.draw_commit):
-        print(
-            "error: --draw-commit must be a full 40-hex git revision "
-            f"(got {args.draw_commit!r}); the sidecar requires it",
-            file=sys.stderr,
-        )
-        return 2
+        return _fail(
+            "--draw-commit must be a full 40-hex git revision "
+            f"(got {args.draw_commit!r}); the sidecar requires it", 2)
     png_path = Path(args.png)
     if not png_path.is_file():
-        print(f"error: PNG not found: {png_path}", file=sys.stderr)
-        return 2
+        return _fail(f"PNG not found: {png_path}", 2)
     out_dir = Path(args.out_dir).resolve()
     out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -309,8 +320,7 @@ def _cmd_export(args: argparse.Namespace) -> int:
     try:
         spec = load_draw_config(args.draw_config) if args.draw_config else resolve_paper(args.paper)
     except (ValueError, FileNotFoundError, OSError) as exc:
-        print(f"error: cannot resolve paper: {exc}", file=sys.stderr)
-        return 2
+        return _fail(f"cannot resolve paper: {exc}", 2)
 
     png_sha256 = _sha256_file(png_path)
 
@@ -326,8 +336,7 @@ def _cmd_export(args: argparse.Namespace) -> int:
             thinning=args.thinning,
         )
     except VectorizeError as exc:
-        print(f"error: vectorize failed: {exc}", file=sys.stderr)
-        return 1
+        return _fail(f"vectorize failed: {exc}", 1)
 
     polylines = vectorized["polylines"]
     # Build the document (master) from the vectorizer polylines.
@@ -350,15 +359,13 @@ def _cmd_export(args: argparse.Namespace) -> int:
             # DXF writer includes it with its default (stable-only) rule.
             stabilize_stroke(doc, stroke["stroke_id"])
     except (ValueError, KeyError) as exc:
-        print(f"error: cannot build document from vectorizer output: {exc}", file=sys.stderr)
-        return 1
+        return _fail(f"cannot build document from vectorizer output: {exc}", 1)
 
     # Fail-closed: validate BEFORE writing any derivative.
     try:
         validate_draw_document_or_raise(doc)
     except ValueError as exc:
-        print(f"error: document failed validation, nothing written: {exc}", file=sys.stderr)
-        return 1
+        return _fail(f"document failed validation, nothing written: {exc}", 1)
 
     doc_sha_hex = document_sha256(doc)
     schema_sha = bundled_schema_sha256()
@@ -409,9 +416,7 @@ def _cmd_export(args: argparse.Namespace) -> int:
     try:
         dxf_report = export_dxf(doc, dxf_tmp, include_pending=False)
     except ValueError as exc:
-        print(f"error: DXF export failed: {exc}", file=sys.stderr)
-        return 1
-    observation = None
+        return _fail(f"DXF export failed: {exc}", 1)
     adapter = getattr(args, "ai_adapter", None)
     if adapter is None and getattr(args, "ai_adapter_factory", None):
         try:
@@ -425,8 +430,7 @@ def _cmd_export(args: argparse.Namespace) -> int:
         if observation.get("status") == "confirmed-error":
             dxf_tmp.unlink(missing_ok=True)
             print(json.dumps({"status": "failed", "observation": observation}))
-            print("error: DXF observer confirmed a conversion error", file=sys.stderr)
-            return 1
+            return _fail("DXF observer confirmed a conversion error", 1)
         dxf_report["observation"] = observation
     dxf_sha_hex = dxf_report["output_sha256"]
     os.replace(dxf_tmp, dxf_path)
@@ -460,8 +464,7 @@ def _cmd_export(args: argparse.Namespace) -> int:
     try:
         fingerprint = compute_fingerprint(fingerprint_inputs)
     except ValueError as exc:
-        print(f"error: DRAW-AF/1 fingerprint failed: {exc}", file=sys.stderr)
-        return 1
+        return _fail(f"DRAW-AF/1 fingerprint failed: {exc}", 1)
 
     try:
         sidecar = build_draw_sidecar(
@@ -487,8 +490,7 @@ def _cmd_export(args: argparse.Namespace) -> int:
             draw_source={"repo": args.draw_repo, "commit": args.draw_commit},
         )
     except ValueError as exc:
-        print(f"error: sidecar failed: {exc}", file=sys.stderr)
-        return 1
+        return _fail(f"sidecar failed: {exc}", 1)
 
     # Write the remaining derivatives atomically.
     _atomic_write_bytes(out_dir / "document.json", dumps_document(doc).encode("utf-8"))
@@ -517,8 +519,7 @@ def _cmd_export(args: argparse.Namespace) -> int:
         try:
             librecad = check_dxf(dxf_path)
         except Exception as exc:  # noqa: BLE001 - gate timeout/IO is a failure
-            print(f"error: LibreCAD gate failed: {exc}", file=sys.stderr)
-            return 1
+            return _fail(f"LibreCAD gate failed: {exc}", 1)
         librecad_status = str(librecad.get("status"))
 
     summary: dict[str, Any] = {
@@ -535,9 +536,7 @@ def _cmd_export(args: argparse.Namespace) -> int:
     }
     print(json.dumps(summary, sort_keys=True, indent=2))
     if librecad_status == "fail":
-        print("error: LibreCAD gate G0.2 failed for the exported DXF",
-              file=sys.stderr)
-        return 1
+        return _fail("LibreCAD gate G0.2 failed for the exported DXF", 1)
     return 0
 
 
@@ -551,16 +550,12 @@ def _cmd_fea_axial(args: argparse.Namespace) -> int:
         args.step, out_dir, spec=spec, doc_id=args.doc_id,
         document_sha256=args.document_sha256,
         mesh_size_mm=args.mesh_size)
+    result_json = json.dumps(result, sort_keys=True, indent=2)
     out_path = out_dir / "fea-axial-result.json"
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    out_path.write_text(json.dumps(result, sort_keys=True, indent=2),
-                        encoding="utf-8")
-    print(json.dumps(result, sort_keys=True, indent=2))
-    if result["status"] == "passed":
-        return 0
-    if result["status"] == "blocked":
-        return 2
-    return 1
+    out_path.write_text(result_json, encoding="utf-8")
+    print(result_json)
+    return {"passed": 0, "blocked": 2}.get(result["status"], 1)
 
 
 def _cmd_validate(args: argparse.Namespace) -> int:
@@ -568,8 +563,7 @@ def _cmd_validate(args: argparse.Namespace) -> int:
     try:
         raw = path.read_bytes()
     except OSError as exc:
-        print(f"error: cannot read document: {exc}", file=sys.stderr)
-        return 2
+        return _fail(f"cannot read document: {exc}", 2)
     report = validate_draw_document(raw)
     print(json.dumps(report.as_dict(), sort_keys=True, indent=2))
     return 0 if report.valid else 1
@@ -601,6 +595,19 @@ def _cmd_validate(args: argparse.Namespace) -> int:
 
 BETA_FINGERPRINT_DOMAIN = "DRAW:PAPER-APPROVAL:FINGERPRINT"
 _BETA_STEP_IDS = ("export", "ocs", "step", "fea", "physics", "viz", "fmu")
+# Step ids --cad-only never requests (everything after the CAD loop).
+_BETA_SIM_STEP_IDS = frozenset(_BETA_STEP_IDS[3:])
+
+# run_axial_case status -> step status.
+_FEA_STEP_STATUS = {"passed": "ok", "failed": "failed", "blocked": "blocked"}
+# validate_fmu status -> step status.
+_FMU_STEP_STATUS = {
+    "pass": "ok",
+    "fail": "failed",
+    "blocked": "blocked",
+    "not-triggered": "not-triggered",
+    "unavailable": "skipped-unavailable",
+}
 
 
 def _beta_step_report(
@@ -620,6 +627,27 @@ def _beta_step_report(
     if error is not None:
         report["error"] = error
     return report
+
+
+def _beta_step_done(
+    step_id: str,
+    status: str,
+    started: float,
+    detail: dict[str, Any] | None = None,
+    error: str | None = None,
+) -> dict[str, Any]:
+    """``_beta_step_report`` with the duration measured from ``started``."""
+    return _beta_step_report(
+        step_id, status, time.perf_counter() - started, detail, error=error)
+
+
+def _doc_entry(doc: dict[str, Any], sha256: str) -> dict[str, Any]:
+    """The {doc_id, revision, sha256} record under report["documents"]."""
+    return {
+        "doc_id": doc["doc_id"],
+        "revision": doc["revision"],
+        "sha256": sha256,
+    }
 
 
 def _beta_artifact_entry(path: str | Path) -> dict[str, Any]:
@@ -669,10 +697,9 @@ def _beta_step_export(ctx: dict[str, Any]) -> dict[str, Any]:
         summary = json.loads(buf.getvalue())
     except ValueError:
         summary = {}
-    duration = time.perf_counter() - started
     if code != 0:
-        return _beta_step_report(
-            "export", "failed", duration,
+        return _beta_step_done(
+            "export", "failed", started,
             {"returncode": code, "summary": summary},
             error=f"export subcommand exited with code {code}",
         )
@@ -680,8 +707,8 @@ def _beta_step_export(ctx: dict[str, Any]) -> dict[str, Any]:
     try:
         doc = loads_document(doc_path.read_bytes())
     except (OSError, ValueError) as exc:
-        return _beta_step_report(
-            "export", "failed", duration,
+        return _beta_step_done(
+            "export", "failed", started,
             {"returncode": code, "summary": summary},
             error=f"export succeeded but document.json could not be "
             f"read back: {exc}",
@@ -701,7 +728,7 @@ def _beta_step_export(ctx: dict[str, Any]) -> dict[str, Any]:
     observation = summary.get("dxf_report", {}).get("observation")
     if observation is not None:
         detail["observation"] = observation
-    return _beta_step_report("export", "ok", duration, detail)
+    return _beta_step_done("export", "ok", started, detail)
 
 
 def _beta_step_ocs(ctx: dict[str, Any]) -> dict[str, Any]:
@@ -722,23 +749,23 @@ def _beta_step_ocs(ctx: dict[str, Any]) -> dict[str, Any]:
     started = time.perf_counter()
     binary = find_ocs_binary(args.ocs_binary)
     if binary is None:
-        return _beta_step_report(
-            "ocs", "skipped-unavailable", time.perf_counter() - started,
+        return _beta_step_done(
+            "ocs", "skipped-unavailable", started,
             {"reason": "no OpenCADStudio binary: --ocs-binary not given "
              "and neither OCS_BINARY nor PATH provides one; the live-CAD "
              "step was not run (honest skip, not an approval); the chain "
              "continues by file"},
         )
     doc = ctx["doc"]
+    detail: dict[str, Any] = {"binary": binary}
     ocs_dir = ctx["out_dir"] / "ocs"
     ocs_dir.mkdir(parents=True, exist_ok=True)
     dxf_path = ocs_dir / "document.dxf"
     try:
         dxf_report = export_dxf(doc, dxf_path)
     except ValueError as exc:
-        return _beta_step_report(
-            "ocs", "failed", time.perf_counter() - started,
-            {"binary": binary},
+        return _beta_step_done(
+            "ocs", "failed", started, detail,
             error=f"could not export the working document to DXF for "
             f"the OCS step: {exc}",
         )
@@ -750,9 +777,9 @@ def _beta_step_ocs(ctx: dict[str, Any]) -> dict[str, Any]:
     try:
         process, client = launch_headless(binary)
     except OcsError as exc:
-        return _beta_step_report(
-            "ocs", "failed", time.perf_counter() - started,
-            {"binary": binary, "code": exc.code},
+        detail["code"] = exc.code
+        return _beta_step_done(
+            "ocs", "failed", started, detail,
             error=f"could not launch the headless OpenCADStudio server: "
             f"{exc}",
         )
@@ -766,35 +793,35 @@ def _beta_step_ocs(ctx: dict[str, Any]) -> dict[str, Any]:
                 doc, out_path=ocs_dir / "ocs-after-erase.dxf")
             scan_after_document = client.scan_stroke_ids()
         except OcsError as exc:
-            return _beta_step_report(
-                "ocs", "failed", time.perf_counter() - started,
-                {"binary": binary, "code": exc.code,
-                 "dxf_report": dxf_report},
+            detail.update(code=exc.code, dxf_report=dxf_report)
+            return _beta_step_done(
+                "ocs", "failed", started, detail,
                 error=f"live-CAD sync failed: {exc}",
             )
     finally:
         stop_server(process)
     if set(scan_after_document) != set(live_ids):
-        return _beta_step_report(
-            "ocs", "failed", time.perf_counter() - started,
-            {"binary": binary, "sync": sync_report,
-             "scan_after_sync": scan_after_sync,
-             "scan_after_sync_document": scan_after_document,
-             "live_ids": live_ids},
+        detail.update(
+            sync=sync_report,
+            scan_after_sync=scan_after_sync,
+            scan_after_sync_document=scan_after_document,
+            live_ids=live_ids,
+        )
+        return _beta_step_done(
+            "ocs", "failed", started, detail,
             error="scan after sync_document does not match the live "
             f"stroke ids: CAD has {sorted(scan_after_document)}, "
             f"document has {sorted(live_ids)}",
         )
-    detail = {
-        "binary": binary,
-        "dxf_report": dxf_report,
-        "live_ids": live_ids,
-        "erased_ids_in_document": erased_ids,
-        "sync": sync_report,
-        "scan_after_sync": scan_after_sync,
-        "sync_document": sync_doc_report,
-        "scan_after_sync_document": scan_after_document,
-        "eraser_proof": (
+    detail.update(
+        dxf_report=dxf_report,
+        live_ids=live_ids,
+        erased_ids_in_document=erased_ids,
+        sync=sync_report,
+        scan_after_sync=scan_after_sync,
+        sync_document=sync_doc_report,
+        scan_after_sync_document=scan_after_document,
+        eraser_proof=(
             "sync_document proved the erased strokes absent "
             f"(erased now: {sync_doc_report.get('erased')}, already "
             f"absent: {sync_doc_report.get('already_absent')})"
@@ -803,9 +830,8 @@ def _beta_step_ocs(ctx: dict[str, Any]) -> dict[str, Any]:
             "proof is not-triggered for this run (sync_document still "
             "ran and saved the verified file)"
         ),
-    }
-    return _beta_step_report("ocs", "ok", time.perf_counter() - started,
-                             detail)
+    )
+    return _beta_step_done("ocs", "ok", started, detail)
 
 
 def _beta_step_step(ctx: dict[str, Any]) -> dict[str, Any]:
@@ -842,16 +868,16 @@ def _beta_step_step(ctx: dict[str, Any]) -> dict[str, Any]:
             timeout_s=args.timeout_s,
             open_strokes_policy=args.open_strokes_policy)
     except StepExportError as exc:
-        return _beta_step_report(
-            "step", "blocked", time.perf_counter() - started,
+        return _beta_step_done(
+            "step", "blocked", started,
             {"thickness_mm": args.thickness_mm,
              "material": args.material,
              "open_strokes_policy": args.open_strokes_policy},
             error=f"STEP export refused (fail-closed): {exc}",
         )
     except StepWorkerError as exc:
-        return _beta_step_report(
-            "step", "failed", time.perf_counter() - started,
+        return _beta_step_done(
+            "step", "failed", started,
             {"thickness_mm": args.thickness_mm,
              "material": args.material,
              "open_strokes_policy": args.open_strokes_policy},
@@ -864,30 +890,30 @@ def _beta_step_step(ctx: dict[str, Any]) -> dict[str, Any]:
         ctx["step_observation"] = observation
         if observation.get("status") == "confirmed-error":
             temp_context.cleanup()
-            return _beta_step_report("step", "failed", time.perf_counter() - started,
+            return _beta_step_done("step", "failed", started,
                                      {"step": report, "observation": observation},
                                      error="STEP observer confirmed a conversion error")
     try:
         brepcheck = validate_step(step_path, timeout_s=args.timeout_s)
     except StepWorkerError as exc:
-        return _beta_step_report(
-            "step", "failed", time.perf_counter() - started,
+        return _beta_step_done(
+            "step", "failed", started,
             {"step": report},
             error=f"BRepCheck failed: {exc}",
         )
     try:
         oracle = oracle_step(step_path, timeout_s=args.timeout_s)
     except StepWorkerError as exc:
-        return _beta_step_report(
-            "step", "failed", time.perf_counter() - started,
+        return _beta_step_done(
+            "step", "failed", started,
             {"step": report, "brepcheck": brepcheck},
             error=f"FreeCAD oracle failed: {exc}",
         )
     if oracle.get("status") == "fail":
         if temp_context is not None:
             temp_context.cleanup()
-        return _beta_step_report(
-            "step", "failed", time.perf_counter() - started,
+        return _beta_step_done(
+            "step", "failed", started,
             {"step": report, "brepcheck": brepcheck, "oracle": oracle},
             error="FreeCAD oracle says the STEP is not valid",
         )
@@ -903,8 +929,7 @@ def _beta_step_step(ctx: dict[str, Any]) -> dict[str, Any]:
     detail = {"step": report, "brepcheck": brepcheck, "oracle": oracle}
     if ctx.get("step_observation") is not None:
         detail["observation"] = ctx["step_observation"]
-    return _beta_step_report("step", "ok", time.perf_counter() - started,
-                             detail)
+    return _beta_step_done("step", "ok", started, detail)
 
 
 def _beta_step_fea(ctx: dict[str, Any]) -> dict[str, Any]:
@@ -923,8 +948,8 @@ def _beta_step_fea(ctx: dict[str, Any]) -> dict[str, Any]:
     fea_dir = ctx["out_dir"] / "fea"
     built = build_bar_step(fea_dir / "bar", timeout_s=args.timeout_s)
     if not built["ok"]:
-        return _beta_step_report(
-            "fea", "failed", time.perf_counter() - started,
+        return _beta_step_done(
+            "fea", "failed", started,
             {"build": built},
             error=f"could not build the reference bar STEP: "
             f"{built.get('failure')}",
@@ -940,8 +965,7 @@ def _beta_step_fea(ctx: dict[str, Any]) -> dict[str, Any]:
     ctx["fea_result"] = result
     ctx["fea_dir"] = case_dir
     ctx["fea_input_step"] = case_dir / "input.step"
-    status = {"passed": "ok", "failed": "failed",
-              "blocked": "blocked"}.get(result["status"], "failed")
+    status = _FEA_STEP_STATUS.get(result["status"], "failed")
     detail = {
         "case": result["case"],
         "gate": result["gate"],
@@ -954,8 +978,7 @@ def _beta_step_fea(ctx: dict[str, Any]) -> dict[str, Any]:
     if status != "ok":
         error = "; ".join(result.get("failures") or
                           [f"axial case status: {result['status']}"])
-    return _beta_step_report("fea", status, time.perf_counter() - started,
-                             detail, error=error)
+    return _beta_step_done("fea", status, started, detail, error=error)
 
 
 def _beta_step_physics(ctx: dict[str, Any]) -> dict[str, Any]:
@@ -973,8 +996,8 @@ def _beta_step_physics(ctx: dict[str, Any]) -> dict[str, Any]:
     try:
         report = run_contact_case()
     except Exception as exc:  # noqa: BLE001 - engine/model failure is a step failure
-        return _beta_step_report(
-            "physics", "failed", time.perf_counter() - started,
+        return _beta_step_done(
+            "physics", "failed", started,
             {}, error=f"physics contact case failed: "
             f"{type(exc).__name__}: {exc}",
         )
@@ -1007,12 +1030,11 @@ def _beta_step_physics(ctx: dict[str, Any]) -> dict[str, Any]:
         "future work, not this run).",
     }
     if not profiles:
-        return _beta_step_report(
-            "physics", "failed", time.perf_counter() - started, detail,
+        return _beta_step_done(
+            "physics", "failed", started, detail,
             error="no engine produced a load profile",
         )
-    return _beta_step_report("physics", "ok", time.perf_counter() - started,
-                             detail)
+    return _beta_step_done("physics", "ok", started, detail)
 
 
 def _beta_gmsh_surface_stl(
@@ -1091,8 +1113,8 @@ def _beta_step_viz(ctx: dict[str, Any]) -> dict[str, Any]:
     viz_dir.mkdir(parents=True, exist_ok=True)
     fea_result = ctx.get("fea_result")
     if not isinstance(fea_result, dict) or fea_result.get("status") != "passed":
-        return _beta_step_report(
-            "viz", "failed", time.perf_counter() - started,
+        return _beta_step_done(
+            "viz", "failed", started,
             {"fea_status": (fea_result or {}).get("status")},
             error="no passed FEA result to visualize (render needs the "
             "solver .frd)",
@@ -1105,13 +1127,13 @@ def _beta_step_viz(ctx: dict[str, Any]) -> dict[str, Any]:
         # viz deps (meshio, imported lazily in viz.py) are missing:
         # record the step as failed instead of killing beta-run --
         # the report must still be written with the other steps.
-        return _beta_step_report(
-            "viz", "failed", time.perf_counter() - started, {},
+        return _beta_step_done(
+            "viz", "failed", started, {},
             error=f"viz dependency missing: {exc}",
         )
     except VizError as exc:
-        return _beta_step_report(
-            "viz", "failed", time.perf_counter() - started, {},
+        return _beta_step_done(
+            "viz", "failed", started, {},
             error=f"PyVista render failed: {exc}",
         )
     try:
@@ -1121,8 +1143,8 @@ def _beta_step_viz(ctx: dict[str, Any]) -> dict[str, Any]:
         glb = to_glb(viz_dir / "bar-surface.stl", viz_dir / "model.glb",
                      units="mm")
     except (RuntimeError, VizError, ImportError) as exc:
-        return _beta_step_report(
-            "viz", "failed", time.perf_counter() - started,
+        return _beta_step_done(
+            "viz", "failed", started,
             {"render": render},
             error=f".glb export failed: {exc}",
         )
@@ -1134,8 +1156,8 @@ def _beta_step_viz(ctx: dict[str, Any]) -> dict[str, Any]:
         try:
             export_dxf(ctx["doc"], dxf_path)
         except ValueError as exc:
-            return _beta_step_report(
-                "viz", "failed", time.perf_counter() - started,
+            return _beta_step_done(
+                "viz", "failed", started,
                 {"render": render, "glb": glb},
                 error=f"could not export the working document to DXF "
                 f"for the PDF: {exc}",
@@ -1144,14 +1166,13 @@ def _beta_step_viz(ctx: dict[str, Any]) -> dict[str, Any]:
         pdf = plot_pdf(dxf_path, viz_dir / "drawing.pdf",
                        timeout_s=args.timeout_s)
     except VizError as exc:
-        return _beta_step_report(
-            "viz", "failed", time.perf_counter() - started,
+        return _beta_step_done(
+            "viz", "failed", started,
             {"render": render, "glb": glb, "stl": stl},
             error=f"PDF plot failed: {exc}",
         )
     detail = {"render": render, "stl": stl, "glb": glb, "pdf": pdf}
-    return _beta_step_report("viz", "ok", time.perf_counter() - started,
-                             detail)
+    return _beta_step_done("viz", "ok", started, detail)
 
 
 def _beta_step_fmu(ctx: dict[str, Any]) -> dict[str, Any]:
@@ -1160,15 +1181,11 @@ def _beta_step_fmu(ctx: dict[str, Any]) -> dict[str, Any]:
 
     started = time.perf_counter()
     result = validate_fmu(ctx["args"].fmu, timeout_s=ctx["args"].timeout_s)
-    mapping = {"pass": "ok", "fail": "failed", "blocked": "blocked",
-               "not-triggered": "not-triggered",
-               "unavailable": "skipped-unavailable"}
-    status = mapping.get(str(result.get("status")), "failed")
+    status = _FMU_STEP_STATUS.get(str(result.get("status")), "failed")
     error = None
     if status in ("failed", "blocked"):
         error = str(result.get("reason") or "FMU gate failed")
-    return _beta_step_report("fmu", status, time.perf_counter() - started,
-                             result, error=error)
+    return _beta_step_done("fmu", status, started, result, error=error)
 
 
 def _beta_text_report(report: dict[str, Any]) -> str:
@@ -1228,14 +1245,13 @@ def _beta_text_report(report: dict[str, Any]) -> str:
 def _cmd_beta_run(args: argparse.Namespace) -> int:
     out_dir = Path(args.out_dir).resolve()
     proposal_file = Path(args.proposal_file).resolve() if args.proposal_file else out_dir / "proposals.json"
-    started_at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
     started = time.perf_counter()
     report: dict[str, Any] = {
         "command": "beta-run",
         "status": "blocked",
         "exit_code": 2,
         "fingerprint_domain": BETA_FINGERPRINT_DOMAIN,
-        "started_at": started_at,
+        "started_at": _utc_now(),
         "params": {
             "png": args.png,
             "vectorize_script": args.vectorize_script,
@@ -1272,8 +1288,7 @@ def _cmd_beta_run(args: argparse.Namespace) -> int:
 
     def _finish() -> int:
         report["duration_s"] = round(time.perf_counter() - started, 3)
-        report["finished_at"] = time.strftime(
-            "%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        report["finished_at"] = _utc_now()
         try:
             out_dir.mkdir(parents=True, exist_ok=True)
             _atomic_write_json(out_dir / "beta-report.json", report)
@@ -1301,12 +1316,11 @@ def _cmd_beta_run(args: argparse.Namespace) -> int:
         preflight_errors.append(
             "thickness-mm is required and declared by a human "
             "(thickness is never invented)")
-    elif not (args.thickness_mm == args.thickness_mm
-              and args.thickness_mm > 0):
+    elif not (math.isfinite(args.thickness_mm) and args.thickness_mm > 0):
         preflight_errors.append(
             f"thickness-mm must be positive and finite "
             f"(got {args.thickness_mm!r})")
-    if not (isinstance(args.material, str) and args.material.strip()) and not (args.ai_adapter_factory or args.proposal_file or args.confirm_proposal or args.reject_proposal):
+    if not _material_declared(args.material) and not (args.ai_adapter_factory or args.proposal_file or args.confirm_proposal or args.reject_proposal):
         preflight_errors.append(
             "material is required and declared by a human "
             "(material is never invented)")
@@ -1327,8 +1341,8 @@ def _cmd_beta_run(args: argparse.Namespace) -> int:
         report["status"] = "blocked"
         report["exit_code"] = 2
         report["steps"] = [
-            _beta_step_report(
-                "preflight", "blocked", time.perf_counter() - started,
+            _beta_step_done(
+                "preflight", "blocked", started,
                 {"errors": preflight_errors},
                 error="; ".join(preflight_errors),
             )
@@ -1350,11 +1364,8 @@ def _cmd_beta_run(args: argparse.Namespace) -> int:
         except Exception as exc:
             report["ai_adapter"] = {"status": "unavailable", "error": type(exc).__name__}
     if working_doc is not None:
-        report["documents"]["working"] = {
-            "doc_id": working_doc["doc_id"],
-            "revision": working_doc["revision"],
-            "sha256": ctx["doc_sha256"],
-        }
+        report["documents"]["working"] = _doc_entry(
+            working_doc, ctx["doc_sha256"])
         report["documents"]["working_source"] = "example-document (--document)"
 
     def process_proposals(ctx: dict[str, Any], proposal_file: Path) -> bool:
@@ -1443,12 +1454,11 @@ def _cmd_beta_run(args: argparse.Namespace) -> int:
                 }
                 if len(materials) > 1:
                     raise ValueError("multiple distinct confirmed materials require resolution")
-                if (not (isinstance(args.material, str) and args.material.strip())
-                        and materials):
+                if not _material_declared(args.material) and materials:
                     args.material = next(iter(materials))
         except Exception as exc:
             report["proposal_error"] = str(exc)
-        if not (isinstance(args.material, str) and args.material.strip()):
+        if not _material_declared(args.material):
             steps.append(_beta_step_report(
                 "human-confirmation", "blocked", 0,
                 {"proposal_file": str(proposal_file)},
@@ -1457,52 +1467,38 @@ def _cmd_beta_run(args: argparse.Namespace) -> int:
             return False
         return True
 
-    # --- The chain, in order. ---
-    steps: list[dict[str, Any]] = []
-    runners = (
-        _beta_step_export,
-        _beta_step_ocs,
-        _beta_step_step,
-        _beta_step_fea,
-        _beta_step_physics,
-        _beta_step_viz,
-        _beta_step_fmu,
-    )
-    if args.cad_only:
-        runners = runners[:3]
-    for runner in runners:
-        step_id = runner.__name__.removeprefix("_beta_step_")
-        if step_id == "export":
-            step = runner(ctx)
-            steps.append(step)
-            if step["status"] != "ok":
-                break
-            # The working document is --document when given, else the
-            # document step 1 just built.
-            if ctx["doc"] is None:
-                ctx["doc"] = ctx["export_doc"]
-                ctx["doc_sha256"] = ctx["export_doc_sha256"]
-                report["documents"]["working_source"] = "export (step 1)"
-            report["documents"]["export"] = {
-                "doc_id": ctx["export_doc"]["doc_id"],
-                "revision": ctx["export_doc"]["revision"],
-                "sha256": ctx["export_doc_sha256"],
-            }
-            report["documents"]["working"] = {
-                "doc_id": ctx["doc"]["doc_id"],
-                "revision": ctx["doc"]["revision"],
-                "sha256": ctx["doc_sha256"],
-            }
-            if not process_proposals(ctx, proposal_file): break
-            continue
-        steps.append(runner(ctx))
+    # --- The chain, in order. Step 1 is unrolled: only after it
+    # succeeds does the working document exist for the report and the
+    # proposal gate, and only then do the remaining steps run. ---
+    steps: list[dict[str, Any]] = [_beta_step_export(ctx)]
+    if steps[0]["status"] == "ok":
+        # The working document is --document when given, else the
+        # document step 1 just built.
+        if ctx["doc"] is None:
+            ctx["doc"] = ctx["export_doc"]
+            ctx["doc_sha256"] = ctx["export_doc_sha256"]
+            report["documents"]["working_source"] = "export (step 1)"
+        report["documents"]["export"] = _doc_entry(
+            ctx["export_doc"], ctx["export_doc_sha256"])
+        report["documents"]["working"] = _doc_entry(
+            ctx["doc"], ctx["doc_sha256"])
+        if process_proposals(ctx, proposal_file):
+            runners = [_beta_step_ocs, _beta_step_step]
+            if not args.cad_only:
+                runners += [_beta_step_fea, _beta_step_physics,
+                            _beta_step_viz, _beta_step_fmu]
+            for runner in runners:
+                steps.append(runner(ctx))
     ran = {step["id"] for step in steps}
     for missing in (step_id for step_id in _BETA_STEP_IDS if step_id not in ran):
+        if args.cad_only and missing in _BETA_SIM_STEP_IDS:
+            reason = ("not requested: --cad-only stops the chain after "
+                      "the CAD steps (export, ocs, step)")
+        else:
+            reason = ("a previous step failed; the chain stopped "
+                      "before this step (no document to work on)")
         steps.append(_beta_step_report(
-            missing, "not-run", 0.0,
-            {"reason": "a previous step failed; the chain stopped "
-             "before this step (no document to work on)"},
-        ))
+            missing, "not-run", 0.0, {"reason": reason}))
     report["steps"] = steps
 
     statuses = [s["status"] for s in steps]

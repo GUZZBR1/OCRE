@@ -1,3 +1,5 @@
+from dataclasses import replace
+
 import pytest
 
 from tests.helpers import (
@@ -111,7 +113,7 @@ def test_cancel_collecting_job_returns_conflict_and_cancelled_event_replays_nest
     )
     app.job_store.commit_transition(
         expected_sequence=snapshot.sequence,
-        snapshot=type(snapshot)(job_id, event.to_state, event.sequence, NOW, snapshot.payload, tenant_id="t1"),
+        snapshot=replace(snapshot, state=event.to_state, sequence=event.sequence, updated_at=NOW),
         event=event,
         idempotency=None,
         outbox=OutboxMessage("cancelled-message", job_id, event.event_id, "job.cancelled", b""),
@@ -144,9 +146,8 @@ def test_cancel_collecting_job_returns_conflict_and_cancelled_event_replays_nest
         )
         app.job_store.commit_transition(
             expected_sequence=current_snapshot.sequence,
-            snapshot=type(current_snapshot)(
-                collecting_job, target, transition.sequence, NOW,
-                current_snapshot.payload, tenant_id="t1",
+            snapshot=replace(
+                current_snapshot, state=target, sequence=transition.sequence, updated_at=NOW
             ),
             event=transition,
             idempotency=None,

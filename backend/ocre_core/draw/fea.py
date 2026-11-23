@@ -84,7 +84,7 @@ import shutil
 import subprocess
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from .fingerprint import DOMAIN as _FINGERPRINT_DOMAIN
 from .fingerprint import jcs as _jcs
@@ -558,6 +558,39 @@ def write_ccx_inp(mesh: dict[str, Any], path: str | Path, *,
 # Leitura do .dat do CalculiX
 # ---------------------------------------------------------------------------
 
+def _dat_row4(parts: list[str]) -> bool:
+    """Linha de dados "tag + 3 valores" do .dat."""
+    return len(parts) == 4 and parts[0].isdigit()
+
+
+def _dat_column(
+    text: str,
+    header: Callable[[str], bool],
+    row: Callable[[list[str]], bool],
+    column: int,
+) -> list[float]:
+    """Uma coluna numerica de uma secao do .dat do CalculiX.
+
+    A secao abre quando ``header`` casa com a linha; dentro dela,
+    linhas que passam em ``row`` contribuem ``parts[column]``; a
+    primeira linha nao-dados apos valores fecha a secao. Vazio
+    quando a secao esta ausente.
+    """
+    values: list[float] = []
+    in_section = False
+    for line in text.splitlines():
+        if header(line):
+            in_section = True
+            continue
+        if in_section:
+            parts = line.split()
+            if row(parts):
+                values.append(float(parts[column]))
+            elif parts and not parts[0].isdigit() and values:
+                in_section = False
+    return values
+
+
 def parse_ccx_dat(text: str) -> dict[str, Any]:
     """Le Rx (soma de RF1 na face fixa), S11 max e ux max do .dat.
 
@@ -565,51 +598,29 @@ def parse_ccx_dat(text: str) -> dict[str, Any]:
     um .dat sem as secoes pedidas nao e um resultado, e um artefato
     incompleto.
     """
-    forces: list[float] = []
-    in_forces = False
-    for line in text.splitlines():
-        if line.startswith(" forces (fx,fy,fz) for set FIXED"):
-            in_forces = True
-            continue
-        if in_forces:
-            parts = line.split()
-            if len(parts) == 4 and parts[0].isdigit():
-                forces.append(float(parts[1]))
-            elif parts and not parts[0].isdigit() and forces:
-                in_forces = False
+    forces = _dat_column(
+        text,
+        lambda line: line.startswith(" forces (fx,fy,fz) for set FIXED"),
+        _dat_row4, 1)
     if not forces:
         raise ValueError("no RF section for set FIXED in .dat")
 
-    s11_values: list[float] = []
-    in_stress = False
-    for line in text.splitlines():
-        if line.startswith(" stresses (elem, integ.pnt.,sxx,syy,szz,sxy,sxz,syz)"):
-            in_stress = True
-            continue
-        if in_stress:
-            parts = line.split()
-            if len(parts) >= 8 and parts[0].isdigit() and parts[1].isdigit():
-                s11_values.append(float(parts[2]))
-            elif parts and not parts[0].isdigit() and s11_values:
-                in_stress = False
+    s11_values = _dat_column(
+        text,
+        lambda line: line.startswith(
+            " stresses (elem, integ.pnt.,sxx,syy,szz,sxy,sxz,syz)"),
+        lambda parts: (len(parts) >= 8 and parts[0].isdigit()
+                       and parts[1].isdigit()), 2)
     if not s11_values:
         raise ValueError("no S section for set BAR in .dat")
 
-    ux_values: list[float] = []
-    in_disp = False
-    for line in text.splitlines():
-        # CalculiX 2.21 escreve "(vx,vy,vz)"; outras versoes escrevem
-        # "(ux,uy,uz)" -- aceitar as duas grafias.
-        if (line.startswith(" displacements (")
-                and "for set LOADED" in line):
-            in_disp = True
-            continue
-        if in_disp:
-            parts = line.split()
-            if len(parts) == 4 and parts[0].isdigit():
-                ux_values.append(float(parts[1]))
-            elif parts and not parts[0].isdigit() and ux_values:
-                in_disp = False
+    # CalculiX 2.21 escreve "(vx,vy,vz)"; outras versoes escrevem
+    # "(ux,uy,uz)" -- aceitar as duas grafias.
+    ux_values = _dat_column(
+        text,
+        lambda line: (line.startswith(" displacements (")
+                      and "for set LOADED" in line),
+        _dat_row4, 1)
     if not ux_values:
         raise ValueError("no U section for set LOADED in .dat")
     return {"rx_N": sum(forces),

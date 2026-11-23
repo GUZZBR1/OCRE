@@ -189,6 +189,10 @@ def _add(items: list[Diagnostic], stage: str, pointer: str, code: str, message: 
     items.append(Diagnostic(stage, pointer, code, message, severity))
 
 
+def _seq(value: Any) -> list[Any]:
+    return value if isinstance(value, list) else []
+
+
 def _unique_index(items: Any, key: str, namespace: str, diagnostics: list[Diagnostic], pointer: str) -> dict[str, dict[str, Any]]:
     index: dict[str, dict[str, Any]] = {}
     if not isinstance(items, list):
@@ -259,7 +263,8 @@ def _read_confined(root: Path, uri: Any, max_bytes: int) -> bytes:
 
 def _semantic(eir: dict[str, Any], bundle: dict[str, Any], groups: dict[str, Any] | None,
               root: Path | None, purpose: str, capabilities: Mapping[str, Any] | None,
-              diagnostics: list[Diagnostic], max_artifact_bytes: int, max_document_bytes: int) -> None:
+              diagnostics: list[Diagnostic], max_artifact_bytes: int, max_document_bytes: int,
+              profile: dict[str, Any]) -> None:
     project, revision = eir.get("project", {}), eir.get("revision", {})
     rev_id = revision.get("revision_id")
     if project.get("project_id") != revision.get("project_id"):
@@ -275,7 +280,7 @@ def _semantic(eir: dict[str, Any], bundle: dict[str, Any], groups: dict[str, Any
 
     frame_items = eir.get("frames", [])
     roots = []
-    for i, frame in enumerate(frame_items if isinstance(frame_items, list) else []):
+    for i, frame in enumerate(_seq(frame_items)):
         if not isinstance(frame, dict):
             continue
         fid, parent = frame.get("frame_id"), frame.get("parent_frame_id")
@@ -298,26 +303,25 @@ def _semantic(eir: dict[str, Any], bundle: dict[str, Any], groups: dict[str, Any
                     break
     if frame_items and len(roots) != 1:
         _add(diagnostics, "semantic", "/frames", "frame_root_count", "frame graph must have exactly one root")
-    profile = json.loads((PROFILE_DIR / "structural.axial_bar.v1.json").read_text(encoding="utf-8"))
     unit_profile = json.loads((PROFILE_DIR / "ucum.structural_axial.v1.json").read_text(encoding="utf-8"))
-    for i, frame in enumerate(frame_items if isinstance(frame_items, list) else []):
+    for i, frame in enumerate(_seq(frame_items)):
         if isinstance(frame, dict):
             translation = frame.get("translation")
             if isinstance(translation, dict):
                 _check_unit(translation.get("unit"), "length", f"/frames/{i}/translation/unit", diagnostics,
                             unit_profile)
 
-    for i, frame in enumerate(frame_items if isinstance(frame_items, list) else []):
+    for i, frame in enumerate(_seq(frame_items)):
         if not isinstance(frame, dict): continue
         q = frame.get("rotation_xyzw")
         if isinstance(q, list) and len(q) == 4 and all(isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v) for v in q):
             x, y, z, w = (float(v) for v in q)
-            n2 = (((x*x + y*y) + z*z) + w*w)
+            n2 = x*x + y*y + z*z + w*w
             norm = math.sqrt(n2) if math.isfinite(n2) else math.inf
             if not math.isfinite(norm) or abs(norm - 1.0) > 1e-6:
                 _add(diagnostics, "semantic", f"/frames/{i}/rotation_xyzw", "invalid_quaternion_norm", "quaternion norm must be within 1e-6 of one")
 
-    for i, geometry in enumerate(eir.get("geometry", []) if isinstance(eir.get("geometry"), list) else []):
+    for i, geometry in enumerate(_seq(eir.get("geometry"))):
         if not isinstance(geometry, dict): continue
         if geometry.get("frame_id") is not None and geometry.get("frame_id") not in frames:
             _add(diagnostics, "semantic", f"/geometry/{i}/frame_id", "unresolved_frame", "geometry frame does not exist")
@@ -327,17 +331,17 @@ def _semantic(eir: dict[str, Any], bundle: dict[str, Any], groups: dict[str, Any
         box = geometry.get("bounding_box")
         if isinstance(box, dict): _check_unit(box.get("unit"), "length", f"/geometry/{i}/bounding_box/unit", diagnostics, unit_profile)
 
-    for i, material in enumerate(eir.get("materials", []) if isinstance(eir.get("materials"), list) else []):
+    for i, material in enumerate(_seq(eir.get("materials"))):
         if not isinstance(material, dict): continue
         for name, quantity in material.get("properties", {}).items():
-            dim = "stress" if name == "young_modulus" else "dimensionless" if name == "poisson_ratio" else None
+            dim = {"young_modulus": "stress", "poisson_ratio": "dimensionless"}.get(name)
             if dim and isinstance(quantity, dict): _check_unit(quantity.get("unit"), dim, f"/materials/{i}/properties/{name}/unit", diagnostics, unit_profile)
             elif dim is None:
                 _add(diagnostics, "semantic", f"/materials/{i}/properties/{name}", "unsupported_material_property", "material property has no dimension rule in the selected profile")
 
     group_ref_ids: set[str] = set()
     manifest_refs: set[str] = set()
-    for i, case in enumerate(eir.get("simulation_cases", []) if isinstance(eir.get("simulation_cases"), list) else []):
+    for i, case in enumerate(_seq(eir.get("simulation_cases"))):
         if not isinstance(case, dict): continue
         ptr = f"/simulation_cases/{i}"
         if case.get("revision_id") != rev_id:
@@ -349,17 +353,17 @@ def _semantic(eir: dict[str, Any], bundle: dict[str, Any], groups: dict[str, Any
         geometry_refs = case.get("geometry_refs", [])
         material_refs = case.get("material_refs", [])
         assignments = case.get("material_assignments", [])
-        for j, gid in enumerate(geometry_refs if isinstance(geometry_refs, list) else []):
+        for j, gid in enumerate(_seq(geometry_refs)):
             if gid not in geometries: _add(diagnostics, "semantic", f"{ptr}/geometry_refs/{j}", "unresolved_geometry", "geometry reference does not exist in selected revision")
-        for j, mid in enumerate(material_refs if isinstance(material_refs, list) else []):
+        for j, mid in enumerate(_seq(material_refs)):
             if mid not in materials: _add(diagnostics, "semantic", f"{ptr}/material_refs/{j}", "unresolved_material", "material reference does not exist in selected revision")
-        assigned_g = [a.get("geometry_id") for a in assignments if isinstance(a, dict)] if isinstance(assignments, list) else []
-        assigned_m = [a.get("material_id") for a in assignments if isinstance(a, dict)] if isinstance(assignments, list) else []
+        assigned_g = [a.get("geometry_id") for a in _seq(assignments) if isinstance(a, dict)]
+        assigned_m = [a.get("material_id") for a in _seq(assignments) if isinstance(a, dict)]
         if len(assigned_g) != len(set(assigned_g)) or set(assigned_g) != set(geometry_refs):
             _add(diagnostics, "semantic", ptr + "/material_assignments", "material_coverage_mismatch", "assignments must cover every geometry_ref exactly once")
         if set(material_refs) != set(assigned_m) or len(material_refs) != len(set(material_refs)):
             _add(diagnostics, "semantic", ptr + "/material_refs", "material_refs_mismatch", "material_refs must equal the distinct assigned material ids")
-        for j, assignment in enumerate(assignments if isinstance(assignments, list) else []):
+        for j, assignment in enumerate(_seq(assignments)):
             if not isinstance(assignment, dict): continue
             if assignment.get("geometry_id") not in geometries: _add(diagnostics, "semantic", f"{ptr}/material_assignments/{j}/geometry_id", "unresolved_geometry", "assignment geometry does not exist")
             if assignment.get("material_id") not in materials: _add(diagnostics, "semantic", f"{ptr}/material_assignments/{j}/material_id", "unresolved_material", "assignment material does not exist")
@@ -371,7 +375,7 @@ def _semantic(eir: dict[str, Any], bundle: dict[str, Any], groups: dict[str, Any
         elif eir.get("document_state") == "complete":
             _add(diagnostics, "semantic", ptr + "/group_manifest_ref", "missing_group_manifest", "complete case requires a group manifest")
         for kind, allowed in (("loads", set(profile["allowed_load_kinds"])), ("constraints", set(profile["allowed_constraint_kinds"]))):
-            for j, condition in enumerate(case.get(kind, []) if isinstance(case.get(kind), list) else []):
+            for j, condition in enumerate(_seq(case.get(kind))):
                 if not isinstance(condition, dict): continue
                 cp = f"{ptr}/{kind}/{j}"
                 if condition.get("kind") not in allowed: _add(diagnostics, "semantic", cp + "/kind", "unsupported_condition_kind", "condition kind is not supported by the selected profile")
@@ -382,7 +386,7 @@ def _semantic(eir: dict[str, Any], bundle: dict[str, Any], groups: dict[str, Any
                 for component, quantity in condition.get("components", {}).items():
                     if isinstance(quantity, dict): _check_unit(quantity.get("unit"), dimension, cp + f"/components/{component}/unit", diagnostics, unit_profile)
 
-    for i, artifact in enumerate(bundle.get("artifacts", []) if isinstance(bundle.get("artifacts"), list) else []):
+    for i, artifact in enumerate(_seq(bundle.get("artifacts"))):
         if not isinstance(artifact, dict): continue
         try:
             _uri_path(artifact.get("uri"))
@@ -440,7 +444,6 @@ def _semantic(eir: dict[str, Any], bundle: dict[str, Any], groups: dict[str, Any
                 except (OSError, ValueError):
                     _add(diagnostics, "semantic", f"/artifacts/{aid}/uri", "artifact_unreadable", "artifact path could not be safely resolved or read")
     if eir.get("document_origin") == "migration_v0.1":
-        migration = eir.get("migration", {})
         aid = migration.get("report_artifact_id") if isinstance(migration, dict) else None
         if aid not in artifacts: _add(diagnostics, "semantic", "/migration/report_artifact_id", "migration_report_unresolved", "migration report artifact does not resolve in bundle")
     if purpose == "execution_preflight":
@@ -483,22 +486,22 @@ def _null_complete_refs(eir: Any, diagnostics: list[Diagnostic]) -> None:
     """Report semantically required references even when schema validation also fails."""
     if not isinstance(eir, dict) or eir.get("document_state") != "complete":
         return
-    for i, geometry in enumerate(eir.get("geometry", []) if isinstance(eir.get("geometry"), list) else []):
+    for i, geometry in enumerate(_seq(eir.get("geometry"))):
         if not isinstance(geometry, dict): continue
         for field in ("artifact_id", "frame_id"):
             if geometry.get(field) is None:
                 _add(diagnostics, "semantic", f"/geometry/{i}/{field}", "null_complete_reference", "complete geometry requires this reference")
-    for i, case in enumerate(eir.get("simulation_cases", []) if isinstance(eir.get("simulation_cases"), list) else []):
+    for i, case in enumerate(_seq(eir.get("simulation_cases"))):
         if not isinstance(case, dict): continue
         if case.get("frame_id") is None:
             _add(diagnostics, "semantic", f"/simulation_cases/{i}/frame_id", "null_complete_reference", "complete case requires a frame reference")
         if case.get("group_manifest_ref") is None:
             _add(diagnostics, "semantic", f"/simulation_cases/{i}/group_manifest_ref", "null_complete_reference", "complete case requires a group manifest reference")
         for field in ("loads", "constraints"):
-            for j, condition in enumerate(case.get(field, []) if isinstance(case.get(field), list) else []):
+            for j, condition in enumerate(_seq(case.get(field))):
                 if isinstance(condition, dict) and condition.get("frame_id") is None:
                     _add(diagnostics, "semantic", f"/simulation_cases/{i}/{field}/{j}/frame_id", "null_complete_reference", "complete condition requires a frame reference")
-        for j, assignment in enumerate(case.get("material_assignments", []) if isinstance(case.get("material_assignments"), list) else []):
+        for j, assignment in enumerate(_seq(case.get("material_assignments"))):
             if not isinstance(assignment, dict): continue
             for field in ("geometry_id", "material_id"):
                 if assignment.get(field) is None:
@@ -559,8 +562,7 @@ def validate(eir: Any, bundle: Any, group_manifest: Any | None = None, *,
     for kind, raw in (("eir", eir), ("bundle", bundle), ("groups", group_manifest)):
         if raw is None and kind == "groups": continue
         try:
-            if isinstance(raw, bytes): size = len(raw)
-            elif isinstance(raw, bytearray): size = len(raw)
+            if isinstance(raw, (bytes, bytearray)): size = len(raw)
             elif isinstance(raw, str): size = len(raw.encode("utf-8"))
             else: size = len(json.dumps(raw, ensure_ascii=False, allow_nan=False).encode("utf-8"))
             if size > max_document_bytes:
@@ -589,11 +591,13 @@ def validate(eir: Any, bundle: Any, group_manifest: Any | None = None, *,
             _add(diagnostics, "structural", f"/{kind}", "schema_unavailable", str(exc))
     if "eir" in parsed:
         _null_complete_refs(parsed["eir"], diagnostics)
+    profile = json.loads((PROFILE_DIR / "structural.axial_bar.v1.json").read_text(encoding="utf-8"))
     if schema_valid and "eir" in parsed and "bundle" in parsed:
         try:
             _semantic(parsed["eir"], parsed["bundle"], parsed.get("groups"),
                       Path(bundle_root) if bundle_root is not None else None,
-                      purpose, adapter_capabilities, diagnostics, max_artifact_bytes, max_document_bytes)
+                      purpose, adapter_capabilities, diagnostics, max_artifact_bytes, max_document_bytes,
+                      profile)
         except (TypeError, KeyError, AttributeError) as exc:
             _add(diagnostics, "semantic", "", "invalid_document_shape", f"semantic evaluation could not proceed: {type(exc).__name__}")
     diagnostics.sort(key=lambda d: (d.stage, d.pointer, d.code, d.message, d.severity))
@@ -605,5 +609,4 @@ def validate(eir: Any, bundle: Any, group_manifest: Any | None = None, *,
     readiness = None
     if purpose == "execution_preflight":
         readiness = "ready" if status == "valid" else "blocked"
-    profile = json.loads((PROFILE_DIR / "structural.axial_bar.v1.json").read_text(encoding="utf-8"))
     return ValidationReport(status, purpose, readiness, tuple(diagnostics), tuple(sorted(digests)), profile["profile_id"], profile["version"])

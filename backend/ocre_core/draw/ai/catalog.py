@@ -60,10 +60,8 @@ def material_match(part: str, material: str) -> str | None:
     """Return a catalog material candidate only when explicitly catalogued."""
     if not isinstance(material, str):
         return None
-    key = _MATERIAL_ALIASES.get(
-        " ".join(material.casefold().split()),
-        " ".join(material.casefold().split()),
-    )
+    key = " ".join(material.casefold().split())
+    key = _MATERIAL_ALIASES.get(key, key)
     for name in MATERIALS.get(part, ()):
         canonical = _MATERIAL_ALIASES.get(name.casefold(), name.casefold())
         if canonical == key:
