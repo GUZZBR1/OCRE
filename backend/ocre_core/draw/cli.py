@@ -152,6 +152,8 @@ def _resolve_ai_adapter(factory_spec: str):
 
 
 def _build_parser() -> argparse.ArgumentParser:
+    from .step_export import OPEN_STROKES_POLICIES
+
     parser = argparse.ArgumentParser(
         prog="ocre-draw-export",
         description="F0 Draw export: PNG -> draw.paper.v1 -> DXF R2000 + sidecar + fingerprint.",
@@ -242,6 +244,13 @@ def _build_parser() -> argparse.ArgumentParser:
     beta.add_argument("--material", default=None,
                       help="DECLARED material name (required; missing "
                            "blocks the job, never estimated)")
+    beta.add_argument("--open-strokes-policy", default="fail",
+                      choices=list(OPEN_STROKES_POLICIES),
+                      help="policy for open 'stable' strokes in the STEP "
+                           "step: 'fail' refuses the export (default, "
+                           "fail-closed); 'skip-open' records them in the "
+                           "STEP report's skipped list — a document with "
+                           "no closed 'stable' stroke is still refused")
     beta.add_argument("--ai-adapter-factory", default=None,
                       help="optional module:callable returning a ModelAdapter; injectable provider seam")
     beta.add_argument("--proposal-file", default=None,
@@ -830,19 +839,22 @@ def _beta_step_step(ctx: dict[str, Any]) -> dict[str, Any]:
     try:
         report = document_to_step(
             ctx["doc"], args.thickness_mm, args.material, step_path,
-            timeout_s=args.timeout_s)
+            timeout_s=args.timeout_s,
+            open_strokes_policy=args.open_strokes_policy)
     except StepExportError as exc:
         return _beta_step_report(
             "step", "blocked", time.perf_counter() - started,
             {"thickness_mm": args.thickness_mm,
-             "material": args.material},
+             "material": args.material,
+             "open_strokes_policy": args.open_strokes_policy},
             error=f"STEP export refused (fail-closed): {exc}",
         )
     except StepWorkerError as exc:
         return _beta_step_report(
             "step", "failed", time.perf_counter() - started,
             {"thickness_mm": args.thickness_mm,
-             "material": args.material},
+             "material": args.material,
+             "open_strokes_policy": args.open_strokes_policy},
             error=f"STEP worker failed: {exc}",
         )
     if staging:
@@ -1233,6 +1245,7 @@ def _cmd_beta_run(args: argparse.Namespace) -> int:
             "draw_commit": args.draw_commit,
             "thickness_mm": args.thickness_mm,
             "material": args.material,
+            "open_strokes_policy": args.open_strokes_policy,
             "ocs_binary": args.ocs_binary,
             "draw_config": args.draw_config,
             "document": args.document,

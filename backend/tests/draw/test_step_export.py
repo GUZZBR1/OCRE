@@ -18,6 +18,7 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from ocre_core.draw import step_export
 from ocre_core.draw.step_export import (
@@ -295,6 +296,130 @@ class StepExportTests(unittest.TestCase):
         self.assertAlmostEqual(
             oracle["volume_mm3"], EXPECTED_VOLUME_MM3,
             delta=EXPECTED_VOLUME_MM3 * VOLUME_REL_TOL,
+        )
+
+
+class OpenStrokesPolicyTests(unittest.TestCase):
+    """Política de traços abertos (``open_strokes_policy``) — só host.
+
+    Estes testes NÃO precisam do venv ``.venv-beta``: ``_run_worker`` é
+    mockado, então o que se prova é a fronteira do documento (o que sai
+    em ``profiles``/``skipped`` e o que ainda recusa fail-closed), não
+    a geometria OCCT — que a classe ``StepExportTests`` já cobre.
+    """
+
+    # Artefatos temporários ficam dentro do repo (AGENTS.md); ``.tmp/``
+    # na raiz é gitignored.
+    _REPO_TMP = Path(__file__).resolve().parents[3] / ".tmp"
+
+    def setUp(self):
+        self._REPO_TMP.mkdir(exist_ok=True)
+        self.tmp = tempfile.TemporaryDirectory(
+            prefix="ocre-open-policy-", dir=self._REPO_TMP
+        )
+        self.addCleanup(self.tmp.cleanup)
+        self.dir = Path(self.tmp.name)
+
+    def _export(self, doc, **kwargs):
+        """``document_to_step`` com worker fake; devolve (report, job)."""
+        captured = {}
+
+        def fake_worker(job, *, timeout_s, worker_python=None):
+            captured["job"] = job
+            area = sum(
+                step_export._polygon_area_mm2(p) for p in job["profiles"]
+            )
+            return {
+                "ok": True,
+                "sha256": "f" * 64,
+                "bytes": 10,
+                "volume_mm3": area * float(job["thickness_mm"]),
+                "bbox_mm": [[0.0, 0.0, 0.0], [1.0, 1.0, 1.0]],
+                "file_schema": "AP242",
+                "worker_versions": {"build123d": "fake"},
+                "notes": [],
+            }
+
+        with mock.patch.object(
+            step_export, "_run_worker", side_effect=fake_worker
+        ):
+            report = document_to_step(
+                doc, THICKNESS_MM, "PLA", self.dir / "doc.step", **kwargs
+            )
+        return report, captured["job"]
+
+    def test_fail_is_the_default_and_refuses_open_stroke(self):
+        doc = make_doc(
+            [
+                stroke("s-0001", RECT, closed=True),
+                stroke("s-0002", [[10.0, 200.0], [100.0, 200.0]]),
+            ]
+        )
+        with self.assertRaises(StepExportError):
+            self._export(doc)
+        self.assertFalse((self.dir / "doc.step").exists())
+
+    def test_skip_open_records_stroke_and_exports_closed_only(self):
+        doc = make_doc(
+            [
+                stroke("s-0001", RECT, closed=True),
+                stroke("s-0002", [[10.0, 200.0], [100.0, 200.0]]),
+            ]
+        )
+        report, job = self._export(doc, open_strokes_policy="skip-open")
+        self.assertEqual(report["stroke_ids"], ["s-0001"])
+        self.assertEqual(
+            report["skipped"], [{"stroke_id": "s-0002", "reason": "open"}]
+        )
+        self.assertEqual(report["open_strokes_policy"], "skip-open")
+        # Só o perfil fechado chegou ao job do worker.
+        self.assertEqual(len(job["profiles"]), 1)
+        self.assertAlmostEqual(
+            report["volume_mm3"], EXPECTED_VOLUME_MM3,
+            delta=EXPECTED_VOLUME_MM3 * VOLUME_REL_TOL,
+        )
+
+    def test_skip_open_still_refuses_document_without_closed_stable(self):
+        # Só traço aberto: a política não fabrica sólido do nada.
+        doc = make_doc([stroke("s-0001", [[10.0, 20.0], [50.0, 20.0]])])
+        with self.assertRaises(StepExportError):
+            self._export(doc, open_strokes_policy="skip-open")
+
+    def test_unknown_policy_is_refused_fail_closed(self):
+        doc = make_doc([stroke("s-0001", RECT, closed=True)])
+        for bad in ("skip-aux", "ignore", "", None, 3):
+            with self.subTest(policy=bad), self.assertRaises(StepExportError):
+                self._export(doc, open_strokes_policy=bad)
+
+    def test_export_dxf_ac1015_honors_the_same_policy(self):
+        # Default: traço aberto recusa antes de qualquer worker.
+        doc = make_doc([stroke("s-0001", [[10.0, 20.0], [50.0, 20.0]])])
+        with self.assertRaises(StepExportError):
+            export_dxf_ac1015(doc, self.dir / "open.dxf")
+        # skip-open: o traço aberto vai para o relatório, não para o DXF.
+        doc = make_doc(
+            [
+                stroke("s-0001", RECT, closed=True),
+                stroke("s-0002", [[10.0, 200.0], [100.0, 200.0]]),
+            ]
+        )
+        with mock.patch.object(
+            step_export,
+            "_run_worker",
+            return_value={
+                "ok": True,
+                "dxf_path": str(self.dir / "doc.dxf"),
+                "dxf_sha256": "e" * 64,
+                "dxf_bytes": 9,
+                "worker_versions": {},
+            },
+        ):
+            report = export_dxf_ac1015(
+                doc, self.dir / "doc.dxf", open_strokes_policy="skip-open"
+            )
+        self.assertEqual(report["stroke_ids"], ["s-0001"])
+        self.assertEqual(
+            report["skipped"], [{"stroke_id": "s-0002", "reason": "open"}]
         )
 
 

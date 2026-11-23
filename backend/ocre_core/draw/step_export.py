@@ -17,8 +17,11 @@ Regras (fichas ``cad.md`` / ``formatos.md`` + decisão do Senado):
 - Espessura e material são DECLARADOS por humano (argumento) — nunca
   inventados. Espessura ausente/``None``/<=0 ou material vazio =
   recusa fail-closed.
-- Traço aberto = recusa fail-closed (nunca vira sólido). Documento
-  sem traço fechado ``stable`` = recusa.
+- Traço aberto ``stable``: ``open_strokes_policy="fail"`` (padrão)
+  recusa fail-closed — nunca vira sólido. A política opt-in
+  ``"skip-open"`` registra o traço em ``skipped`` e segue sem ele;
+  documento sem nenhum traço fechado ``stable`` recusa nas duas
+  políticas.
 - ``erased`` nunca entra; ``pending`` é pulado e registrado no
   relatório (mesma regra do escritor DXF F0).
 - O documento ``draw.paper.v1`` continua sendo o mestre: o STEP é só
@@ -55,6 +58,7 @@ from .document import document_sha256
 
 __all__ = [
     "DEFAULT_TIMEOUT_S",
+    "OPEN_STROKES_POLICIES",
     "ORACLE_UNAVAILABLE",
     "StepExportError",
     "document_to_step",
@@ -74,6 +78,11 @@ VOLUME_TOLERANCE_REL = 1e-3
 _FREECAD_ORACLE_SCRIPT = "freecad_oracle.py"
 ORACLE_UNAVAILABLE = "unavailable"
 MATERIAL_MANIFEST_SCHEMA = "ocre.step-material-manifest.v1"
+# Políticas para traços ``stable`` abertos: "fail" recusa a exportação
+# inteira (fail-closed, padrão); "skip-open" registra o traço em
+# ``skipped`` com ``reason="open"`` e segue sem ele — um documento sem
+# nenhum traço fechado ``stable`` continua recusando nas duas.
+OPEN_STROKES_POLICIES = ("fail", "skip-open")
 
 
 class StepExportError(ValueError):
@@ -225,13 +234,23 @@ def _paper_size(document: dict) -> tuple[float, float]:
         raise StepExportError(str(exc)) from exc
 
 
-def _closed_stable_profiles(document: dict) -> tuple[list[list[list[float]]], list[str], list[dict[str, str]]]:
+def _closed_stable_profiles(
+    document: dict, *, open_strokes_policy: str = "fail"
+) -> tuple[list[list[list[float]]], list[str], list[dict[str, str]]]:
     """Perfis CAD (y-up) dos traços ``stable`` fechados + relatório.
 
     Devolve ``(profiles, stroke_ids, skipped)``. Fail-closed: traço
-    aberto ``stable`` recusa tudo (nunca vira sólido); ponto fora da
-    folha, não finito ou fechado com <3 pontos também recusa.
+    aberto ``stable`` recusa tudo (nunca vira sólido) a menos que
+    ``open_strokes_policy="skip-open"``, que registra o traço em
+    ``skipped`` com ``reason="open"`` e segue sem ele — sem traço
+    fechado nenhum a exportação recusa nas duas políticas. Ponto fora
+    da folha, não finito ou fechado com <3 pontos também recusa.
     """
+    if open_strokes_policy not in OPEN_STROKES_POLICIES:
+        raise StepExportError(
+            f"open_strokes_policy desconhecida: {open_strokes_policy!r} "
+            f"(esperado uma de {OPEN_STROKES_POLICIES})"
+        )
     schema = document.get("schema")
     if schema is not None and schema != "draw.paper.v1":
         raise StepExportError(f"schema inesperado: {schema!r} (esperado 'draw.paper.v1')")
@@ -263,12 +282,17 @@ def _closed_stable_profiles(document: dict) -> tuple[list[list[list[float]]], li
         if status != "stable":
             raise StepExportError(f"traço {stroke_id}: status desconhecido {status!r}")
         if not stroke.get("closed", False):
-            # Traço aberto NUNCA vira sólido — recusa fail-closed,
-            # mesmo que haja outros traços fechados no documento.
-            raise StepExportError(
-                f"traço {stroke_id}: traço aberto não vira sólido "
-                "(só traços fechados 'stable' vão para o STEP)"
-            )
+            if open_strokes_policy == "fail":
+                # Traço aberto NUNCA vira sólido — recusa fail-closed,
+                # mesmo que haja outros traços fechados no documento.
+                raise StepExportError(
+                    f"traço {stroke_id}: traço aberto não vira sólido "
+                    "(só traços fechados 'stable' vão para o STEP)"
+                )
+            # "skip-open": o traço aberto não vira sólido, mas não
+            # derruba a exportação — fica registrado, rastreável.
+            skipped.append({"stroke_id": stroke_id, "reason": "open"})
+            continue
         points = stroke.get("points_mm")
         if not isinstance(points, list) or len(points) < 3:
             raise StepExportError(
@@ -314,12 +338,15 @@ def document_to_step(
     timestamp: str | None = None,
     timeout_s: float = DEFAULT_TIMEOUT_S,
     worker_python: str | Path | None = None,
+    open_strokes_policy: str = "fail",
 ) -> dict:
     """Documento ``draw.paper.v1`` -> sólido STEP (via worker build123d).
 
     ``thickness_mm`` e ``material`` são DECLARADOS por humano — nunca
     inventados: ``thickness_mm`` ausente/``None``/<=0 ou ``material``
-    vazio recusa fail-closed. Devolve o relatório da exportação
+    vazio recusa fail-closed. ``open_strokes_policy`` decide o destino
+    de traços abertos ``stable`` (``"fail"`` recusa, ``"skip-open"``
+    registra em ``skipped``). Devolve o relatório da exportação
     (caminho, sha256, volume, bbox, FILE_SCHEMA real, versões pinadas).
     """
     if thickness_mm is None:
@@ -339,7 +366,8 @@ def document_to_step(
             "(material nunca é inventado)"
         )
     material = material.strip()
-    profiles, stroke_ids, skipped = _closed_stable_profiles(document)
+    profiles, stroke_ids, skipped = _closed_stable_profiles(
+        document, open_strokes_policy=open_strokes_policy)
     expected_area = sum(_polygon_area_mm2(p) for p in profiles)
     expected_volume = expected_area * float(thickness_mm)
 
@@ -377,6 +405,7 @@ def document_to_step(
         "file_schema": result.get("file_schema"),
         "thickness_mm": float(thickness_mm),
         "material_declared": material,
+        "open_strokes_policy": open_strokes_policy,
         "stroke_ids": stroke_ids,
         "skipped": skipped,
         "profiles": len(profiles),
@@ -457,15 +486,18 @@ def export_dxf_ac1015(
     *,
     timeout_s: float = DEFAULT_TIMEOUT_S,
     worker_python: str | Path | None = None,
+    open_strokes_policy: str = "fail",
 ) -> dict:
     """Spike (a) do Senado: DXF ``AC1015`` (R2000) do perfil 2D via build123d.
 
     Usa o mesmo perfil fechado ``stable`` do STEP (espessura 1 mm só
-    para o worker rodar; o DXF é 2D e não carrega espessura). Devolve
+    para o worker rodar; o DXF é 2D e não carrega espessura) e a mesma
+    ``open_strokes_policy`` para traços abertos ``stable``. Devolve
     o relatório do worker; a abertura no LibreCAD é o gate
     ``librecad_gate.check_dxf`` (F0), chamado pelo teste/caller.
     """
-    profiles, stroke_ids, skipped = _closed_stable_profiles(document)
+    profiles, stroke_ids, skipped = _closed_stable_profiles(
+        document, open_strokes_policy=open_strokes_policy)
     dxf_path = Path(dxf_path)
     dxf_path.parent.mkdir(parents=True, exist_ok=True)
     # O worker precisa de um STEP de saída no job de export; usa-se um
