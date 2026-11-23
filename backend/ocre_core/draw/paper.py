@@ -26,12 +26,14 @@ Rules:
   (A4 retrato: 296.47 mm, not the nominal 297).
 - ``load_draw_config`` reads a Draw ``config.py`` *as text* (``ast``,
   never imported or executed — the Draw is read-only reference and its
-  code must not run inside OCRE) and derives a spec from ``PAPER_W`` /
-  ``PAPER_H`` using the A4 pixel-to-mm mapping (850 px <-> 210 mm).
+  code must not run inside OCRE). It accepts the legacy ``PAPER_W`` /
+  ``PAPER_H`` globals and the current ``FORMATS`` dict plus
+  ``_current = _spec(name, orientation)``, deriving mm from the A4
+  pixel-to-mm mapping (850 px <-> 210 mm).
   A canvas that matches a registered spec returns that spec; any other
   canvas derives its mm from the same mapping. A config that cannot be
-  parsed, or lacks positive integer ``PAPER_W`` / ``PAPER_H``, is
-  refused fail-closed — the caller keeps the A4 default only when no
+  parsed, or has neither shape in usable literal form, is refused
+  fail-closed — the caller keeps the A4 default only when no
   config was given at all.
 """
 from __future__ import annotations
@@ -192,11 +194,59 @@ def resolve_paper(paper: str | PaperSpec | None) -> PaperSpec:
     raise TypeError(f"paper must be a format name, a PaperSpec or None, got {type(paper).__name__}")
 
 
-def _read_draw_canvas(path: str | Path) -> tuple[int, int]:
-    """Read PAPER_W / PAPER_H from a Draw config.py, as text, via AST.
+def _literal_formats(node: ast.expr) -> dict[str, tuple[float, float]] | None:
+    """Literal ``{"name": (w_mm, h_mm)}`` dict; anything else -> None."""
+    if not isinstance(node, ast.Dict):
+        return None
+    out: dict[str, tuple[float, float]] = {}
+    for key, val in zip(node.keys, node.values):
+        if (
+            not isinstance(key, ast.Constant)
+            or not isinstance(key.value, str)
+            or not isinstance(val, ast.Tuple)
+            or len(val.elts) != 2
+            or not all(
+                isinstance(elt, ast.Constant)
+                and isinstance(elt.value, (int, float))
+                and not isinstance(elt.value, bool)
+                and elt.value > 0
+                for elt in val.elts
+            )
+        ):
+            return None
+        out[key.value] = (float(val.elts[0].value), float(val.elts[1].value))
+    return out
 
-    The file is never imported or executed. Only top-level assignments
-    of plain integer literals count; anything else is refused.
+
+def _literal_spec_call(node: ast.expr) -> tuple[str, str] | None:
+    """``_spec("name", "orientation")`` literal call; else None."""
+    if (
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "_spec"
+        and not node.keywords
+        and len(node.args) == 2
+        and all(
+            isinstance(arg, ast.Constant) and isinstance(arg.value, str)
+            for arg in node.args
+        )
+    ):
+        return node.args[0].value, node.args[1].value
+    return None
+
+
+def _read_draw_canvas(path: str | Path) -> tuple[int, int]:
+    """Read the Draw canvas in px from a config.py, as text, via AST.
+
+    The file is never imported or executed. Two shapes are accepted,
+    both fail-closed on anything non-literal:
+
+    - legacy globals: top-level ``PAPER_W = <int>`` / ``PAPER_H = <int>``;
+    - current draw-core: a literal ``FORMATS = {"a4": (w_mm, h_mm), ...}``
+      plus the session default ``_current = _spec(name, orientation)`` —
+      the canvas follows ``paper_grid`` (A4 keeps the legacy 850 px
+      short edge, others derive ``round(1200 * w/h)``; paisagem swaps
+      the axes).
     """
     try:
         source = Path(path).read_text(encoding="utf-8")
@@ -207,21 +257,41 @@ def _read_draw_canvas(path: str | Path) -> tuple[int, int]:
     except SyntaxError as exc:
         raise ValueError(f"Draw config is not valid Python: {path}: {exc}") from exc
     found: dict[str, int] = {}
+    formats: dict[str, tuple[float, float]] | None = None
+    current: tuple[str, str] | None = None
     for node in tree.body:
         if not isinstance(node, ast.Assign) or len(node.targets) != 1:
             continue
         target = node.targets[0]
-        if not isinstance(target, ast.Name) or target.id not in ("PAPER_W", "PAPER_H"):
+        if not isinstance(target, ast.Name):
             continue
         value = node.value
-        if isinstance(value, ast.Constant) and isinstance(value.value, int) and not isinstance(value.value, bool):
-            found[target.id] = value.value
-    for name in ("PAPER_W", "PAPER_H"):
-        if name not in found:
-            raise ValueError(f"Draw config {path} has no integer {name} assignment")
-        if found[name] <= 0:
-            raise ValueError(f"Draw config {path}: {name} must be positive (got {found[name]})")
-    return found["PAPER_W"], found["PAPER_H"]
+        if target.id in ("PAPER_W", "PAPER_H"):
+            if isinstance(value, ast.Constant) and isinstance(value.value, int) and not isinstance(value.value, bool):
+                found[target.id] = value.value
+        elif target.id == "FORMATS":
+            # Última atribuição vence — inclusive não-literal: manter o
+            # literal anterior leria a grade errada em vez de recusar.
+            formats = _literal_formats(value)
+        elif target.id == "_current":
+            current = _literal_spec_call(value)
+    if found:
+        for name in ("PAPER_W", "PAPER_H"):
+            if name not in found:
+                raise ValueError(f"Draw config {path} has no integer {name} assignment")
+            if found[name] <= 0:
+                raise ValueError(f"Draw config {path}: {name} must be positive (got {found[name]})")
+        return found["PAPER_W"], found["PAPER_H"]
+    if formats is not None and current is not None:
+        name, orientation = current
+        if name not in formats:
+            raise ValueError(f"Draw config {path}: _spec references unknown format {name!r}")
+        if orientation not in ("retrato", "paisagem"):
+            raise ValueError(f"Draw config {path}: _spec references unknown orientation {orientation!r}")
+        width_mm, height_mm = formats[name]
+        short = 850 if name == "a4" else round(1200 * width_mm / height_mm)
+        return (short, 1200) if orientation == "retrato" else (1200, short)
+    raise ValueError(f"Draw config {path} has no integer PAPER_W assignment")
 
 
 def load_draw_config(path: str | Path) -> PaperSpec:
