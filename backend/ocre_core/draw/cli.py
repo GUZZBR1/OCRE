@@ -83,7 +83,7 @@ from .document import (
     stabilize_stroke,
 )
 from .fingerprint import compute_fingerprint
-from .paper import load_draw_config, resolve_paper
+from .paper import DEFAULT_SPEC, load_draw_config, resolve_paper
 from .sidecar import build_draw_sidecar
 from .validator_draw import (
     SCHEMA_NAME,
@@ -104,6 +104,92 @@ UNIT_POLICY_VERSION = "0.1.0"
 DXF_ADAPTER_VERSION = "0.1.0"
 _HEX40_RE = re.compile(r"^[0-9a-f]{40}$")
 _ORIGINS = ("fork-session-v2", "upstream-vectorize", "upstream-canvas-png")
+
+
+_PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
+# Métricas de fidelidade do ``summary`` do vectorize que vão para o
+# sidecar/fingerprint — whitelist explícita porque o summary também
+# carrega chaves voláteis (``svg``/``json``: caminhos temporários que
+# tornariam o fingerprint não-reprodutível entre runs).
+_FIDELITY_SUMMARY_KEYS = (
+    "pixels_tinta",
+    "polilinhas",
+    "polilinhas_fechadas",
+    "polilinhas_de_um_ponto",
+    "saltos_de_caneta",
+    "distancias",
+    "polaridade_tinta",
+    "epsilon_px",
+    "thinning",
+    "primitivas_contagem",
+)
+
+
+def _png_dimensions_px(path: Path) -> tuple[int, int]:
+    """(largura, altura) em px do PNG, lidos do chunk IHDR (só stdlib).
+
+    Fail-closed: assinatura errada, arquivo curto ou IHDR fora do lugar
+    são recusados — nunca se adivinha a geometria do canvas.
+    """
+    try:
+        with open(path, "rb") as handle:
+            header = handle.read(33)
+    except OSError as exc:
+        raise ValueError(f"cannot read PNG: {path}: {exc}") from exc
+    if len(header) < 33 or not header.startswith(_PNG_SIGNATURE):
+        raise ValueError(f"not a PNG file (bad signature/short): {path}")
+    ihdr_len = int.from_bytes(header[8:12], "big")
+    if header[12:16] != b"IHDR" or ihdr_len != 13:
+        raise ValueError(f"PNG sem chunk IHDR esperado: {path}")
+    width = int.from_bytes(header[16:20], "big")
+    height = int.from_bytes(header[20:24], "big")
+    if width <= 0 or height <= 0:
+        raise ValueError(f"PNG com dimensões inválidas {width}x{height}: {path}")
+    return width, height
+
+
+def _fidelity_summary(summary: Any) -> dict[str, Any]:
+    """Recorte estável do ``summary`` do vectorize para o sidecar."""
+    if not isinstance(summary, dict):
+        return {}
+    return {
+        key: summary[key] for key in _FIDELITY_SUMMARY_KEYS if key in summary
+    }
+
+
+def _fidelity_p95_px(summary: Any) -> float | None:
+    """Maior ``p95_px`` entre as direções de ``summary.distancias``."""
+    if not isinstance(summary, dict):
+        return None
+    distancias = summary.get("distancias")
+    if not isinstance(distancias, dict):
+        return None
+    values = [
+        direction.get("p95_px")
+        for direction in distancias.values()
+        if isinstance(direction, dict)
+        and isinstance(direction.get("p95_px"), (int, float))
+        and not isinstance(direction.get("p95_px"), bool)
+    ]
+    return max((float(v) for v in values), default=None)
+
+
+def _json_finite(value: Any) -> bool:
+    """True quando a árvore JSON-like só contém números finitos.
+
+    ``json.loads`` aceita ``NaN``/``Infinity`` literais; se entrarem no
+    summary do vectorize eles chegariam ao fingerprint — que os recusa
+    — DEPOIS do DXF já promovido. Validar cedo mantém fail-closed.
+    """
+    if isinstance(value, bool):
+        return True
+    if isinstance(value, (int, float)):
+        return math.isfinite(value)
+    if isinstance(value, dict):
+        return all(_json_finite(item) for item in value.values())
+    if isinstance(value, (list, tuple)):
+        return all(_json_finite(item) for item in value)
+    return True
 
 
 def _atomic_write_bytes(path: Path, data: bytes) -> None:
@@ -187,9 +273,15 @@ def _build_parser() -> argparse.ArgumentParser:
     exp.add_argument("--draw-repo", required=True, help="Draw repo the artifacts came from")
     exp.add_argument("--draw-commit", required=True,
                      help="pinned Draw revision, full 40-hex git SHA (sidecar requires it)")
-    exp.add_argument("--order-kind", default="unknown",
+    exp.add_argument("--order-kind", default=None,
                      choices=("temporal-stamps", "reading-centroid", "unknown"),
-                     help="how stroke order is assigned (default: unknown)")
+                     help="how stroke order is assigned (default: "
+                          "temporal-stamps when stamped primitives come "
+                          "back, else unknown)")
+    exp.add_argument("--stamps", default=None, metavar="STAMPS.npz",
+                     help="carimbos temporais do Draw (.npz), repassados "
+                          "ao vectorize; primitivas com t_start_ms/t_end_ms "
+                          "implicam order_kind temporal-stamps")
     exp.add_argument("--paper", default=None,
                      help="paper format from the paper registry (operator flag; "
                           "default: the current Draw paper, today A4)")
@@ -206,6 +298,10 @@ def _build_parser() -> argparse.ArgumentParser:
                      help="request clean vectorization")
     exp.add_argument("--epsilon", type=float, default=None)
     exp.add_argument("--thinning", default=None)
+    exp.add_argument("--max-p95-px", type=float, default=None,
+                     help="fidelity gate: refuse the export when the "
+                          "vectorizer's p95 distance (px, either "
+                          "direction) exceeds this value")
     exp.add_argument("--librecad-check", action="store_true",
                      help="also run the LibreCAD gate G0.2 on the DXF (unavailable without the binary)")
 
@@ -253,6 +349,9 @@ def _build_parser() -> argparse.ArgumentParser:
                       help="pinned Draw revision, full 40-hex git SHA")
     beta.add_argument("--clean", action="store_true",
                       help="request clean vectorization")
+    beta.add_argument("--stamps", default=None, metavar="STAMPS.npz",
+                      help="carimbos temporais do Draw (.npz) para o "
+                           "vectorize (passo export)")
     beta.add_argument("--thickness-mm", type=float, default=None,
                       help="DECLARED extrusion thickness in mm (required; "
                            "missing blocks the job, never estimated)")
@@ -315,6 +414,18 @@ def _cmd_export(args: argparse.Namespace) -> int:
     png_path = Path(args.png)
     if not png_path.is_file():
         return _fail(f"PNG not found: {png_path}", 2)
+    # --max-p95-px is parsed as float, which accepts nan/inf: a nan
+    # limit never blocks the gate and would land in export_parameters
+    # (the fingerprint refuses non-finite numbers) — after the DXF was
+    # already promoted. Refuse before anything is written.
+    max_p95_px = getattr(args, "max_p95_px", None)
+    if max_p95_px is not None and not math.isfinite(max_p95_px):
+        print(
+            f"error: --max-p95-px must be a finite number, got "
+            f"{max_p95_px!r}",
+            file=sys.stderr,
+        )
+        return 2
     out_dir = Path(args.out_dir).resolve()
     out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -326,7 +437,44 @@ def _cmd_export(args: argparse.Namespace) -> int:
     except (ValueError, FileNotFoundError, OSError) as exc:
         return _fail(f"cannot resolve paper: {exc}", 2)
 
+    # The PNG canvas must match the resolved sheet exactly: a landscape
+    # or foreign-size canvas vectorized against the wrong grid would
+    # produce silently wrong mm. Fail closed before the subprocess.
+    try:
+        png_w_px, png_h_px = _png_dimensions_px(png_path)
+    except ValueError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+    if (png_w_px, png_h_px) != (spec.canvas_width_px, spec.canvas_height_px):
+        print(
+            f"error: PNG {png_w_px}x{png_h_px} px does not match the "
+            f"{spec.format} canvas {spec.canvas_width_px}x"
+            f"{spec.canvas_height_px} px; refusing — the vectorizer mm "
+            "scale would be wrong",
+            file=sys.stderr,
+        )
+        return 2
+
+    stamps_path = getattr(args, "stamps", None)
+    stamps_sha256 = None
+    if stamps_path is not None:
+        stamps_path = Path(stamps_path)
+        if not stamps_path.is_file():
+            print(f"error: stamps file not found: {stamps_path}", file=sys.stderr)
+            return 2
+        stamps_sha256 = _sha256_file(stamps_path)
+
     png_sha256 = _sha256_file(png_path)
+
+    # The pinned vectorize hardcodes A4 retrato; other sheets need the
+    # --paper-w-mm/--paper-h-mm flags. Sent only for non-default specs
+    # so the A4 path keeps working against today's pinned script (the
+    # flags make older scripts fail loudly, never silently).
+    paper_mm = (
+        (spec.width_mm, spec.effective_height_mm)
+        if spec is not DEFAULT_SPEC
+        else None
+    )
 
     try:
         vectorized = run_vectorize(
@@ -338,26 +486,85 @@ def _cmd_export(args: argparse.Namespace) -> int:
             clean=args.clean,
             epsilon=args.epsilon,
             thinning=args.thinning,
+            stamps_path=stamps_path,
+            paper_mm=paper_mm,
         )
     except VectorizeError as exc:
         return _fail(f"vectorize failed: {exc}", 1)
 
+    # O recorte do summary vai para export_parameters (fingerprint):
+    # números não-finitos seriam recusados lá, depois do DXF promovido.
+    fidelity_summary = _fidelity_summary(vectorized.get("summary"))
+    if not _json_finite(fidelity_summary):
+        return _fail(
+            "vectorizer summary carries non-finite numbers; refusing "
+            "to build a package that cannot be fingerprinted", 1,
+        )
+
+    if max_p95_px is not None:
+        p95_px = _fidelity_p95_px(vectorized.get("summary"))
+        if p95_px is None:
+            print(
+                "error: --max-p95-px given but the vectorizer summary "
+                "carries no distancias.p95_px; the fidelity gate cannot "
+                "be checked, refusing",
+                file=sys.stderr,
+            )
+            return 1
+        if p95_px > max_p95_px:
+            print(
+                f"error: vectorization fidelity gate failed: p95 "
+                f"{p95_px} px exceeds --max-p95-px {max_p95_px}",
+                file=sys.stderr,
+            )
+            return 1
+
     polylines = vectorized["polylines"]
+    # Stamped primitives require the temporal-stamps order (the
+    # validator refuses timestamps without it); without stamps the
+    # order stays as asked (default unknown).
+    has_stamps = any(
+        "t_start_ms" in polyline or "t_end_ms" in polyline
+        for polyline in polylines
+    )
+    if has_stamps and args.order_kind not in (None, "temporal-stamps"):
+        print(
+            f"error: vectorizer returned stamped primitives but "
+            f"--order-kind is {args.order_kind!r}; stamped output "
+            "requires temporal-stamps",
+            file=sys.stderr,
+        )
+        return 2
+    order_kind = args.order_kind or (
+        "temporal-stamps" if has_stamps else "unknown"
+    )
     # Build the document (master) from the vectorizer polylines.
     doc = new_document(
         {"repo": args.draw_repo, "commit": args.draw_commit, "origin": args.origin},
-        order_kind=args.order_kind,
+        order_kind=order_kind,
         doc_id=args.doc_id,
         paper=spec,
     )
     try:
         for polyline in polylines:
             shape = polyline.get("type")
+            # O fit analítico do círculo (cx_mm/cy_mm/r_mm) sobe ao
+            # documento mestre — a Fase 2 o usa no STEP analítico.
+            # add_stroke valida na folha e implica shape="circle".
+            circle_mm = polyline.get("circle_mm")
+            circle = (
+                {key: circle_mm[key] for key in ("cx_mm", "cy_mm", "r_mm")}
+                if circle_mm is not None
+                else None
+            )
             stroke = add_stroke(
                 doc,
                 polyline["points_mm"],
                 closed=bool(polyline.get("closed", False)),
                 shape=shape if shape in SHAPES else None,
+                circle=circle,
+                t_start_ms=polyline.get("t_start_ms"),
+                t_end_ms=polyline.get("t_end_ms"),
             )
             # Vectorizer output is the confirmed layer: stable, so the
             # DXF writer includes it with its default (stable-only) rule.
@@ -374,24 +581,59 @@ def _cmd_export(args: argparse.Namespace) -> int:
     doc_sha_hex = document_sha256(doc)
     schema_sha = bundled_schema_sha256()
 
+    vectorize_parameters: dict[str, Any] = {
+        "script_sha256": vectorized["script_sha256"],
+        "primitives_total": vectorized["primitives_total"],
+        "polylines_total": vectorized["polylines_total"],
+        "primitives_without_points": vectorized["primitives_without_points"],
+        "skipped_primitive_types": vectorized["skipped_primitive_types"],
+        "summary": fidelity_summary,
+    }
+    if stamps_sha256 is not None:
+        vectorize_parameters["stamps_sha256"] = stamps_sha256
+    if paper_mm is not None:
+        vectorize_parameters["paper_mm"] = list(paper_mm)
+    if max_p95_px is not None:
+        vectorize_parameters["max_p95_px"] = max_p95_px
+
     export_parameters: dict[str, Any] = {
         "target": "dxf-r2000",
         "origin": args.origin,
-        "order_kind": args.order_kind,
+        "order_kind": order_kind,
         "include_pending": False,
         "strokes_stabilized": True,
         "paper": {"format": spec.format, "width_mm": spec.width_mm,
                   "height_mm": spec.height_mm,
                   "effective_width_mm": spec.effective_width_mm,
                   "effective_height_mm": spec.effective_height_mm},
-        "vectorize": {
-            "script_sha256": vectorized["script_sha256"],
-            "primitives_total": vectorized["primitives_total"],
-            "polylines_total": vectorized["polylines_total"],
-            "primitives_without_points": vectorized["primitives_without_points"],
-            "skipped_primitive_types": vectorized["skipped_primitive_types"],
-        },
+        "vectorize": vectorize_parameters,
     }
+
+    consumed_artifacts: list[dict[str, Any]] = [
+        {"artifact_id": "canvas-png-1", "sha256": png_sha256}
+    ]
+    source_artifacts: list[dict[str, Any]] = [
+        {
+            "artifact_id": "canvas-png-1",
+            "uri": png_path.name,
+            "sha256": png_sha256,
+            "origin": args.origin,
+            "artifact_kind": "canvas_png",
+        }
+    ]
+    if stamps_path is not None:
+        consumed_artifacts.append(
+            {"artifact_id": "canvas-stamps-1", "sha256": stamps_sha256}
+        )
+        source_artifacts.append(
+            {
+                "artifact_id": "canvas-stamps-1",
+                "uri": stamps_path.name,
+                "sha256": stamps_sha256,
+                "origin": args.origin,
+                "artifact_kind": "stamps_npz",
+            }
+        )
 
     adapters: list[dict[str, Any]] = [
         {
@@ -413,13 +655,16 @@ def _cmd_export(args: argparse.Namespace) -> int:
         },
     ]
 
-    # DXF first (to a temp file, then atomic move), so its hash can go
-    # into the bundle manifest and the sidecar.
+    # DXF first (to a temp file — promoted only after every metadata
+    # file is ready), so its hash can go into the bundle manifest and
+    # the sidecar. Promoting earlier would leave a new DXF over an old
+    # package when a later stage (fingerprint, sidecar) fails.
     dxf_tmp = out_dir / ".document.dxf.tmp"
     dxf_path = out_dir / "document.dxf"
     try:
         dxf_report = export_dxf(doc, dxf_tmp, include_pending=False)
     except ValueError as exc:
+        dxf_tmp.unlink(missing_ok=True)
         return _fail(f"DXF export failed: {exc}", 1)
     adapter = getattr(args, "ai_adapter", None)
     if adapter is None and getattr(args, "ai_adapter_factory", None):
@@ -437,8 +682,6 @@ def _cmd_export(args: argparse.Namespace) -> int:
             return _fail("DXF observer confirmed a conversion error", 1)
         dxf_report["observation"] = observation
     dxf_sha_hex = dxf_report["output_sha256"]
-    os.replace(dxf_tmp, dxf_path)
-    dxf_report["output_path"] = str(dxf_path)
 
     manifest = {
         "document_sha256": doc_sha_hex,
@@ -454,7 +697,7 @@ def _cmd_export(args: argparse.Namespace) -> int:
         "profile": {"id": SCHEMA_NAME, "version": SCHEMA_VERSION, "sha256": schema_sha},
         "schemas": [{"document_kind": "draw.paper", "schema_version": SCHEMA_VERSION,
                      "schema_sha256": schema_sha}],
-        "consumed_artifacts": [{"artifact_id": "canvas-png-1", "sha256": png_sha256}],
+        "consumed_artifacts": consumed_artifacts,
         "export_parameters": export_parameters,
         "validator": {"id": VALIDATOR_ID, "version": VALIDATOR_VERSION,
                       "implementation_sha256": _module_file_sha256("validator_draw"),
@@ -468,6 +711,7 @@ def _cmd_export(args: argparse.Namespace) -> int:
     try:
         fingerprint = compute_fingerprint(fingerprint_inputs)
     except ValueError as exc:
+        dxf_tmp.unlink(missing_ok=True)
         return _fail(f"DRAW-AF/1 fingerprint failed: {exc}", 1)
 
     try:
@@ -475,13 +719,7 @@ def _cmd_export(args: argparse.Namespace) -> int:
             doc_id=doc["doc_id"],
             document_sha256=doc_sha_hex,
             revision=doc["revision"],
-            source_artifacts=[{
-                "artifact_id": "canvas-png-1",
-                "uri": png_path.name,
-                "sha256": png_sha256,
-                "origin": args.origin,
-                "artifact_kind": "canvas_png",
-            }],
+            source_artifacts=source_artifacts,
             derived_artifacts=[{
                 "artifact_id": "dxf-r2000-1",
                 "uri": "document.dxf",
@@ -494,9 +732,13 @@ def _cmd_export(args: argparse.Namespace) -> int:
             draw_source={"repo": args.draw_repo, "commit": args.draw_commit},
         )
     except ValueError as exc:
+        dxf_tmp.unlink(missing_ok=True)
         return _fail(f"sidecar failed: {exc}", 1)
 
-    # Write the remaining derivatives atomically.
+    # Every metadata input is ready: promote the DXF and write the
+    # remaining derivatives atomically.
+    os.replace(dxf_tmp, dxf_path)
+    dxf_report["output_path"] = str(dxf_path)
     _atomic_write_bytes(out_dir / "document.json", dumps_document(doc).encode("utf-8"))
     _atomic_write_json(out_dir / "sidecar.json", sidecar)
     _atomic_write_json(out_dir / "fingerprint.json", {
@@ -682,7 +924,7 @@ def _beta_step_export(ctx: dict[str, Any]) -> dict[str, Any]:
         origin=args.origin,
         draw_repo=args.draw_repo,
         draw_commit=args.draw_commit,
-        order_kind="unknown",
+        order_kind=None,
         paper=None,
         draw_config=args.draw_config,
         doc_id=None,
@@ -690,6 +932,8 @@ def _beta_step_export(ctx: dict[str, Any]) -> dict[str, Any]:
         clean=args.clean,
         epsilon=None,
         thinning=None,
+        max_p95_px=None,
+        stamps=getattr(args, "stamps", None),
         librecad_check=True,
         ai_adapter=ctx.get("ai_adapter"),
         observe_conversions=ctx["observe_conversions"],
@@ -774,11 +1018,10 @@ def _beta_step_ocs(ctx: dict[str, Any]) -> dict[str, Any]:
             f"the OCS step: {exc}",
         )
     ctx["ocs_dxf"] = dxf_path
-    # O DXF da F0 só carrega traços stable (include_pending fica False
-    # aqui) — o conjunto esperado no CAD é stable-only; pending nunca
-    # foi escrito no DXF e não pode entrar na comparação.
-    live_ids = [s["stroke_id"] for s in doc.get("strokes", [])
-                if s.get("status") == "stable"]
+    # The CAD live set is exactly what the DXF carried: pending strokes
+    # and 1-point strokes stay in the document master but never reach
+    # the CAD — they are live_not_in_cad, not divergences.
+    live_ids = dxf_report["included_stroke_ids"]
     erased_ids = [s["stroke_id"] for s in doc.get("strokes", [])
                   if s.get("status") == "erased"]
     try:
@@ -797,7 +1040,8 @@ def _beta_step_ocs(ctx: dict[str, Any]) -> dict[str, Any]:
                 out_path=ocs_dir / "ocs-verified.dxf")
             scan_after_sync = client.scan_stroke_ids()
             sync_doc_report = client.sync_document(
-                doc, out_path=ocs_dir / "ocs-after-erase.dxf")
+                doc, out_path=ocs_dir / "ocs-after-erase.dxf",
+                expected_live=live_ids)
             scan_after_document = client.scan_stroke_ids()
         except OcsError as exc:
             detail.update(code=exc.code, dxf_report=dxf_report)

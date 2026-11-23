@@ -55,6 +55,7 @@ from typing import Any
 
 from .paper import paper_size_mm
 from .document import document_sha256
+from .validator_draw import CIRCLE_SHEET_EPS_MM
 
 __all__ = [
     "DEFAULT_TIMEOUT_S",
@@ -270,8 +271,10 @@ def _stroke_circle(
             f"traço {stroke_id}: 'circle' exige valores finitos e r_mm > 0"
         )
     if not (
-        0.0 <= cx - r and cx + r <= width_mm
-        and 0.0 <= cy - r and cy + r <= height_mm
+        -CIRCLE_SHEET_EPS_MM <= cx - r
+        and cx + r <= width_mm + CIRCLE_SHEET_EPS_MM
+        and -CIRCLE_SHEET_EPS_MM <= cy - r
+        and cy + r <= height_mm + CIRCLE_SHEET_EPS_MM
     ):
         raise StepExportError(
             f"traço {stroke_id}: círculo (cx={cx}, cy={cy}, r={r}) fora da "

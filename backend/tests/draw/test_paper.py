@@ -1,7 +1,7 @@
 """Tests for the configurable paper policy (decision D3).
 
-The paper policy lives in ocre_core/draw/paper.py: A4 is the default
-(and the only registered format — it matches the current Draw),
+The paper policy lives in ocre_core/draw/paper.py: A4 is the default,
+the registry mirrors the draw-core config.py formats x orientations,
 document/validator/DXF/CLI all read it from there, and the operator
 can switch it with --paper or derive it from Draw's config.py with
 --draw-config. There is no end-user configuration: these are operator
@@ -9,8 +9,9 @@ flags for the agent, so the measurement standard is easy to change
 when Draw changes.
 
 A3 below is a test-only PaperSpec (297 x 420 mm, canvas 1200 x 1696 px,
-scale 0.2475 mm/px): it is NOT registered, because Draw today has only
-A4 and the registry must not claim otherwise.
+scale 0.2475 mm/px): it is intentionally NOT the registered A3 spec
+(which is 849 x 1200 px) — it exercises a spec object passed directly,
+independent of the registry.
 """
 from __future__ import annotations
 
@@ -19,6 +20,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from tests.draw.png_helper import write_png
 from ocre_core.draw.cli import main
 from ocre_core.draw.document import add_stroke, new_document, stabilize_stroke
 from ocre_core.draw.dxf_export import build_dxf
@@ -67,6 +69,43 @@ class DefaultPaperTests(unittest.TestCase):
         self.assertIs(resolve_paper(None), DEFAULT_SPEC)
         self.assertIs(resolve_paper("A4"), DEFAULT_SPEC)
         self.assertIs(resolve_paper(DEFAULT_SPEC), DEFAULT_SPEC)
+
+    def test_registry_mirrors_draw_core_formats_and_orientations(self):
+        from ocre_core.draw.paper import _SPECS
+        # draw-core config.py: a4 a5 a3 carta caderno x retrato paisagem.
+        self.assertEqual(
+            sorted(_SPECS),
+            [
+                "A3", "A3-PAISAGEM", "A4", "A4-PAISAGEM", "A5",
+                "A5-PAISAGEM", "CADERNO", "CADERNO-PAISAGEM", "CARTA",
+                "CARTA-PAISAGEM",
+            ],
+        )
+        paisagem = resolve_paper("A4-PAISAGEM")
+        self.assertEqual(paisagem.canvas_width_px, 1200)
+        self.assertEqual(paisagem.canvas_height_px, 850)
+        self.assertAlmostEqual(paisagem.scale_mm_per_px, 297.0 / 1200.0)
+
+    def test_lookup_is_case_insensitive_for_draw_core_names(self):
+        self.assertIs(resolve_paper("a4"), DEFAULT_SPEC)
+        a5 = resolve_paper("a5")
+        self.assertEqual(a5.format, "A5")
+        self.assertEqual(a5.width_mm, 148.0)
+        self.assertEqual(a5.canvas_width_px, 846)  # round(1200*148/210)
+        self.assertAlmostEqual(a5.effective_height_mm, 1200 * 148.0 / 846.0, places=2)
+        self.assertIs(resolve_paper("carta"), resolve_paper("CARTA"))
+        self.assertIs(resolve_paper("caderno"), resolve_paper("CADERNO"))
+
+    def test_registered_specs_keep_effective_height_consistent(self):
+        from ocre_core.draw.paper import _SPECS
+        # validator exige |effective_height - scale*canvas_h| < 0.01.
+        for spec in _SPECS.values():
+            self.assertAlmostEqual(
+                spec.effective_height_mm,
+                spec.scale_mm_per_px * spec.canvas_height_px,
+                delta=0.01,
+                msg=spec.format,
+            )
 
     def test_new_document_defaults_to_a4(self):
         doc = new_document(SOURCE)
@@ -224,7 +263,7 @@ class PaperSizeMmTests(unittest.TestCase):
 
 class UnknownFormatTests(unittest.TestCase):
     def test_unknown_format_is_refused_never_invented(self):
-        for name in ("A3", "Letter", "A5", "a4"):
+        for name in ("A0", "Letter", "TABLOIDE", "a0", "B4"):
             with self.assertRaises(ValueError, msg=name):
                 resolve_paper(name)
             with self.assertRaises(ValueError, msg=name):
@@ -232,9 +271,9 @@ class UnknownFormatTests(unittest.TestCase):
 
 
 class CliPaperFlagTests(unittest.TestCase):
-    def _export(self, out_dir: Path, extra: list[str]) -> tuple[int, dict]:
-        png = out_dir / "canvas.png"
-        png.write_bytes(b"\x89PNG\r\n\x1a\nfake")
+    def _export(self, out_dir: Path, extra: list[str],
+                canvas: tuple[int, int] = (850, 1200)) -> tuple[int, dict]:
+        png = write_png(out_dir / "canvas.png", *canvas)
         argv = [
             "export",
             "--png", str(png),
@@ -269,7 +308,29 @@ class CliPaperFlagTests(unittest.TestCase):
     def test_export_with_unknown_paper_fails_fast(self):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
-            code, doc = self._export(tmp_path, ["--paper", "A3"])
+            code, doc = self._export(tmp_path, ["--paper", "A0"])
+            self.assertNotEqual(code, 0)
+            self.assertEqual(doc, {})
+            self.assertFalse((tmp_path / "out" / "document.json").exists())
+
+    def test_export_with_registered_format_validates_png_canvas(self):
+        # A4-PAISAGEM pede canvas 1200x850; um PNG 850x1200 (retrato)
+        # é recusado antes do subprocesso — a escala mm estaria errada.
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            code, doc = self._export(tmp_path, ["--paper", "A4-PAISAGEM"])
+            self.assertEqual(code, 2)
+            self.assertEqual(doc, {})
+            self.assertFalse((tmp_path / "out" / "document.json").exists())
+
+    def test_export_with_paisagem_fails_closed_on_portrait_geometry(self):
+        # Com o canvas certo (1200x850), o export repassa --paper-w/h-mm
+        # ao vectorize; o fake devolve geometria A4-retrato (y até 250 mm
+        # > 210.38 mm efetivos) e o documento é recusado, não cortado.
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            code, doc = self._export(
+                tmp_path, ["--paper", "A4-PAISAGEM"], canvas=(1200, 850))
             self.assertNotEqual(code, 0)
             self.assertEqual(doc, {})
             self.assertFalse((tmp_path / "out" / "document.json").exists())
@@ -279,7 +340,8 @@ class CliPaperFlagTests(unittest.TestCase):
             tmp_path = Path(tmp)
             config = tmp_path / "config.py"
             config.write_text("PAPER_W = 1200\nPAPER_H = 1696\n", encoding="utf-8")
-            code, doc = self._export(tmp_path, ["--draw-config", str(config)])
+            code, doc = self._export(
+                tmp_path, ["--draw-config", str(config)], canvas=(1200, 1696))
             self.assertEqual(code, 0)
             self.assertEqual(doc["paper"]["format"], "DRAW-1200x1696")
             self.assertAlmostEqual(doc["paper"]["width_mm"], 1200 * 210.0 / 850.0)
@@ -294,9 +356,22 @@ class CliPaperFlagTests(unittest.TestCase):
             config = tmp_path / "config.py"
             config.write_text("PAPER_W = 1200\nPAPER_H = 1696\n", encoding="utf-8")
             code, doc = self._export(
-                tmp_path, ["--paper", "A4", "--draw-config", str(config)])
+                tmp_path, ["--paper", "A4", "--draw-config", str(config)],
+                canvas=(1200, 1696))
             self.assertEqual(code, 0)
             self.assertEqual(doc["paper"]["format"], "DRAW-1200x1696")
+
+    def test_draw_config_canvas_must_match_the_png(self):
+        # config diz 1200x1696 mas o PNG é 850x1200: recusa antes de
+        # vetorizar com a escala errada.
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            config = tmp_path / "config.py"
+            config.write_text("PAPER_W = 1200\nPAPER_H = 1696\n", encoding="utf-8")
+            code, doc = self._export(tmp_path, ["--draw-config", str(config)])
+            self.assertEqual(code, 2)
+            self.assertEqual(doc, {})
+            self.assertFalse((tmp_path / "out" / "document.json").exists())
 
     def test_export_with_missing_draw_config_fails_fast(self):
         with tempfile.TemporaryDirectory() as tmp:
