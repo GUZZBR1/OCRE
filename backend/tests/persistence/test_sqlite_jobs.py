@@ -1,5 +1,6 @@
 import sqlite3
 from dataclasses import replace
+from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor
 from threading import Barrier
 
@@ -49,9 +50,45 @@ def test_create_execution_is_atomic_and_replayable(tmp_path):
     assert store.create_execution(job_snapshot=job,execution_snapshot=execution,submitted_event=event,idempotency=idem,outbox=outbox).event==event
     assert store.create_execution(job_snapshot=job,execution_snapshot=execution,submitted_event=event,idempotency=idem,outbox=outbox).replayed
     assert store.get_execution_snapshot("x", tenant_id="default").state.value=="queued"
-    with pytest.raises(sqlite3.IntegrityError):
+    with pytest.raises(PersistenceConflict):
         store.create_execution(job_snapshot=JobSnapshot("j",JobState.QUEUED,1,NOW),execution_snapshot=AdapterExecutionSnapshot("x2","j",execution.state,1,NOW),submitted_event=ExecutionSubmitted("j","x2","submit-2",1,NOW),idempotency=IdempotencyRecord("default","submit","key2","fp","j"),outbox=OutboxMessage("m2","j","submit-2","jobs",b""))
     assert store.get_execution_snapshot("x2", tenant_id="default") is None
+
+def test_committed_event_id_collision_surfaces_as_persistence_conflict(tmp_path):
+    store,snap=setup_store(tmp_path)
+    kick(store, snap, JobState.PREPARING, "e1")
+    event=transition_job(job_id="j1",event_id="e1",current_state=JobState.PREPARING,current_sequence=2,expected_sequence=2,target_state=JobState.RUNNING,occurred_at=NOW)
+    with pytest.raises(PersistenceConflict):
+        store.commit_transition(expected_sequence=2,snapshot=JobSnapshot("j1",event.to_state,3,NOW),event=event,idempotency=None,outbox=OutboxMessage("m2","j1","e1","t",b""))
+    assert store.get_snapshot("j1", tenant_id="default").state is JobState.PREPARING
+
+def test_commit_rejects_cancellation_origin_outside_cancel_flow(tmp_path):
+    store,snap=setup_store(tmp_path)
+    event=transition_job(job_id="j1",event_id="e1",current_state=snap.state,current_sequence=1,expected_sequence=1,target_state=JobState.PREPARING,occurred_at=NOW)
+    forged=replace(event,cancellation_origin=JobState.RUNNING)
+    with pytest.raises(ValueError):
+        store.commit_transition(expected_sequence=1,snapshot=JobSnapshot("j1",forged.to_state,2,NOW),event=forged,idempotency=None,outbox=OutboxMessage("m1","j1",forged.event_id,"t",b""))
+    assert store.get_snapshot("j1", tenant_id="default").state is JobState.QUEUED
+    assert store.read_events(tenant_id="default", job_id="j1") == ()
+
+def test_create_execution_validates_submitted_event_shape(tmp_path):
+    store=SQLiteJobStore(tmp_path/"jobs.db")
+    naive=datetime(2026,1,1)
+    for job_id, execution_id, event_id, sequence, occurred in (
+        ("", "x", "e1", 1, NOW),
+        ("j", "", "e1", 1, NOW),
+        ("j", "x", "", 1, NOW),
+        ("j", "x", "e1", 2, NOW),
+        ("j", "x", "e1", 1, naive),
+    ):
+        with pytest.raises(ValueError):
+            store.create_execution(
+                job_snapshot=JobSnapshot(job_id,JobState.QUEUED,1,NOW),
+                execution_snapshot=AdapterExecutionSnapshot(execution_id,job_id,AdapterExecutionState.QUEUED,1,NOW),
+                submitted_event=ExecutionSubmitted(job_id,execution_id,event_id,sequence,occurred),
+                idempotency=IdempotencyRecord("default","submit","key","fp",job_id),
+                outbox=OutboxMessage("m",job_id,event_id,"t",b""))
+    assert store.get_snapshot("j",tenant_id="default") is None
 
 def test_stale_cas_and_event_collision_leave_no_partial_rows(tmp_path):
     store,snap=setup_store(tmp_path)
@@ -89,6 +126,17 @@ def test_publish_before_ack_crash_redelivers_duplicate(tmp_path):
     assert FakeOutboxDispatcher(store, published.append).dispatch() == 1
     assert [message.message_id for message in published] == ["m1", "m1"]
     assert FakeOutboxDispatcher(store, published.append).dispatch() == 0
+
+
+def test_dispatch_marks_delivered_only_when_publisher_acks(tmp_path):
+    store,snap=setup_store(tmp_path)
+    kick(store, snap, JobState.PREPARING)
+    assert FakeOutboxDispatcher(store, lambda message: False).dispatch()==0
+    assert len(store.pending_outbox())==1
+    delivered=[]
+    assert FakeOutboxDispatcher(store, delivered.append).dispatch()==1
+    assert delivered[0].message_id=="m1"
+    assert store.pending_outbox()==()
 
 
 def test_identical_job_ids_are_tenant_scoped_for_snapshots_and_event_replay(tmp_path):

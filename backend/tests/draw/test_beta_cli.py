@@ -494,6 +494,64 @@ class BetaRunMockedTests(unittest.TestCase):
         self.assertNotIn(one_pt["stroke_id"], fake_client.synced)
         self.assertEqual(ocs["detail"]["live_ids"], fake_client.synced)
 
+    def test_brepcheck_invalid_fails_the_step_even_with_oracle_pass(self):
+        # O passo declaradamente depende do BRepCheck do worker: um STEP
+        # que o próprio kernel recusa não pode passar (antes o resultado
+        # era coletado e nunca conferido).
+        calls: list[str] = []
+        self._patch_chain(calls, ocs_binary="/fake/OpenCADStudio")
+        with tempfile.TemporaryDirectory() as tmp:
+            out_dir = Path(tmp) / "out"
+            with mock.patch(
+                "ocre_core.draw.step_export.validate_step",
+                return_value={"ok": True, "brepcheck_valid": False},
+            ):
+                code, out = _run_cli(_base_argv(out_dir))
+        report = json.loads(out)
+        self.assertEqual(code, 1, out)
+        step = next(s for s in report["steps"] if s["id"] == "step")
+        self.assertEqual(step["status"], "failed")
+        self.assertIn("BRepCheck", step["error"])
+        self.assertFalse(step["detail"]["brepcheck"]["brepcheck_valid"])
+
+    def test_pending_strokes_are_not_expected_in_the_cad(self):
+        # O DXF da F0 só carrega stable — um documento com pending
+        # gerava stroke-count mismatch garantido no passo OCS.
+        calls: list[str] = []
+        fake_client = self._patch_chain(calls, ocs_binary="/fake/OpenCADStudio")
+        with tempfile.TemporaryDirectory() as tmp:
+            doc = json.loads(BETA_DOCUMENT.read_text(encoding="utf-8"))
+            doc["strokes"].append({
+                "stroke_id": "s-0003", "order": 2, "status": "pending",
+                "closed": False, "points_mm": [[10.0, 80.0], [90.0, 80.0]],
+                "length_mm": 80.0, "order_kind": "unknown",
+            })
+            doc_path = Path(tmp) / "doc-with-pending.json"
+            doc_path.write_text(json.dumps(doc), encoding="utf-8")
+            out_dir = Path(tmp) / "out"
+            argv = _base_argv(out_dir)
+            argv[argv.index(str(BETA_DOCUMENT))] = str(doc_path)
+            code, out = _run_cli(argv)
+        report = json.loads(out)
+        self.assertEqual(code, 0, out)
+        ocs = next(s for s in report["steps"] if s["id"] == "ocs")
+        self.assertEqual(ocs["status"], "ok", ocs)
+        self.assertEqual(ocs["detail"]["live_ids"], ["s-0001"])
+        self.assertEqual(fake_client.synced, ["s-0001"])
+
+    def test_timeout_must_be_positive_and_finite(self):
+        # nan/inf chegavam a subprocess.run(timeout=...) e crashavam;
+        # o preflight bloqueia antes de qualquer passo.
+        for bad_timeout in ("nan", "inf", "-inf", "0", "-5"):
+            with self.subTest(timeout=bad_timeout), \
+                    tempfile.TemporaryDirectory() as tmp:
+                code, out = _run_cli(
+                    _base_argv(Path(tmp), [f"--timeout-s={bad_timeout}"]))
+                report = json.loads(out)
+                self.assertEqual(code, 2, out)
+                self.assertEqual(report["status"], "blocked")
+                self.assertIn("--timeout-s", report["steps"][0]["error"])
+
     def test_missing_ocs_binary_is_skipped_honestly_without_failing(self):
         calls: list[str] = []
         self._patch_chain(calls, ocs_binary=None)

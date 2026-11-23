@@ -170,8 +170,15 @@ def _normalize_primitives_with_skipped_types(
             closed = polyline_type in ("polygon", "rectangle") or bool(
                 primitive.get("closed", False)
             )
+            try:
+                clean_points = [[float(x), float(y)] for x, y in points]
+            except (TypeError, ValueError) as exc:
+                raise VectorizeError(
+                    f"primitiva {polyline_type!r} com points_mm "
+                    f"malformados: {points!r} ({exc})"
+                ) from exc
             entry = {
-                "points_mm": [[float(x), float(y)] for x, y in points],
+                "points_mm": clean_points,
                 "closed": closed,
                 "type": polyline_type,
             }

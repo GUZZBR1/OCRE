@@ -25,7 +25,7 @@ class SyncOperation:
     payload: bytes
 
     def __post_init__(self) -> None:
-        if not self.operation_id:
+        if not isinstance(self.operation_id, str) or not self.operation_id:
             raise ValueError("operation_id must not be empty")
         if not isinstance(self.payload, bytes):
             raise TypeError("payload must be opaque bytes")
@@ -43,7 +43,7 @@ class SyncBatch:
 
     def __post_init__(self) -> None:
         for name in ("project_id", "batch_id", "actor_id"):
-            if not getattr(self, name):
+            if not isinstance(getattr(self, name), str) or not getattr(self, name):
                 raise ValueError(f"{name} must not be empty")
         if not isinstance(self.operations, tuple):
             raise TypeError("operations must be a tuple")
@@ -59,7 +59,7 @@ class BatchReceipt:
     committed_revision_id: str
 
     def __post_init__(self) -> None:
-        if not self.committed_revision_id:
+        if not isinstance(self.committed_revision_id, str) or not self.committed_revision_id:
             raise ValueError("committed_revision_id must not be empty")
 
 

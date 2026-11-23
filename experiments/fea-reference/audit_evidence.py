@@ -100,10 +100,9 @@ def audit_solver_runs(root: Path, manifest: dict[str, Any]) -> tuple[list[dict[s
         if not isinstance(run_dir, str) or not isinstance(deck, str):
             raise AuditError(f"runs[{index}] requires string 'run_directory' and 'deck'")
         try:
-            run_path = safe_file(root, run_dir + "/" + deck)
+            safe_file(root, run_dir + "/" + deck)
         except AuditError as exc:
             errors.append(f"runs[{index}].deck: {exc}")
-            run_path = None
 
         # Output artifact map: filename -> SHA-256 under the run directory.
         artifacts = run.get("artifacts")

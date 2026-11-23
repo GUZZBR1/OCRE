@@ -16,6 +16,7 @@ falhar ou de fingir aprovação.
 import hashlib
 import json
 import math
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -24,6 +25,7 @@ from unittest import mock
 from ocre_core.draw import step_export
 from ocre_core.draw.step_export import (
     StepExportError,
+    StepWorkerError,
     document_to_step,
     export_dxf_ac1015,
     oracle_step,
@@ -31,8 +33,8 @@ from ocre_core.draw.step_export import (
     worker_versions,
 )
 from ocre_core.draw.librecad_gate import check_dxf
+from tests.draw.helpers import HEIGHT, make_doc, stroke
 
-HEIGHT = 296.47
 # Retângulo 100 x 10 mm, espessura 10 mm -> volume 10000 mm³.
 RECT = [[10.0, 20.0], [110.0, 20.0], [110.0, 30.0], [10.0, 30.0]]
 THICKNESS_MM = 10.0
@@ -40,26 +42,6 @@ EXPECTED_VOLUME_MM3 = 100.0 * 10.0 * 10.0
 # Tolerância do volume: OCCT arredonda em ~1e-7 relativo; 0,01% é
 # folga ampla sem esconder erro de geometria.
 VOLUME_REL_TOL = 1e-4
-
-
-def make_doc(strokes, **paper):
-    return {
-        "schema": "draw.paper.v1",
-        "paper": {"width_mm": 210.0, "height_mm": HEIGHT, **paper},
-        "strokes": strokes,
-    }
-
-
-def stroke(stroke_id, points, status="stable", closed=False, **extra):
-    item = {
-        "stroke_id": stroke_id,
-        "order": 0,
-        "status": status,
-        "points_mm": points,
-        "closed": closed,
-    }
-    item.update(extra)
-    return item
 
 
 def worker_ready() -> bool:
@@ -739,6 +721,67 @@ class OpenStrokesPolicyTests(unittest.TestCase):
         self.assertEqual(
             report["skipped"], [{"stroke_id": "s-0002", "reason": "open"}]
         )
+
+
+class HostBoundaryTests(unittest.TestCase):
+    """Validações do host que NÃO precisam do worker (ou com ele mockado)."""
+
+    _REPO_TMP = Path(__file__).resolve().parents[3] / ".tmp"
+
+    def setUp(self):
+        self._REPO_TMP.mkdir(exist_ok=True)
+        self.tmp = tempfile.TemporaryDirectory(
+            prefix="ocre-step-host-", dir=self._REPO_TMP
+        )
+        self.addCleanup(self.tmp.cleanup)
+        self.dir = Path(self.tmp.name)
+
+    def test_fail_closed_bool_string_and_none_points(self):
+        # Mesma regra de document._check_points: bool não é número e
+        # não-número recusa como StepExportError — antes o float()
+        # aceitava bool/str numérica e deixava TypeError cru.
+        for bad_points in (
+            [[True, 1.0], [50.0, 20.0], [50.0, 30.0]],
+            [["10", 1.0], [50.0, 20.0], [50.0, 30.0]],
+            [[None, 1.0], [50.0, 20.0], [50.0, 30.0]],
+        ):
+            with self.subTest(points=bad_points):
+                doc = make_doc([stroke("s-0001", bad_points, closed=True)])
+                with self.assertRaises(StepExportError):
+                    document_to_step(
+                        doc, THICKNESS_MM, "PLA", self.dir / "bad.step")
+
+    def test_partial_worker_result_is_step_worker_error(self):
+        # ok=True com campos ausentes ou volume não numérico é erro de
+        # protocolo (StepWorkerError), nunca KeyError/ValueError cru.
+        doc = make_doc([stroke("s-0001", RECT, closed=True)])
+        partial_results = (
+            {"ok": True},
+            {"ok": True, "volume_mm3": "x",
+             "sha256": "f" * 64, "bytes": 1, "bbox_mm": [[0, 0, 0]]},
+        )
+        for result in partial_results:
+            with self.subTest(result=result), mock.patch.object(
+                step_export, "_run_worker", return_value=result
+            ):
+                with self.assertRaises(StepWorkerError):
+                    document_to_step(
+                        doc, THICKNESS_MM, "PLA", self.dir / "doc.step")
+
+    def test_oracle_malformed_json_is_step_worker_error(self):
+        # O oráculo falso escreve o relatório; JSON quebrado ou
+        # não-objeto era JSONDecodeError/TypeError cru — agora
+        # StepWorkerError.
+        step = self.dir / "x.step"
+        step.write_text("fake STEP", encoding="utf-8")
+        for payload in ("not-json{{{", "[1, 2, 3]"):
+            with self.subTest(payload=payload):
+                command = [
+                    sys.executable, "-c",
+                    "import sys; open(sys.argv[-1], 'w').write(%r)" % payload,
+                ]
+                with self.assertRaises(StepWorkerError):
+                    oracle_step(step, freecad_command=command)
 
 
 if __name__ == "__main__":

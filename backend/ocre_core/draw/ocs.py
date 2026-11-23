@@ -548,8 +548,9 @@ class OcsClient:
         O documento é o mestre; o CAD segue o documento. Lê as
         tumbstones (``status == "erased"``) e deleta do CAD o que ainda
         está lá; prova a ausência dos apagados com uma varredura
-        completa de XDATA e confere que todos os traços vivos estão
-        presentes com seus ids. Falha fechada, sem apagar nada, quando
+        completa de XDATA e confere que todos os traços ``stable``
+        estão presentes com seus ids (``pending`` nunca foi escrito
+        no DXF da F0 — não se exige no CAD). Falha fechada, sem apagar nada, quando
         o CAD tem um traço vivo que o documento não tem
         (``stroke_missing_in_cad``) ou um id que o documento desconhece
         (``unknown_stroke_in_cad``) — divergência silenciosa não é
@@ -584,7 +585,10 @@ class OcsClient:
             doc_ids[sid] = status
         erased_ids = [sid for sid, st in doc_ids.items() if st == "erased"]
         if expected_live is None:
-            live_ids = [sid for sid, st in doc_ids.items() if st != "erased"]
+            # Sem projeção informada: stable-only é a melhor aproximação
+            # do conjunto que o DXF da F0 carrega (pending e traços de
+            # 1 ponto nunca entram no CAD).
+            live_ids = [sid for sid, st in doc_ids.items() if st == "stable"]
         else:
             if not isinstance(expected_live, list) or any(
                 not isinstance(sid, str) for sid in expected_live

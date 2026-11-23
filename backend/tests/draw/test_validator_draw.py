@@ -2,6 +2,7 @@ import unittest
 
 from ocre_core.draw.document import (
     add_stroke,
+    confirm_erasure,
     copy_document,
     dumps,
     erase_stroke,
@@ -295,6 +296,45 @@ class PreviousRevisionTests(unittest.TestCase):
         doc["revision"] = prev["revision"] + 1
         self.assert_invalid_with(doc, "stroke_removed", previous=prev)
 
+    def test_tombstone_fields_are_immutable(self):
+        doc = make_valid_doc()
+        erase_stroke(doc, "s-0001", reason="manual", at_ms=100)
+        prev = copy_document(doc)
+        doc["strokes"][0]["erased_at_ms"] = 999
+        doc["revision"] = prev["revision"] + 1
+        self.assert_invalid_with(doc, "stable_points_mutated", previous=prev)
+
+    def test_confirmed_tombstone_reason_is_final(self):
+        doc = make_valid_doc()
+        erase_stroke(doc, "s-0001", reason="manual", at_ms=100)
+        prev = copy_document(doc)
+        doc["strokes"][0]["erased_reason"] = "page-turn"
+        doc["revision"] = prev["revision"] + 1
+        self.assert_invalid_with(doc, "stable_points_mutated", previous=prev)
+
+    def test_provisional_tombstone_can_still_be_confirmed(self):
+        # confirm_erasure é a mutação legítima documentada: grava o
+        # erased_reason e remove erased_inferred — tem de continuar
+        # válida contra previous.
+        doc = make_valid_doc()
+        erase_stroke(doc, "s-0001", reason="manual", at_ms=100, inferred=True)
+        prev = copy_document(doc)
+        confirm_erasure(doc, "s-0001", reason="hand-erase")
+        report = validate_draw_document(doc, previous=prev)
+        self.assertTrue(report.valid, report.as_dict())
+
+    def test_stable_order_and_timestamps_are_immutable(self):
+        doc = make_valid_doc(order_kind="temporal-stamps")
+        add_stroke(doc, [[0, 0], [1, 1]], t_start_ms=0, t_end_ms=5)
+        stabilize_stroke(doc, "s-0003")
+        for field, value in (("order", 9), ("t_start_ms", 2), ("t_end_ms", 9)):
+            with self.subTest(field=field):
+                doc2 = copy_document(doc)
+                doc2["strokes"][2][field] = value
+                doc2["revision"] = doc["revision"] + 1
+                self.assert_invalid_with(
+                    doc2, "stable_points_mutated", previous=doc)
+
     def test_doc_id_is_immutable(self):
         doc = make_valid_doc()
         prev = copy_document(doc)
@@ -328,6 +368,28 @@ class CustomSchemaTests(unittest.TestCase):
     def test_loads_round_trip_keeps_document_valid(self):
         doc = loads(dumps(make_valid_doc()))
         self.assertTrue(validate_draw_document(doc).valid)
+
+
+class StrictJSONTests(unittest.TestCase):
+    def test_lone_surrogate_in_string_is_refused(self):
+        # json.loads aceita \ud800 solto, mas não é JSON estrito: antes
+        # o walker não olhava str e o valor seguia adiante.
+        from ocre_core.draw.validator_draw import (
+            StrictJSONError, parse_json_strict,
+        )
+        with self.assertRaises(StrictJSONError):
+            parse_json_strict('"\\ud800"')
+        with self.assertRaises(StrictJSONError):
+            parse_json_strict('{"\\ud800": 1}')
+
+    def test_oversized_int_literal_is_refused_not_raw_valueerror(self):
+        # CPython rejeita literais int > 4300 dígitos com ValueError —
+        # não JSONDecodeError — e ele escapava cru do parse.
+        from ocre_core.draw.validator_draw import (
+            StrictJSONError, parse_json_strict,
+        )
+        with self.assertRaises(StrictJSONError):
+            parse_json_strict("9" * 5000)
 
 
 if __name__ == "__main__":

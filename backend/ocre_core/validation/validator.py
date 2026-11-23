@@ -63,7 +63,9 @@ def parse_json_strict(value: Any) -> Any:
             parsed = json.loads(value, object_pairs_hook=_pairs_no_duplicates, parse_constant=_reject_constant)
             _walk_finite(parsed)
             return parsed
-        except (json.JSONDecodeError, StrictJSONError, RecursionError) as exc:
+        # ValueError covers JSONDecodeError, StrictJSONError, and CPython's
+        # digit-limit rejection for oversized integer literals.
+        except (ValueError, RecursionError) as exc:
             raise StrictJSONError(str(exc)) from exc
     # Reject non-finite values in caller-provided Python objects as well.
     try:
@@ -76,10 +78,16 @@ def parse_json_strict(value: Any) -> Any:
 def _walk_finite(node: Any) -> None:
     if isinstance(node, float) and not math.isfinite(node):
         raise StrictJSONError("non-finite JSON number")
+    if isinstance(node, str):
+        try:
+            node.encode("utf-8")
+        except UnicodeEncodeError as exc:
+            raise StrictJSONError("JSON strings must not contain lone surrogates") from exc
     if isinstance(node, dict):
         for key, child in node.items():
             if not isinstance(key, str):
                 raise StrictJSONError("JSON object keys must be strings")
+            _walk_finite(key)
             _walk_finite(child)
     elif isinstance(node, (list, tuple)):
         for child in node:
@@ -264,7 +272,7 @@ def _read_confined(root: Path, uri: Any, max_bytes: int) -> bytes:
 def _semantic(eir: dict[str, Any], bundle: dict[str, Any], groups: dict[str, Any] | None,
               root: Path | None, purpose: str, capabilities: Mapping[str, Any] | None,
               diagnostics: list[Diagnostic], max_artifact_bytes: int, max_document_bytes: int,
-              profile: dict[str, Any]) -> None:
+              profile: dict[str, Any], unit_profile: dict[str, Any]) -> None:
     project, revision = eir.get("project", {}), eir.get("revision", {})
     rev_id = revision.get("revision_id")
     if project.get("project_id") != revision.get("project_id"):
@@ -303,16 +311,12 @@ def _semantic(eir: dict[str, Any], bundle: dict[str, Any], groups: dict[str, Any
                     break
     if frame_items and len(roots) != 1:
         _add(diagnostics, "semantic", "/frames", "frame_root_count", "frame graph must have exactly one root")
-    unit_profile = json.loads((PROFILE_DIR / "ucum.structural_axial.v1.json").read_text(encoding="utf-8"))
-    for i, frame in enumerate(_seq(frame_items)):
-        if isinstance(frame, dict):
-            translation = frame.get("translation")
-            if isinstance(translation, dict):
-                _check_unit(translation.get("unit"), "length", f"/frames/{i}/translation/unit", diagnostics,
-                            unit_profile)
-
     for i, frame in enumerate(_seq(frame_items)):
         if not isinstance(frame, dict): continue
+        translation = frame.get("translation")
+        if isinstance(translation, dict):
+            _check_unit(translation.get("unit"), "length", f"/frames/{i}/translation/unit", diagnostics,
+                        unit_profile)
         q = frame.get("rotation_xyzw")
         if isinstance(q, list) and len(q) == 4 and all(isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v) for v in q):
             x, y, z, w = (float(v) for v in q)
@@ -340,7 +344,6 @@ def _semantic(eir: dict[str, Any], bundle: dict[str, Any], groups: dict[str, Any
                 _add(diagnostics, "semantic", f"/materials/{i}/properties/{name}", "unsupported_material_property", "material property has no dimension rule in the selected profile")
 
     group_ref_ids: set[str] = set()
-    manifest_refs: set[str] = set()
     for i, case in enumerate(_seq(eir.get("simulation_cases"))):
         if not isinstance(case, dict): continue
         ptr = f"/simulation_cases/{i}"
@@ -370,7 +373,6 @@ def _semantic(eir: dict[str, Any], bundle: dict[str, Any], groups: dict[str, Any
         group_id = case.get("group_manifest_ref")
         if group_id:
             group_ref_ids.add(group_id)
-            manifest_refs.add(group_id)
             if group_id not in artifacts: _add(diagnostics, "semantic", ptr + "/group_manifest_ref", "unresolved_artifact", "group manifest artifact id does not exist")
         elif eir.get("document_state") == "complete":
             _add(diagnostics, "semantic", ptr + "/group_manifest_ref", "missing_group_manifest", "complete case requires a group manifest")
@@ -393,7 +395,7 @@ def _semantic(eir: dict[str, Any], bundle: dict[str, Any], groups: dict[str, Any
         except ValueError as exc:
             _add(diagnostics, "semantic", f"/artifacts/{i}/uri", "unsafe_uri", str(exc))
     if groups is not None:
-        _validate_groups(eir, groups, artifacts, diagnostics, manifest_refs)
+        _validate_groups(eir, groups, artifacts, diagnostics)
     elif group_ref_ids:
         _add(diagnostics, "semantic", "/simulation_cases", "group_manifest_unavailable", "group manifest document was not supplied or safely loaded", "warning" if purpose == "authoring" else "error")
 
@@ -465,7 +467,8 @@ def _semantic(eir: dict[str, Any], bundle: dict[str, Any], groups: dict[str, Any
                     requirements["element_types"] = groups.get("mesh", {}).get("element_type")
                     requirements["element_orders"] = groups.get("mesh", {}).get("element_order")
                 for capability_name, required_value in requirements.items():
-                    if required_value not in supported.get(capability_name, []):
+                    allowed = supported.get(capability_name, [])
+                    if not isinstance(allowed, (list, tuple)) or required_value not in allowed:
                         _add(diagnostics, "semantic", f"/simulation_cases/{i}/solver/adapter_id", "adapter_capability_mismatch", f"adapter does not declare support for {capability_name}")
         _add(diagnostics, "semantic", "/", "approval_fingerprint_unavailable", "OCRE-AF/1 approval fingerprint inputs are not part of the supplied validation context")
     if eir.get("document_state") != "complete":
@@ -508,8 +511,8 @@ def _null_complete_refs(eir: Any, diagnostics: list[Diagnostic]) -> None:
                     _add(diagnostics, "semantic", f"/simulation_cases/{i}/material_assignments/{j}/{field}", "null_complete_reference", "complete material assignment requires this reference")
 
 
-def _validate_groups(eir: dict[str, Any], groups: dict[str, Any], artifacts: dict[str, dict[str, Any]], diagnostics: list[Diagnostic], manifest_refs: set[str]) -> None:
-    matching = [c for c in eir.get("simulation_cases", []) if isinstance(c, dict) and c.get("group_manifest_ref") in manifest_refs]
+def _validate_groups(eir: dict[str, Any], groups: dict[str, Any], artifacts: dict[str, dict[str, Any]], diagnostics: list[Diagnostic]) -> None:
+    matching = [c for c in eir.get("simulation_cases", []) if isinstance(c, dict) and c.get("group_manifest_ref")]
     if len(matching) != 1:
         _add(diagnostics, "semantic", "/manifest_id", "group_manifest_reference_mismatch", "one supplied group manifest must correspond to exactly one EIR case")
         return
@@ -591,13 +594,21 @@ def validate(eir: Any, bundle: Any, group_manifest: Any | None = None, *,
             _add(diagnostics, "structural", f"/{kind}", "schema_unavailable", str(exc))
     if "eir" in parsed:
         _null_complete_refs(parsed["eir"], diagnostics)
-    profile = json.loads((PROFILE_DIR / "structural.axial_bar.v1.json").read_text(encoding="utf-8"))
-    if schema_valid and "eir" in parsed and "bundle" in parsed:
+    try:
+        profile = json.loads((PROFILE_DIR / "structural.axial_bar.v1.json").read_text(encoding="utf-8"))
+        unit_profile = json.loads((PROFILE_DIR / "ucum.structural_axial.v1.json").read_text(encoding="utf-8"))
+        if not isinstance(profile, dict) or not isinstance(unit_profile, dict):
+            raise ValueError("bundled profile is not a JSON object")
+    except (OSError, ValueError, RecursionError) as exc:
+        profile = unit_profile = None
+        schema_valid = False
+        _add(diagnostics, "structural", "/profile", "schema_unavailable", str(exc))
+    if schema_valid and profile is not None and unit_profile is not None and "eir" in parsed and "bundle" in parsed:
         try:
             _semantic(parsed["eir"], parsed["bundle"], parsed.get("groups"),
                       Path(bundle_root) if bundle_root is not None else None,
                       purpose, adapter_capabilities, diagnostics, max_artifact_bytes, max_document_bytes,
-                      profile)
+                      profile, unit_profile)
         except (TypeError, KeyError, AttributeError) as exc:
             _add(diagnostics, "semantic", "", "invalid_document_shape", f"semantic evaluation could not proceed: {type(exc).__name__}")
     diagnostics.sort(key=lambda d: (d.stage, d.pointer, d.code, d.message, d.severity))
@@ -609,4 +620,6 @@ def validate(eir: Any, bundle: Any, group_manifest: Any | None = None, *,
     readiness = None
     if purpose == "execution_preflight":
         readiness = "ready" if status == "valid" else "blocked"
-    return ValidationReport(status, purpose, readiness, tuple(diagnostics), tuple(sorted(digests)), profile["profile_id"], profile["version"])
+    return ValidationReport(status, purpose, readiness, tuple(diagnostics), tuple(sorted(digests)),
+                            (profile or {}).get("profile_id", "structural.axial_bar.v1"),
+                            (profile or {}).get("version", "1"))

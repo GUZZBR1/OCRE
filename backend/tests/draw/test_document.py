@@ -167,6 +167,22 @@ class AddStrokeTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             add_stroke(doc, [[0, 0], [1, 1]], t_start_ms=10, t_end_ms=0)
 
+    def test_timestamps_must_be_non_negative_integers(self):
+        # Schema exige integer >= 0; -10, 1.5, "x" e bool eram aceitos
+        # (ou TypeError cru na comparação t_end < t_start).
+        doc = make_doc(order_kind="temporal-stamps")
+        for kwargs in (
+            {"t_start_ms": -10},
+            {"t_start_ms": 1.5},
+            {"t_start_ms": "x"},
+            {"t_start_ms": True},
+            {"t_start_ms": 0, "t_end_ms": "x"},
+            {"t_start_ms": 0, "t_end_ms": -1},
+        ):
+            with self.subTest(kwargs=kwargs):
+                with self.assertRaises(ValueError):
+                    add_stroke(doc, [[0, 0], [1, 1]], **kwargs)
+
 
 class LifecycleTests(unittest.TestCase):
     def test_stabilize_then_erase_keeps_tombstone(self):
@@ -185,6 +201,16 @@ class LifecycleTests(unittest.TestCase):
         self.assertEqual(live_strokes(doc), [])
         with self.assertRaises(ValueError):
             erase_stroke(doc, "s-0001", reason="manual", at_ms=2000)
+
+    def test_erase_at_ms_must_be_a_non_negative_integer(self):
+        # Schema exige integer >= 0; 1.5 era aceito silencioso e
+        # "x"/None escapavam como TypeError cru na comparação at_ms < 0.
+        for bad_ms in (-5, 1.5, "x", None, True):
+            with self.subTest(at_ms=bad_ms):
+                doc = make_doc()
+                add_stroke(doc, [[10, 10], [20, 10]])
+                with self.assertRaises(ValueError):
+                    erase_stroke(doc, "s-0001", reason="manual", at_ms=bad_ms)
 
     def test_inferred_tombstone_is_provisional_until_confirmed(self):
         doc = make_doc()

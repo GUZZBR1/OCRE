@@ -235,6 +235,45 @@ class CliExportTests(unittest.TestCase):
             tmp_path = Path(tmp)
             png = tmp_path / "canvas.png"
             png.write_bytes(b"not a png at all")
+            code, _out = _run_cli([
+                "export", "--png", str(png),
+                "--vectorize-script", str(FAKE_VECTORIZE),
+                "--vectorize-sha256", sha256_file(FAKE_VECTORIZE),
+                "--out-dir", str(tmp_path / "out"),
+                "--origin", "upstream-canvas-png",
+                "--draw-repo", "santleme/draw",
+                "--draw-commit", COMMIT,
+            ])
+            self.assertEqual(code, 2)
+            self.assertFalse((tmp_path / "out" / "document.json").exists())
+
+    def test_export_rejects_non_finite_or_non_positive_timeout(self):
+        # nan/inf chegavam a subprocess.run(timeout=...) e crashavam.
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            png = tmp_path / "canvas.png"
+            png.write_bytes(b"\x89PNG\r\n\x1a\nfake")
+            for bad in ("nan", "inf", "-inf", "0", "-5"):
+                with self.subTest(timeout_s=bad):
+                    code, _out = _run_cli([
+                        "export", "--png", str(png),
+                        "--vectorize-script", str(FAKE_VECTORIZE),
+                        "--vectorize-sha256", sha256_file(FAKE_VECTORIZE),
+                        "--out-dir", str(tmp_path / "out"),
+                        "--origin", "upstream-canvas-png",
+                        "--draw-repo", "santleme/draw",
+                        "--draw-commit", COMMIT,
+                        f"--timeout-s={bad}",
+                    ])
+                    self.assertEqual(code, 2)
+                    self.assertFalse(
+                        (tmp_path / "out" / "document.json").exists())
+
+    def test_export_requires_explicit_origin(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            png = tmp_path / "canvas.png"
+            png.write_bytes(b"not a png at all")
             code, _out, _summary = self._export(tmp_path, canvas=None)
             self.assertEqual(code, 2)
             self.assertFalse((tmp_path / "out" / "document.json").exists())

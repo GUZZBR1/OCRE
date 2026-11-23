@@ -135,7 +135,7 @@ def audit_sidecar(evidence_root: Path, sidecar: dict[str, Any]) -> dict[str, Any
         if error:
             missing = error.startswith("referenced artifact is missing")
             issues.append(_issue("manifest_uri", error, pending=missing))
-        elif path is not None and isinstance(manifest_digest, str) and SHA256_RE.fullmatch(manifest_digest):
+        elif isinstance(manifest_digest, str) and SHA256_RE.fullmatch(manifest_digest):
             actual = sha256_file(path)
             if actual != manifest_digest:
                 issues.append(_issue("manifest_hash_mismatch", "prepared manifest SHA-256 does not match"))
@@ -183,7 +183,7 @@ def audit_sidecar(evidence_root: Path, sidecar: dict[str, Any]) -> dict[str, Any
         if error:
             missing = error.startswith("referenced artifact is missing")
             issues.append(_issue("source_uri", f"source_artifacts[{index}]: {error}", pending=missing))
-        elif path is not None and source_digest and SHA256_RE.fullmatch(source_digest):
+        elif source_digest and SHA256_RE.fullmatch(source_digest):
             actual = sha256_file(path)
             if actual != source_digest:
                 issues.append(_issue("source_hash_mismatch", f"source artifact {source_id or index} SHA-256 does not match"))
@@ -295,7 +295,7 @@ def audit_sidecar(evidence_root: Path, sidecar: dict[str, Any]) -> dict[str, Any
             if error:
                 missing = error.startswith("referenced artifact is missing")
                 issues.append(_issue("mesh_uri", f"mesh {mesh_id}: {error}", pending=missing))
-            elif path is not None and isinstance(digest, str) and SHA256_RE.fullmatch(digest):
+            elif isinstance(digest, str) and SHA256_RE.fullmatch(digest):
                 actual = sha256_file(path)
                 if actual != digest:
                     issues.append(_issue("mesh_hash_mismatch", f"mesh {mesh_id} SHA-256 does not match"))

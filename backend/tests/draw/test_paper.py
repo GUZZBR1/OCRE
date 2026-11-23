@@ -29,6 +29,7 @@ from ocre_core.draw.paper import (
     DEFAULT_SPEC,
     PaperSpec,
     load_draw_config,
+    paper_size_mm,
     resolve_paper,
 )
 from ocre_core.draw.validator_draw import validate_draw_document
@@ -223,6 +224,41 @@ class LoadDrawConfigTests(unittest.TestCase):
     def test_missing_file_is_refused(self):
         with self.assertRaises((ValueError, FileNotFoundError, OSError)):
             load_draw_config(Path("/nonexistent/config.py"))
+
+
+class PaperSizeMmTests(unittest.TestCase):
+    def test_absent_or_non_object_paper_falls_back_to_default(self):
+        # Bloco ausente ou malformado (str/None/list) -> papel default;
+        # antes "A4" como string era AttributeError cru.
+        for doc in ({}, {"paper": None}, {"paper": "A4"}, {"paper": [1]}):
+            with self.subTest(doc=doc):
+                self.assertEqual(
+                    paper_size_mm(doc),
+                    (DEFAULT_SPEC.width_mm, DEFAULT_SPEC.effective_height_mm),
+                )
+
+    def test_bool_and_non_numeric_fields_refuse_fail_closed(self):
+        # bool não é número; None/str/list recusam como ValueError
+        # (antes: TypeError cru, 1.0 mm silencioso ou str aceita).
+        for bad_paper in (
+            {"width_mm": None},
+            {"width_mm": True},
+            {"width_mm": "210"},
+            {"width_mm": [210]},
+            {"effective_height_mm": None},
+            {"effective_height_mm": False},
+            {"effective_height_mm": "296.47"},
+            {"height_mm": "297"},
+            {"height_mm": None},
+        ):
+            with self.subTest(paper=bad_paper):
+                with self.assertRaises(ValueError):
+                    paper_size_mm({"paper": bad_paper})
+
+    def test_height_mm_used_when_effective_is_absent(self):
+        width, height = paper_size_mm(
+            {"paper": {"width_mm": 210.0, "height_mm": 297.0}})
+        self.assertEqual((width, height), (210.0, 297.0))
 
 
 class UnknownFormatTests(unittest.TestCase):

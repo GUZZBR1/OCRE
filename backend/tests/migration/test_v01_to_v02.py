@@ -128,6 +128,18 @@ def test_bundle_semantics_are_run_after_migration_and_readiness_stays_blocked():
     assert result.report["diagnostics"]["ready"] is False
 
 
+def test_mapping_key_pointer_wins_over_embedded_json_pointer_field():
+    result = migrate_v01_to_v02(
+        SOURCE.read_bytes(),
+        {"/geometry/0/artifact_id": {"json_pointer": "/eir_schema_version", "value": "step_source",
+                                      "reason": "explicit mapping", "actor": "test-operator"}},
+        actor="operator",
+    )
+    assert json.loads(result.draft_bytes)["geometry"][0]["artifact_id"] == "step_source"
+    assert json.loads(result.draft_bytes)["eir_schema_version"] == "0.2.0"
+    assert result.report["resolutions"][0]["json_pointer"] == "/geometry/0/artifact_id"
+
+
 def test_invalid_source_resolution_and_hashes_are_rejected():
     with pytest.raises(MigrationInputError):
         migrate_v01_to_v02(b"{\"eir_schema_version\":\"0.1.0\",\"eir_schema_version\":\"0.1.0\"}", {}, actor="operator")
