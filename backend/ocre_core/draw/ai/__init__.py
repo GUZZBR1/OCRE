@@ -50,7 +50,6 @@ from .registry import (
     DEFAULT_REGISTRY,
     ModelNotRegisteredError,
     ModelRegistry,
-    get_model,
     register_model,
     require_model,
 )
@@ -80,7 +79,6 @@ __all__ = [
     "apply_proposal",
     "build_context",
     "confirm",
-    "get_model",
     "new_proposal",
     "register_model",
     "reject",
