@@ -74,6 +74,26 @@ class CliExportTests(unittest.TestCase):
                 self.assertEqual(code, 1)
                 self.assertEqual(run.call_args.kwargs["clean"], clean)
 
+    def test_paper_mm_reaches_vectorize_for_default_a4(self):
+        # The vectorizer's own default maps 1200 px -> 297 mm on Y while
+        # the document declares the isotropic 296.47 mm: without the
+        # flags, ink on the last raster rows was refused and every y_mm
+        # stretched ~0.2%. paper_mm must be sent for the default spec too.
+        from ocre_core.draw.paper import DEFAULT_SPEC
+        from ocre_core.draw.vectorize_runner import VectorizeError
+
+        with tempfile.TemporaryDirectory() as tmp:
+            with mock.patch(
+                "ocre_core.draw.vectorize_runner.run_vectorize",
+                side_effect=VectorizeError("stop after observing call"),
+            ) as run:
+                code, _out, _summary = self._export(Path(tmp))
+            self.assertEqual(code, 1)
+            self.assertEqual(
+                run.call_args.kwargs["paper_mm"],
+                (DEFAULT_SPEC.width_mm, DEFAULT_SPEC.effective_height_mm),
+            )
+
     def test_export_writes_document_dxf_sidecar_and_fingerprint(self):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
