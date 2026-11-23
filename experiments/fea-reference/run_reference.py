@@ -436,7 +436,7 @@ def version(binary: str, explicit: Path | None = None, lib_dir: Path | None = No
     except (OSError, subprocess.TimeoutExpired) as exc:
         reported = f"version query failed: {exc}"
     output = (p.stdout + p.stderr) if p else reported
-    available = not (binary == "ccx" and p is not None and p.returncode == 127 and "error while loading shared libraries" in output)
+    available = p is not None and not (binary == "ccx" and p.returncode == 127 and "error while loading shared libraries" in output)
     return {"available": available, "path": os.path.realpath(path), "version": reported,
             "probe_exit_code": p.returncode if p else None,
             "probe_cwd": f"{probe_cwd} (temporary; removed after probe)" if probe_cwd else None,
@@ -517,25 +517,23 @@ def refresh_solver_history(output: Path) -> Path:
     if solver_root.is_dir():
         for dat in solver_root.rglob("*.dat"):
             run_dir = dat.parent
+            run_key = str(run_dir.relative_to(output))
+            if run_key in by_path:
+                # The immutable execution directory is the evidence; keep its original ledger entry.
+                continue
             inputs = sorted(run_dir.glob("*.inp"))
             if not inputs:
                 continue
-            run_key = str(run_dir.relative_to(output))
             metrics_path = run_dir / "metrics.json"
             stdout = run_dir / "solver.stdout.log"
             sta = dat.with_suffix(".sta")
             files = {item.name: sha256(item) for item in sorted(run_dir.iterdir()) if item.is_file()}
-            previous_item = by_path.get(run_key)
-            entry = {"run_directory": run_key, "cwd": str(run_dir.resolve()),
-                     "deck": inputs[0].name, "input_sha256": sha256(inputs[0]),
-                     "solver_completed": bool(stdout.is_file() and "Job finished" in stdout.read_text(encoding="utf-8", errors="replace")),
-                     "status_file": sta.name if sta.is_file() else None,
-                     "metrics": json.loads(metrics_path.read_text(encoding="utf-8")) if metrics_path.is_file() else None,
-                     "artifacts_sha256": files}
-            if previous_item:
-                # The immutable execution directory is the evidence; keep its original ledger entry.
-                entry = previous_item
-            by_path[run_key] = entry
+            by_path[run_key] = {"run_directory": run_key, "cwd": str(run_dir.resolve()),
+                                "deck": inputs[0].name, "input_sha256": sha256(inputs[0]),
+                                "solver_completed": bool(stdout.is_file() and "Job finished" in stdout.read_text(encoding="utf-8", errors="replace")),
+                                "status_file": sta.name if sta.is_file() else None,
+                                "metrics": json.loads(metrics_path.read_text(encoding="utf-8")) if metrics_path.is_file() else None,
+                                "artifacts_sha256": files}
     previous["runs"] = [by_path[key] for key in sorted(by_path)]
     history_path.write_text(json.dumps(previous, indent=2) + "\n", encoding="utf-8")
     return history_path
@@ -628,7 +626,11 @@ def main() -> int:
     if not args.output.is_relative_to(ROOT.resolve()):
         ap.error(f"--output must stay inside {ROOT}")
     if args.command == "reconcile":
-        final = reconcile_output(args.output)
+        try:
+            final = reconcile_output(args.output)
+        except (OSError, ValueError) as exc:
+            print(f"Cannot reconcile: {exc}", file=sys.stderr)
+            return 2
         print(json.dumps({"manifest": str(args.output / "manifest.json"), "status": final["status"],
                           "solver_executed": final["execution"]["solver_executed"],
                           "run_directories": final["execution"]["run_directories"],

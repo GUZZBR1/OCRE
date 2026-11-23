@@ -5,8 +5,8 @@ from ocre_core.integrations.synthetic_worker import (
     SyntheticOutcome,
     SyntheticWorker,
 )
-from ocre_core.jobs import JobState
-from ocre_core.persistence.jobs import JobSnapshot
+from ocre_core.jobs import JobState, transition_job
+from ocre_core.persistence.jobs import JobSnapshot, OutboxMessage
 from ocre_core.persistence.sqlite import SQLiteJobStore
 from tests.helpers import FIXED_CLOCK, NOW, queued_job
 
@@ -115,3 +115,64 @@ def test_cancelled_outcome_cannot_turn_running_job_into_success(tmp_path):
         )
 
     assert store.get_snapshot("job-1", tenant_id="tenant-a") == running
+
+
+def test_failed_outcome_is_honored_from_collecting(tmp_path):
+    store = SQLiteJobStore(tmp_path / "jobs.db")
+    queued_job(store, "job-1", tenant="tenant-a")
+    collecting = JobSnapshot("job-1", JobState.COLLECTING, 3, NOW, tenant_id="tenant-a")
+    with store._connect() as db:
+        db.execute(
+            "UPDATE snapshots SET seq=?, body=? WHERE tenant=? AND kind='job' AND id=?",
+            (collecting.sequence, store._dump(collecting), "tenant-a", "job-1"),
+        )
+
+    report = SyntheticWorker(store, FIXED_CLOCK).run(
+        tenant_id="tenant-a", job_id="job-1", outcome=SyntheticOutcome.FAILED
+    )
+
+    assert report.outcome is SyntheticOutcome.FAILED
+    assert store.get_snapshot("job-1", tenant_id="tenant-a").state is JobState.FAILED
+
+
+def test_persistence_conflict_retries_with_a_fresh_snapshot(tmp_path):
+    store = SQLiteJobStore(tmp_path / "jobs.db")
+    queued_job(store, "job-1", tenant="tenant-a")
+    raced = False
+
+    def competing_commit_once(_event):
+        nonlocal raced
+        if raced:
+            return
+        raced = True
+        snap = store.get_snapshot("job-1", tenant_id="tenant-a")
+        event = transition_job(
+            job_id=snap.job_id,
+            event_id="raced-event-2",
+            current_state=snap.state,
+            current_sequence=snap.sequence,
+            expected_sequence=snap.sequence,
+            target_state=JobState.PREPARING,
+            occurred_at=NOW,
+        )
+        store.commit_transition(
+            expected_sequence=snap.sequence,
+            snapshot=JobSnapshot(
+                snap.job_id, event.to_state, event.sequence, NOW, tenant_id="tenant-a"
+            ),
+            event=event,
+            idempotency=None,
+            outbox=OutboxMessage(
+                "raced-message", snap.job_id, event.event_id, "synthetic.job.events", b""
+            ),
+        )
+
+    report = SyntheticWorker(
+        store, FIXED_CLOCK, before_transition=competing_commit_once
+    ).run(tenant_id="tenant-a", job_id="job-1", outcome=SyntheticOutcome.SUCCEEDED)
+
+    assert raced
+    assert report.outcome is SyntheticOutcome.SUCCEEDED
+    assert store.get_snapshot("job-1", tenant_id="tenant-a").state is JobState.SUCCEEDED
+    events = store.read_events(tenant_id="tenant-a", job_id="job-1", limit=20)
+    assert [item.event.sequence for item in events] == list(range(2, 2 + len(events)))

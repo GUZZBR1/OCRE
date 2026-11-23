@@ -1,3 +1,6 @@
+import asyncio
+import json
+
 from fastapi.testclient import TestClient
 
 from ocre_core.api.app import create_app
@@ -62,6 +65,44 @@ def test_local_transport_injects_principal_and_exposes_only_six_operations(tmp_p
     ))
     assert blocked.status_code == 422
     assert blocked.json()["report"]["diagnostics"][0]["code"] == "approval_fingerprint_unavailable"
+
+
+def test_sync_batches_require_strict_json_and_consistent_problem_details(tmp_path):
+    service = application(tmp_path, authorizer=AUTH, preflight=FixedPreflight(BLOCKED_APPROVAL))
+    client = client_for(service)
+    path = "/v1/projects/project-a/sync-batches"
+    for raw in (
+        b'{"batch_id":"b1","batch_id":"b2","operations":[]}',
+        b'{"batch_id":"b3","operations":[],"base_revision_id":NaN}',
+        b'{"batch_id":"b4","operations":[{"operation_id":"o","payload":"eA=="}],}',
+        b'{"batch_id":"b5","operations":[{"operation_id":"o","payload":"eA==","payload":"eQ=="}]}',
+        b'{"batch_id":5,"operations":"x"}',
+    ):
+        response = client.post(path, headers={"Content-Type": "application/json"}, content=raw)
+        assert response.status_code == 422
+        assert response.json()["code"] == "validation_failed"
+        assert response.headers["content-type"].startswith("application/problem+json")
+    assert service.sync_store.lookup(tenant_id="tenant-a", project_id="project-a", batch_id="b2") is None
+
+
+def test_body_limit_is_configurable_and_precedes_any_commit(tmp_path):
+    preflight = FixedPreflight()
+    service = application(tmp_path, authorizer=AUTH, preflight=preflight)
+    client = TestClient(create_app(service, principal_dependency=lambda: PRINCIPAL, max_body_bytes=64))
+
+    oversized_sync = client.post("/v1/projects/project-a/sync-batches", json={
+        "batch_id": "b", "operations": [{"operation_id": "o", "payload": "eA=="}],
+    })
+    assert oversized_sync.status_code == 413
+    assert oversized_sync.json()["code"] == "request_too_large"
+
+    oversized_job = client.post("/v1/projects/project-a/jobs", headers={"Idempotency-Key": "k"}, json=job_json())
+    assert oversized_job.status_code == 413
+
+    accepted = client.post("/v1/projects/project-a/sync-batches", content=b'{"batch_id":"b","operations":[]}')
+    assert accepted.status_code == 201
+    assert service.sync_store.lookup(tenant_id="tenant-a", project_id="project-a", batch_id="b") is not None
+    assert preflight.calls == 0
 
 
 def test_http_sync_replay_returns_original_receipt_and_rejects_reused_identity(tmp_path):
@@ -152,3 +193,132 @@ def test_http_job_submit_cancel_and_event_replay_are_idempotent(tmp_path):
     assert first_page.json()["items"][0]["event"]["sequence"] == 1
     assert second_page.json()["items"][0]["sequence"] == 2
     assert second_page.json()["items"][0]["event"]["to_state"] == "cancel_requested"
+
+
+def _resolve_ref(spec, ref):
+    assert ref.startswith("#/"), f"non-local ref: {ref}"
+    node = spec
+    for segment in ref[2:].split("/"):
+        node = node[segment]
+    return node
+
+
+def _collect_refs(node, refs):
+    if isinstance(node, dict):
+        for key, value in node.items():
+            if key == "$ref":
+                refs.append(value)
+            else:
+                _collect_refs(value, refs)
+    elif isinstance(node, list):
+        for item in node:
+            _collect_refs(item, refs)
+
+
+def test_openapi_documents_sync_batch_request_body_with_resolvable_refs(tmp_path):
+    service = application(tmp_path, authorizer=AUTH, preflight=FixedPreflight())
+    client = client_for(service)
+    spec = client.get("/openapi.json").json()
+
+    post = spec["paths"]["/v1/projects/{project_id}/sync-batches"]["post"]
+    assert post["requestBody"]["required"] is True
+    schema = post["requestBody"]["content"]["application/json"]["schema"]
+    assert schema["type"] == "object"
+    assert {"batch_id", "operations"} <= set(schema["required"])
+
+    refs = []
+    _collect_refs(spec, refs)
+    assert schema["properties"]["operations"]["items"]["$ref"] in refs
+    for ref in refs:
+        assert not ref.startswith("#/$defs"), f"unresolvable OpenAPI ref: {ref}"
+        _resolve_ref(spec, ref)
+
+    nested = _resolve_ref(spec, schema["properties"]["operations"]["items"]["$ref"])
+    assert {"operation_id", "payload"} <= set(nested["required"])
+
+
+def test_mutating_routes_run_the_service_off_the_event_loop(tmp_path):
+    service = application(tmp_path, authorizer=AUTH, preflight=FixedPreflight())
+    client = client_for(service)
+    loops = []
+
+    def spy(method):
+        def wrapped(*args, **kwargs):
+            try:
+                asyncio.get_running_loop()
+            except RuntimeError:
+                loops.append("off-loop")
+            else:
+                loops.append("on-loop")
+            return method(*args, **kwargs)
+        return wrapped
+
+    service.submit_sync = spy(service.submit_sync)
+    service.submit_job = spy(service.submit_job)
+
+    sync = client.post("/v1/projects/project-a/sync-batches", json={"batch_id": "b", "operations": []})
+    job = client.post("/v1/projects/project-a/jobs", headers={"Idempotency-Key": "k"}, json=job_json())
+
+    assert sync.status_code == 201
+    assert job.status_code == 202
+    assert loops == ["off-loop", "off-loop"]
+
+
+def test_chunked_body_without_content_length_is_bounded_and_valid_bodies_accepted(tmp_path):
+    service = application(tmp_path, authorizer=AUTH, preflight=FixedPreflight())
+    client = TestClient(create_app(service, principal_dependency=lambda: PRINCIPAL, max_body_bytes=64))
+    path = "/v1/projects/project-a/sync-batches"
+
+    def chunks():
+        yield b'{"batch_id":"chunked","operations":['
+        yield b" " * 256
+        yield b"]}"
+
+    response = client.post(path, content=chunks())
+    assert response.status_code == 413
+    assert response.json()["code"] == "request_too_large"
+    assert service.sync_store.lookup(tenant_id="tenant-a", project_id="project-a", batch_id="chunked") is None
+
+    accepted = client.post(path, content=iter([b'{"batch_id":"ok","operations":[]}']))
+    assert accepted.status_code == 201
+
+
+def test_oversized_stream_aborts_without_consuming_the_full_body(tmp_path):
+    service = application(tmp_path, authorizer=AUTH, preflight=FixedPreflight())
+    app = create_app(service, principal_dependency=lambda: PRINCIPAL, max_body_bytes=8)
+    parts = [b'{"batch_id":', b'"too-big","ope', b'rations":[]}']
+    consumed = 0
+    sent = []
+
+    async def receive():
+        nonlocal consumed
+        if consumed < len(parts):
+            body = parts[consumed]
+            consumed += 1
+            return {"type": "http.request", "body": body, "more_body": consumed < len(parts)}
+        return {"type": "http.disconnect"}
+
+    async def send(message):
+        sent.append(message)
+
+    scope = {
+        "type": "http",
+        "asgi": {"version": "3.0"},
+        "http_version": "1.1",
+        "method": "POST",
+        "scheme": "http",
+        "path": "/v1/projects/project-a/sync-batches",
+        "raw_path": b"/v1/projects/project-a/sync-batches",
+        "query_string": b"",
+        "root_path": "",
+        "headers": [(b"content-type", b"application/json")],
+        "client": ("client", 50000),
+        "server": ("testserver", 80),
+    }
+    asyncio.run(app(scope, receive, send))
+
+    assert consumed == 1  # first 12-byte chunk alone exceeds the 8-byte cap
+    start = next(message for message in sent if message["type"] == "http.response.start")
+    assert start["status"] == 413
+    payload = b"".join(message.get("body", b"") for message in sent if message["type"] == "http.response.body")
+    assert json.loads(payload)["code"] == "request_too_large"

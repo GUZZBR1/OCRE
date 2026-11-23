@@ -18,6 +18,9 @@ from typing import Any, Mapping
 from urllib.parse import urlsplit
 
 from jsonschema import Draft202012Validator, FormatChecker
+from jsonschema.exceptions import SchemaError
+
+from ocre_core.validation.approval_fingerprint import jcs
 
 
 ROOT = Path(__file__).resolve().parents[3]
@@ -100,13 +103,17 @@ def _schema(kind: str) -> tuple[dict[str, Any], str, str]:
         path = SCHEMA_DIR / filename
         schema = json.loads(path.read_text(encoding="utf-8"))
         _assert_local_refs(schema)
-        Draft202012Validator.check_schema(schema)
+        try:
+            Draft202012Validator.check_schema(schema)
+        except SchemaError as exc:  # SchemaError is not a ValueError; normalize to fail closed.
+            raise ValueError("bundled schema is not a valid Draft 2020-12 schema") from exc
         digest = hashlib.sha256(path.read_bytes()).hexdigest()
         lock_path = SCHEMA_DIR / "schema-lock-0.2.0.json"
         lock = json.loads(lock_path.read_text(encoding="utf-8"))
-        locked = next((entry.get("sha256") for entry in lock.get("schemas", [])
-                       if entry.get("path") == filename), None)
-        if lock.get("lock_version") != "0.2.0" or locked != digest:
+        entries = lock.get("schemas", []) if isinstance(lock, dict) else []
+        locked = next((entry.get("sha256") for entry in entries
+                       if isinstance(entry, dict) and entry.get("path") == filename), None)
+        if not isinstance(lock, dict) or lock.get("lock_version") != "0.2.0" or locked != digest:
             raise ValueError("bundled schema digest does not match schema-lock-0.2.0.json")
         return schema, version, digest
     except RecursionError as exc:
@@ -399,9 +406,9 @@ def _semantic(eir: dict[str, Any], bundle: dict[str, Any], groups: dict[str, Any
     elif group_ref_ids:
         _add(diagnostics, "semantic", "/simulation_cases", "group_manifest_unavailable", "group manifest document was not supplied or safely loaded", "warning" if purpose == "authoring" else "error")
 
+    manifest_refs = {c.get("group_manifest_ref") for c in _seq(eir.get("simulation_cases")) if isinstance(c, dict)}
     consumed = {bundle.get("eir_artifact_id")}
-    consumed.update(case.get("group_manifest_ref") for case in eir.get("simulation_cases", [])
-                    if isinstance(case, dict) and case.get("group_manifest_ref"))
+    consumed.update(ref for ref in manifest_refs if ref)
     consumed.update(g.get("artifact_id") for g in eir.get("geometry", []) if isinstance(g, dict) and g.get("artifact_id"))
     if groups is not None:
         consumed.update((groups.get("source_artifact_id"), groups.get("mesh_artifact_id")))
@@ -432,12 +439,12 @@ def _semantic(eir: dict[str, Any], bundle: dict[str, Any], groups: dict[str, Any
                     if aid == bundle.get("eir_artifact_id"):
                         if len(artifact_bytes) > max_document_bytes:
                             _add(diagnostics, "semantic", f"/artifacts/{aid}", "document_too_large", "EIR artifact exceeds the configured document byte limit")
-                        elif parse_json_strict(artifact_bytes) != eir:
+                        elif jcs(parse_json_strict(artifact_bytes)) != jcs(eir):
                             _add(diagnostics, "semantic", f"/artifacts/{aid}", "eir_artifact_content_mismatch", "bundle EIR artifact does not match the validated EIR document")
-                    if groups is not None and aid in {case.get("group_manifest_ref") for case in eir.get("simulation_cases", []) if isinstance(case, dict)}:
+                    if groups is not None and aid in manifest_refs:
                         if len(artifact_bytes) > max_document_bytes:
                             _add(diagnostics, "semantic", f"/artifacts/{aid}", "document_too_large", "group manifest artifact exceeds the configured document byte limit")
-                        elif parse_json_strict(artifact_bytes) != groups:
+                        elif jcs(parse_json_strict(artifact_bytes)) != jcs(groups):
                             _add(diagnostics, "semantic", f"/artifacts/{aid}", "group_manifest_content_mismatch", "hashed group artifact does not match the validated group manifest")
                 except FileNotFoundError:
                     _add(diagnostics, "semantic", f"/artifacts/{aid}/uri", "artifact_missing", "artifact file does not exist")
@@ -518,8 +525,8 @@ def _validate_groups(eir: dict[str, Any], groups: dict[str, Any], artifacts: dic
         return
     case = matching[0]
     manifest_ref = case.get("group_manifest_ref")
-    artifact = artifacts[manifest_ref]
-    if (artifact.get("media_type"), artifact.get("format"), artifact.get("format_version")) != ("application/json", "ocre.mesh-group-manifest", "0.2.0"):
+    artifact = artifacts.get(manifest_ref)  # the missing artifact was already reported as unresolved
+    if artifact is not None and (artifact.get("media_type"), artifact.get("format"), artifact.get("format_version")) != ("application/json", "ocre.mesh-group-manifest", "0.2.0"):
         _add(diagnostics, "semantic", f"/artifacts/{manifest_ref}", "group_manifest_format_mismatch", "group manifest artifact must declare application/json, ocre.mesh-group-manifest, version 0.2.0")
     geometry_ids = case.get("geometry_refs", [])
     expected = {"revision_id": eir.get("revision", {}).get("revision_id"), "case_id": case.get("case_id")}
@@ -571,7 +578,7 @@ def validate(eir: Any, bundle: Any, group_manifest: Any | None = None, *,
             if size > max_document_bytes:
                 _add(diagnostics, "parsing", f"/{kind}", "document_too_large", "document exceeds the configured byte limit")
                 continue
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, RecursionError):
             pass
         try:
             parsed[kind] = parse_json_strict(raw)

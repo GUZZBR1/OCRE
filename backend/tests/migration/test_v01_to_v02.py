@@ -159,3 +159,41 @@ def test_invalid_source_resolution_and_hashes_are_rejected():
         )
         assert result.status == "incomplete"
         assert result.report["diagnostics"]["destination_schema_validation"] == "invalid"
+
+
+def test_resolution_pointer_indices_follow_rfc6901():
+    # ASCII digits only: no Unicode decimal digits, no leading zeros.
+    for pointer in ("/geometry/٠/artifact_id", "/geometry/00/artifact_id", "/geometry/0١/artifact_id"):
+        with pytest.raises(MigrationInputError, match="does not exist"):
+            migrate_v01_to_v02(
+                SOURCE.read_bytes(),
+                [resolution(pointer, "step_source")],
+                actor="operator",
+            )
+    result = migrate_v01_to_v02(
+        SOURCE.read_bytes(), [resolution("/geometry/0/artifact_id", "step_source")], actor="operator"
+    )
+    assert json.loads(result.draft_bytes)["geometry"][0]["artifact_id"] == "step_source"
+
+
+def test_resolution_value_with_lone_surrogate_is_rejected_before_serializing():
+    with pytest.raises(MigrationInputError, match="not finite JSON data"):
+        migrate_v01_to_v02(
+            SOURCE.read_bytes(),
+            [resolution("/geometry/0/artifact_id", "bad\ud800value")],
+            actor="operator",
+        )
+
+
+def test_unreadable_bundle_shape_keeps_pending_scan_instead_of_crashing():
+    for bundle in ({"artifacts": 5}, {"artifacts": None}, {"artifacts": {1: "x"}}):
+        result = migrate_v01_to_v02(SOURCE.read_bytes(), [], actor="operator", bundle=bundle)
+        assert result.status == "incomplete"
+        assert {item["json_pointer"] for item in result.report["pending"]} >= {
+            "/migration/report_artifact_id", "/geometry/0/artifact_id"}
+
+
+def test_list_bundle_document_keeps_pending_scan_instead_of_crashing():
+    result = migrate_v01_to_v02(SOURCE.read_bytes(), [], actor="operator", bundle=[1, 2, 3])
+    assert result.status == "incomplete"
+    assert result.report["pending"]

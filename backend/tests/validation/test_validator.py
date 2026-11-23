@@ -54,6 +54,34 @@ class StrictJsonTests(unittest.TestCase):
             report = validate(load("eir.json"), load("input-bundle.json"), load("mesh-group-manifest.json"))
         self.assertEqual(3, sum(d.code == "schema_unavailable" for d in report.diagnostics))
 
+    def test_deep_python_object_becomes_an_invalid_json_diagnostic(self):
+        deep: list = []
+        cursor = deep
+        for _ in range(12000):
+            child: list = []
+            cursor.append(child)
+            cursor = child
+        report = validate(deep, load("input-bundle.json"))
+        self.assertTrue(any(d.pointer == "/eir" and d.code == "invalid_json" for d in report.diagnostics))
+
+    def test_malformed_bundled_schema_or_lock_becomes_schema_unavailable(self):
+        variants = []
+        with tempfile.TemporaryDirectory() as temp:
+            schema_dir = Path(temp)
+            schema_file = schema_dir / "0.2.0.schema.json"
+            schema_file.write_text(json.dumps({"type": "not_a_json_schema_type"}), encoding="utf-8")
+            digest = hashlib.sha256(schema_file.read_bytes()).hexdigest()
+            variants.append({"lock_version": "0.2.0",
+                             "schemas": [{"path": "0.2.0.schema.json", "sha256": digest}]})
+            schema_file.write_text(json.dumps({"type": "object"}), encoding="utf-8")
+            variants.append({"lock_version": "0.2.0", "schemas": {"0.2.0.schema.json": digest}})
+            for lock in variants:
+                (schema_dir / "schema-lock-0.2.0.json").write_text(json.dumps(lock), encoding="utf-8")
+                with self.subTest(lock=lock), mock.patch.object(validator, "SCHEMA_DIR", schema_dir):
+                    report = validate(load("eir.json"), load("input-bundle.json"))
+                self.assertTrue(all(d.code == "schema_unavailable" for d in report.diagnostics))
+                self.assertEqual("invalid", report.status)
+
     def test_unavailable_profile_is_a_fail_closed_diagnostic_not_a_crash(self):
         real_read_text = Path.read_text
         for missing in ("structural.axial_bar.v1.json", "ucum.structural_axial.v1.json"):
@@ -205,6 +233,39 @@ class ValidatorTests(unittest.TestCase):
     def test_document_size_limit_is_enforced(self):
         report = validate(load("eir.json"), load("input-bundle.json"), max_document_bytes=8)
         self.assertIn("document_too_large", {d.code for d in report.diagnostics})
+
+    def test_unresolved_group_manifest_reference_preserves_remaining_checks(self):
+        eir = load("eir.json")
+        eir["simulation_cases"][0]["group_manifest_ref"] = "missing_artifact_id"
+        eir["document_state"] = "draft"
+        report = validate(eir, load("input-bundle.json"), load("mesh-group-manifest.json"))
+        codes = {d.code for d in report.diagnostics}
+        self.assertIn("unresolved_artifact", codes)
+        self.assertNotIn("invalid_document_shape", codes)
+        self.assertIn("document_incomplete", codes)  # semantic checks after the group block still ran
+
+    def test_artifact_content_match_does_not_conflate_true_and_one(self):
+        eir, bundle, groups = load("eir.json"), load("input-bundle.json"), load("mesh-group-manifest.json")
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            for item in bundle["artifacts"]:
+                target = root / item["uri"]
+                target.parent.mkdir(parents=True, exist_ok=True)
+                if item["artifact_id"] == bundle["eir_artifact_id"]:
+                    contents = (EXAMPLES / "eir.json").read_bytes()
+                elif item["artifact_id"] == "groups_axial_bar":
+                    # counts.expected/observed are 1 in the manifest; encode them as booleans.
+                    crafted = copy.deepcopy(groups)
+                    crafted["groups"][0]["counts"] = {"expected": True, "observed": True}
+                    contents = json.dumps(crafted, ensure_ascii=False).encode("utf-8")
+                else:
+                    contents = item["artifact_id"].encode()
+                target.write_bytes(contents)
+                item["sha256"] = hashlib.sha256(target.read_bytes()).hexdigest()
+            caps = {"calculix.batch": {"supported": True, "domains": ["structural"], "analyses": ["static_linear"],
+                                       "target_versions": ["2.23"], "element_types": ["C3D10"], "element_orders": [2]}}
+            report = validate(eir, bundle, groups, bundle_root=root, purpose="execution_preflight", adapter_capabilities=caps)
+            self.assertIn("group_manifest_content_mismatch", {d.code for d in report.diagnostics})
 
     def test_preflight_hashes_only_confined_bytes_and_checks_groups(self):
         eir, bundle, groups = load("eir.json"), load("input-bundle.json"), load("mesh-group-manifest.json")

@@ -63,16 +63,30 @@ class CapabilityManifest:
 
     def __post_init__(self) -> None:
         for name in ("adapter_id", "adapter_version", "contract_version"):
-            if not getattr(self, name).strip():
+            value = getattr(self, name)
+            if not isinstance(value, str) or not value.strip():
                 raise ValueError(f"{name} must not be empty")
-        if not self.software.name.strip() or not self.software.version.strip():
+        if (
+            not isinstance(self.software.name, str)
+            or not self.software.name.strip()
+            or not isinstance(self.software.version, str)
+            or not self.software.version.strip()
+        ):
             raise ValueError("software name and version must not be empty")
         digest = self.software.binary_sha256
         if digest is not None and (
-            len(digest) != 64 or any(char not in "0123456789abcdef" for char in digest)
+            not isinstance(digest, str)
+            or len(digest) != 64
+            or any(char not in "0123456789abcdef" for char in digest)
         ):
             raise ValueError("binary_sha256 must be a lowercase SHA-256 hex digest")
-        if self.resource_requirements.minimum_cpu_cores is not None and self.resource_requirements.minimum_cpu_cores < 1:
-            raise ValueError("minimum_cpu_cores must be positive")
-        if self.resource_requirements.minimum_memory_bytes is not None and self.resource_requirements.minimum_memory_bytes < 1:
-            raise ValueError("minimum_memory_bytes must be positive")
+        cores = self.resource_requirements.minimum_cpu_cores
+        if cores is not None and (
+            not isinstance(cores, int) or isinstance(cores, bool) or cores < 1
+        ):
+            raise ValueError("minimum_cpu_cores must be a positive integer")
+        memory = self.resource_requirements.minimum_memory_bytes
+        if memory is not None and (
+            not isinstance(memory, int) or isinstance(memory, bool) or memory < 1
+        ):
+            raise ValueError("minimum_memory_bytes must be a positive integer")

@@ -195,3 +195,44 @@ def test_adapter_event_has_its_own_execution_identity_and_sequence_cas():
             current_sequence=8, expected_sequence=7, target_state=E.COLLECTING,
             occurred_at=NOW,
         )
+
+
+def test_transitions_reject_states_and_timestamps_of_the_wrong_type():
+    with pytest.raises(TypeError):
+        event("queued", J.PREPARING)
+    with pytest.raises(TypeError):
+        event(J.QUEUED, "preparing")
+    with pytest.raises(TypeError):
+        adapter_event("queued", E.RUNNING)
+    with pytest.raises(TypeError):
+        adapter_event(E.QUEUED, "running")
+    with pytest.raises(TypeError):
+        transition_job(
+            job_id="j1", event_id="e2", current_state=J.QUEUED,
+            current_sequence=1, expected_sequence=1,
+            target_state=J.PREPARING, occurred_at="2026-01-01",
+        )
+
+
+def test_cancellation_records_reject_wrong_field_types():
+    with pytest.raises(TypeError):
+        CancellationEvidence(
+            "j1", "queued", CancellationEvidenceKind.WORKER_START_PREVENTED, NOW
+        )
+    with pytest.raises(TypeError):
+        CancellationEvidence("j1", J.QUEUED, "worker_start_prevented", NOW)
+    with pytest.raises(TypeError):
+        CancellationEvidence(
+            "j1", J.QUEUED, CancellationEvidenceKind.WORKER_START_PREVENTED, "now"
+        )
+    with pytest.raises(ValueError):
+        CancellationEvidence(
+            "", J.QUEUED, CancellationEvidenceKind.WORKER_START_PREVENTED, NOW
+        )
+    with pytest.raises(TypeError):
+        event(J.CANCEL_REQUESTED, J.COLLECTING, cancellation_origin="queued")
+    with pytest.raises(TypeError):
+        event(
+            J.CANCEL_REQUESTED, J.CANCELLED, cancellation_origin=J.QUEUED,
+            cancellation_evidence="not-evidence",
+        )

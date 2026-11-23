@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { fixture } from './fixture.js';
-import { boundaryFaces, colorForScalar, deformedPosition, scalarRange, validateFixture } from './mesh-data.js';
+import { boundaryFaces, colorForScalar, deformedPosition, escapeHtml, scalarRange, validateFixture } from './mesh-data.js';
 import './style.css';
 
 const issues = validateFixture(fixture);
@@ -132,10 +132,10 @@ function showSelection(kind: 'node' | 'element', id: string): void {
   selectionDetail.hidden = false;
   if (kind === 'node') {
     const node = nodesById.get(id)!;
-    selectionDetail.innerHTML = `<div class="selected-id"><span>NÓ</span><strong>${node.id}</strong></div><dl><div><dt>Tensão equivalente</dt><dd>${formatValue(node.vonMisesMpa)} <span>${fixture.metadata.units.stress}</span></dd></div><div><dt>Deslocamento Z base</dt><dd>${formatValue(node.displacementMm[2])} <span>${fixture.metadata.units.displacement}</span></dd></div><div><dt>Posição Z base</dt><dd>${formatValue(node.positionMm[2])} <span>${fixture.metadata.units.length}</span></dd></div></dl>`;
+    selectionDetail.innerHTML = `<div class="selected-id"><span>NÓ</span><strong>${escapeHtml(node.id)}</strong></div><dl><div><dt>Tensão equivalente</dt><dd>${formatValue(node.vonMisesMpa)} <span>${escapeHtml(fixture.metadata.units.stress)}</span></dd></div><div><dt>Deslocamento Z base</dt><dd>${formatValue(node.displacementMm[2])} <span>${escapeHtml(fixture.metadata.units.displacement)}</span></dd></div><div><dt>Posição Z base</dt><dd>${formatValue(node.positionMm[2])} <span>${escapeHtml(fixture.metadata.units.length)}</span></dd></div></dl>`;
   } else {
     const element = fixture.elements.find((entry) => entry.id === id)!;
-    selectionDetail.innerHTML = `<div class="selected-id"><span>ELEMENTO TETRAÉDRICO</span><strong>${element.id}</strong></div><dl><div><dt>Tensão equivalente</dt><dd>${formatValue(element.vonMisesMpa)} <span>${fixture.metadata.units.stress}</span></dd></div><div><dt>Nós associados</dt><dd>${element.nodeIds.join(' · ')}</dd></div></dl>`;
+    selectionDetail.innerHTML = `<div class="selected-id"><span>ELEMENTO TETRAÉDRICO</span><strong>${escapeHtml(element.id)}</strong></div><dl><div><dt>Tensão equivalente</dt><dd>${formatValue(element.vonMisesMpa)} <span>${escapeHtml(fixture.metadata.units.stress)}</span></dd></div><div><dt>Nós associados</dt><dd>${escapeHtml(element.nodeIds.join(' · '))}</dd></div></dl>`;
   }
 }
 

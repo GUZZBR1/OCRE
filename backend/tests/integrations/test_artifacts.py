@@ -31,6 +31,11 @@ class ArtifactVerificationTests(unittest.TestCase):
         with self.assertRaises(UnsafeArtifactPath):
             verify_artifact(self.root, "linked/model.dat", self.digest)
 
+    def test_rejects_non_string_path_as_unsafe_not_type_error(self):
+        for path in (None, b"inputs/model.dat", 3):
+            with self.subTest(path=path), self.assertRaises(UnsafeArtifactPath):
+                verify_artifact(self.root, path, self.digest)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -69,6 +69,19 @@ class ProcessBatchHostTests(unittest.TestCase):
         self.assertTrue(result.timed_out)
         self.assertLess(result.duration_seconds, 2)
 
+    def test_detached_descendant_holding_pipes_cannot_hang_the_host(self):
+        # A grandchild in its own session escapes killpg; it keeps the
+        # stdout/stderr pipes open, so the drain threads never see EOF.
+        # run() must still return instead of joining forever.
+        code = ("import subprocess,sys; subprocess.Popen([sys.executable, '-c', "
+                "'import time; time.sleep(15)'], stdout=sys.stdout, stderr=sys.stderr, "
+                "start_new_session=True)")
+        result = self.host.run(self.spec(code, timeout=0.1))
+        self.assertTrue(result.timed_out)
+        self.assertLess(result.duration_seconds, 5)
+        self.assertTrue(result.stdout.truncated)
+        self.assertTrue(result.stderr.truncated)
+
     def test_stdout_stderr_are_drained_and_capture_is_bounded(self):
         code = "import sys; sys.stdout.write('x'*100000); sys.stderr.write('y'*100000)"
         result = self.host.run(self.spec(code))

@@ -9,10 +9,10 @@ import subprocess
 import tempfile
 import threading
 import time
+from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
-from typing import Mapping
 
 
 class EnvironmentMode(str, Enum):
@@ -140,8 +140,15 @@ class ProcessBatchHost:
         if stdout.is_alive() or stderr.is_alive():
             timed_out = True
             self._terminate_process_group(process)
-            stdout.join()
-            stderr.join()
+            # A descendant that escaped the process group (e.g. setsid) can hold
+            # the pipes open forever; bound the final drain and mark the
+            # incomplete capture truncated instead of hanging.
+            drain_deadline = time.monotonic() + self.termination_grace_seconds + 1.0
+            for drain in (stdout, stderr):
+                drain.join(timeout=max(0, drain_deadline - time.monotonic()))
+            for drain in (stdout, stderr):
+                if drain.is_alive():
+                    drain.truncated = True
         return ProcessBatchResult(
             exit_code=process.returncode,
             timed_out=timed_out,

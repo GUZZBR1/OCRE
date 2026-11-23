@@ -35,6 +35,8 @@ class SQLiteSyncStore:
 
     def commit(self, batch: SyncBatch, *, tenant_id, committed_revision_id, revision_snapshot=b""):
         """Append immutable revision atomically; tenant is a storage namespace."""
+        if not isinstance(batch, SyncBatch) or not isinstance(tenant_id, str) or not tenant_id:
+            raise ValueError("commit requires a SyncBatch and a non-empty tenant")
         db=sqlite3.connect(self.database,timeout=15,isolation_level=None)
         db.execute("PRAGMA busy_timeout=15000")
         db.execute("BEGIN IMMEDIATE")

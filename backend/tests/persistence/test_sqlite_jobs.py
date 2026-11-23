@@ -6,7 +6,7 @@ from threading import Barrier
 
 import pytest
 
-from ocre_core.jobs import (AdapterExecutionState, CancellationEvidence, CancellationEvidenceKind, JobState, transition_adapter_execution, transition_job)
+from ocre_core.jobs import (AdapterExecutionState, CancellationEvidence, CancellationEvidenceKind, JobState, JobTransition, transition_adapter_execution, transition_job)
 from ocre_core.persistence.jobs import AdapterExecutionSnapshot, ExecutionSubmitted, IdempotencyConflict, IdempotencyRecord, JobSnapshot, OutboxMessage
 from ocre_core.persistence.sqlite import FakeMessageConsumer, FakeOutboxDispatcher, PersistenceConflict, SQLiteJobStore
 
@@ -317,3 +317,93 @@ def test_persistence_rejects_forged_transition_from_terminal_adapter_snapshot(tm
 
     assert store.get_execution_snapshot("x1", tenant_id="default").state is AdapterExecutionState.EXECUTION_FAILED
     assert store.read_events(tenant_id="default", job_id="j1") == ()
+
+
+def test_persistence_rejects_self_transition_events(tmp_path):
+    store, snap = setup_store(tmp_path)
+    noop = JobTransition("j1", "self-loop", 2, JobState.QUEUED, JobState.QUEUED, NOW)
+    with pytest.raises(ValueError, match="must change state"):
+        store.commit_transition(
+            expected_sequence=1,
+            snapshot=JobSnapshot("j1", JobState.QUEUED, 2, NOW),
+            event=noop, idempotency=None,
+            outbox=OutboxMessage("m-self", "j1", "self-loop", "t", b""),
+        )
+    assert store.get_snapshot("j1", tenant_id="default").sequence == 1
+    assert store.read_events(tenant_id="default", job_id="j1") == ()
+
+
+def test_commit_transition_rejects_wrong_port_record_types(tmp_path):
+    store, snap = setup_store(tmp_path)
+    event = transition_job(
+        job_id="j1", event_id="e2", current_state=snap.state,
+        current_sequence=1, expected_sequence=1,
+        target_state=JobState.PREPARING, occurred_at=NOW,
+    )
+    base = dict(
+        snapshot=JobSnapshot("j1", event.to_state, 2, NOW),
+        event=event, idempotency=None,
+        outbox=OutboxMessage("m2", "j1", "e2", "t", b""),
+    )
+    for key, bad in (
+        ("snapshot", "j1"),
+        ("event", "e2"),
+        ("event", ExecutionSubmitted("j1", "x", "e2", 2, NOW)),
+        ("outbox", "m2"),
+        ("idempotency", "not-a-record"),
+    ):
+        with pytest.raises(ValueError, match="port types"):
+            store.commit_transition(expected_sequence=1, **(base | {key: bad}))
+    assert store.read_events(tenant_id="default", job_id="j1") == ()
+
+
+def test_commit_transition_rejects_naive_event_timestamp_and_bad_outbox(tmp_path):
+    store, snap = setup_store(tmp_path)
+    event = transition_job(
+        job_id="j1", event_id="e2", current_state=snap.state,
+        current_sequence=1, expected_sequence=1,
+        target_state=JobState.PREPARING, occurred_at=NOW,
+    )
+    base = dict(
+        snapshot=JobSnapshot("j1", event.to_state, 2, NOW),
+        event=event, idempotency=None,
+        outbox=OutboxMessage("m2", "j1", "e2", "t", b""),
+    )
+    with pytest.raises(ValueError, match="timezone-aware"):
+        store.commit_transition(expected_sequence=1, **(base | {"event": replace(event, occurred_at=datetime(2026, 1, 1))}))
+    with pytest.raises(ValueError):
+        store.commit_transition(expected_sequence=1, **(base | {"outbox": replace(base["outbox"], message_id="")}))
+    assert store.read_events(tenant_id="default", job_id="j1") == ()
+
+
+def test_create_execution_rejects_wrong_port_record_types(tmp_path):
+    store = SQLiteJobStore(tmp_path / "jobs.db")
+    base = dict(
+        job_snapshot=JobSnapshot("j", JobState.QUEUED, 1, NOW),
+        execution_snapshot=AdapterExecutionSnapshot("x", "j", AdapterExecutionState.QUEUED, 1, NOW),
+        submitted_event=ExecutionSubmitted("j", "x", "e", 1, NOW),
+        idempotency=IdempotencyRecord("default", "submit", "k", "f", "j"),
+        outbox=OutboxMessage("m", "j", "e", "t", b""),
+    )
+    for key, bad in (
+        ("job_snapshot", "j"),
+        ("execution_snapshot", base["job_snapshot"]),
+        ("submitted_event", "e"),
+        ("idempotency", None),
+        ("outbox", "m"),
+    ):
+        with pytest.raises(ValueError):
+            store.create_execution(**(base | {key: bad}))
+    assert store.get_snapshot("j", tenant_id="default") is None
+
+
+def test_event_pages_and_outbox_drain_require_positive_limits(tmp_path):
+    store, _ = setup_store(tmp_path)
+    with pytest.raises(ValueError):
+        store.pending_outbox(0)
+    with pytest.raises(ValueError):
+        store.pending_outbox(-1)
+    with pytest.raises(ValueError):
+        store.read_events(tenant_id="default", job_id="j1", limit=0)
+    with pytest.raises(ValueError):
+        store.read_events(tenant_id="default", job_id="j1", after_cursor=-1)
