@@ -113,12 +113,11 @@ class SyntheticRuntime:
     def _handle(self, message: OutboxMessage) -> None:
         # A callback can only name this aggregate and a tenant-scoped persisted
         # event. Unknown or cross-tenant messages fail closed.
-        valid_event_ids = self._scoped_store._event_ids()
         if (
             not self._scoped_store.owns(message)
             or message.aggregate_id != self.job_id
-            or message.event_id not in valid_event_ids
             or message.topic not in {"job.submitted", "job.cancel_requested", "synthetic.job.events"}
+            or message.event_id not in self._scoped_store._event_ids()
         ):
             raise LookupError("synthetic callback is outside tenant/job scope")
         if message.topic == "synthetic.job.events":

@@ -169,7 +169,7 @@ class SyntheticWorker:
         *,
         cancellation_evidence: CancellationEvidence | None = None,
         cancellation_origin: JobState | None = None,
-    ) -> JobSnapshot:
+    ) -> None:
         now = self._clock()
         tenant_scope = sha256(tenant_id.encode("utf-8")).hexdigest()[:16]
         event = transition_job(
@@ -208,4 +208,3 @@ class SyntheticWorker:
         )
         if self._after_transition is not None:
             self._after_transition(event)
-        return next_snapshot

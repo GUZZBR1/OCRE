@@ -82,9 +82,9 @@ import math
 import os
 import shutil
 import subprocess
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from .fingerprint import DOMAIN as _FINGERPRINT_DOMAIN
 from .fingerprint import jcs as _jcs
@@ -558,6 +558,39 @@ def write_ccx_inp(mesh: dict[str, Any], path: str | Path, *,
 # Leitura do .dat do CalculiX
 # ---------------------------------------------------------------------------
 
+def _dat_row4(parts: list[str]) -> bool:
+    """Linha de dados "tag + 3 valores" do .dat."""
+    return len(parts) == 4 and parts[0].isdigit()
+
+
+def _dat_column(
+    text: str,
+    header: Callable[[str], bool],
+    row: Callable[[list[str]], bool],
+    column: int,
+) -> list[float]:
+    """Uma coluna numerica de uma secao do .dat do CalculiX.
+
+    A secao abre quando ``header`` casa com a linha; dentro dela,
+    linhas que passam em ``row`` contribuem ``parts[column]``; a
+    primeira linha nao-dados apos valores fecha a secao. Vazio
+    quando a secao esta ausente.
+    """
+    values: list[float] = []
+    in_section = False
+    for line in text.splitlines():
+        if header(line):
+            in_section = True
+            continue
+        if in_section:
+            parts = line.split()
+            if row(parts):
+                values.append(float(parts[column]))
+            elif parts and not parts[0].isdigit() and values:
+                in_section = False
+    return values
+
+
 def parse_ccx_dat(text: str) -> dict[str, Any]:
     """Le Rx (soma de RF1 na face fixa), S11 max e ux max do .dat.
 
@@ -565,51 +598,29 @@ def parse_ccx_dat(text: str) -> dict[str, Any]:
     um .dat sem as secoes pedidas nao e um resultado, e um artefato
     incompleto.
     """
-    forces: list[float] = []
-    in_forces = False
-    for line in text.splitlines():
-        if line.startswith(" forces (fx,fy,fz) for set FIXED"):
-            in_forces = True
-            continue
-        if in_forces:
-            parts = line.split()
-            if len(parts) == 4 and parts[0].isdigit():
-                forces.append(float(parts[1]))
-            elif parts and not parts[0].isdigit() and forces:
-                in_forces = False
+    forces = _dat_column(
+        text,
+        lambda line: line.startswith(" forces (fx,fy,fz) for set FIXED"),
+        _dat_row4, 1)
     if not forces:
         raise ValueError("no RF section for set FIXED in .dat")
 
-    s11_values: list[float] = []
-    in_stress = False
-    for line in text.splitlines():
-        if line.startswith(" stresses (elem, integ.pnt.,sxx,syy,szz,sxy,sxz,syz)"):
-            in_stress = True
-            continue
-        if in_stress:
-            parts = line.split()
-            if len(parts) >= 8 and parts[0].isdigit() and parts[1].isdigit():
-                s11_values.append(float(parts[2]))
-            elif parts and not parts[0].isdigit() and s11_values:
-                in_stress = False
+    s11_values = _dat_column(
+        text,
+        lambda line: line.startswith(
+            " stresses (elem, integ.pnt.,sxx,syy,szz,sxy,sxz,syz)"),
+        lambda parts: (len(parts) >= 8 and parts[0].isdigit()
+                       and parts[1].isdigit()), 2)
     if not s11_values:
         raise ValueError("no S section for set BAR in .dat")
 
-    ux_values: list[float] = []
-    in_disp = False
-    for line in text.splitlines():
-        # CalculiX 2.21 escreve "(vx,vy,vz)"; outras versoes escrevem
-        # "(ux,uy,uz)" -- aceitar as duas grafias.
-        if (line.startswith(" displacements (")
-                and "for set LOADED" in line):
-            in_disp = True
-            continue
-        if in_disp:
-            parts = line.split()
-            if len(parts) == 4 and parts[0].isdigit():
-                ux_values.append(float(parts[1]))
-            elif parts and not parts[0].isdigit() and ux_values:
-                in_disp = False
+    # CalculiX 2.21 escreve "(vx,vy,vz)"; outras versoes escrevem
+    # "(ux,uy,uz)" -- aceitar as duas grafias.
+    ux_values = _dat_column(
+        text,
+        lambda line: (line.startswith(" displacements (")
+                      and "for set LOADED" in line),
+        _dat_row4, 1)
     if not ux_values:
         raise ValueError("no U section for set LOADED in .dat")
     return {"rx_N": sum(forces),
@@ -686,6 +697,12 @@ def _base_result(status: str, spec: AxialCaseSpec) -> FeaResult:
     }
 
 
+def _fail(result: dict[str, Any], failures: list) -> dict[str, Any]:
+    result["status"] = "failed"
+    result["failures"] = failures
+    return result
+
+
 def run_axial_case(step_path: str | Path, workdir: str | Path, *,
                    spec: AxialCaseSpec | None = None,
                    doc_id: str | None = None,
@@ -707,15 +724,7 @@ def run_axial_case(step_path: str | Path, workdir: str | Path, *,
     if spec is None:
         spec = AxialCaseSpec(step_path=step_path)
     if mesh_size_mm is not None:
-        spec = AxialCaseSpec(
-            step_path=spec.step_path,
-            young_modulus_mpa=spec.young_modulus_mpa,
-            poisson_ratio=spec.poisson_ratio,
-            prescribed_ux_mm=spec.prescribed_ux_mm,
-            length_mm=spec.length_mm, width_mm=spec.width_mm,
-            height_mm=spec.height_mm, mesh_size_mm=mesh_size_mm,
-            timeout_gmsh_s=spec.timeout_gmsh_s,
-            timeout_ccx_s=spec.timeout_ccx_s)
+        spec = replace(spec, mesh_size_mm=mesh_size_mm)
     result = _base_result("blocked", spec)
 
     # --- Preflight fail-closed: caso incompleto nao roda nada. ---
@@ -742,39 +751,29 @@ def run_axial_case(step_path: str | Path, workdir: str | Path, *,
     gmsh = _run([gmsh_bin, "-3", str(geo_path)], workdir,
                 spec.timeout_gmsh_s)
     if not gmsh["ok"]:
-        result["status"] = "failed"
-        result["failures"] = [f"gmsh failed: {gmsh['failure']}"]
         result["notes"] = [_truncate(gmsh["stderr"] or gmsh["stdout"])]
-        return result
+        return _fail(result, [f"gmsh failed: {gmsh['failure']}"])
     msh_path = workdir / "bar.msh"
     if not msh_path.is_file():
-        result["status"] = "failed"
-        result["failures"] = ["gmsh reported success but bar.msh "
-                              "was not written"]
-        return result
+        return _fail(result, ["gmsh reported success but bar.msh "
+                              "was not written"])
     try:
         mesh = parse_gmsh_msh(msh_path)
     except (ValueError, IndexError) as exc:
-        result["status"] = "failed"
-        result["failures"] = [f"could not parse bar.msh: {exc}"]
-        return result
+        return _fail(result, [f"could not parse bar.msh: {exc}"])
     if not mesh["tets"]:
-        result["status"] = "failed"
-        result["failures"] = ["mesh has no C3D4 volume elements"]
-        return result
+        return _fail(result, ["mesh has no C3D4 volume elements"])
 
     # --- Deck proprio (.inp) a partir do .msh parseado. ---
     inp_path = workdir / "job.inp"
     try:
         inp_info = write_ccx_inp(
             mesh, inp_path,
-            young_modulus_mpa=spec.young_modulus_mpa or YOUNG_MODULUS_MPA,
-            poisson_ratio=spec.poisson_ratio or POISSON_RATIO,
-            prescribed_ux_mm=spec.prescribed_ux_mm or PRESCRIBED_UX_MM)
+            young_modulus_mpa=spec.young_modulus_mpa,
+            poisson_ratio=spec.poisson_ratio,
+            prescribed_ux_mm=spec.prescribed_ux_mm)
     except ValueError as exc:
-        result["status"] = "failed"
-        result["failures"] = [f"could not write job.inp: {exc}"]
-        return result
+        return _fail(result, [f"could not write job.inp: {exc}"])
     result["notes"].append(
         f"boundary faces from {inp_info['bc_source']}; "
         f"{len(mesh['tets'])} C3D4 elements, {len(mesh['nodes'])} nodes; "
@@ -793,22 +792,16 @@ def run_axial_case(step_path: str | Path, workdir: str | Path, *,
             result["artifacts"][name] = {
                 "file": path.name, "sha256": _sha256_file(path)}
     if not ccx["ok"]:
-        result["status"] = "failed"
-        result["failures"] = [f"ccx failed: {ccx['failure']}"]
         result["notes"].append(_truncate(ccx["stderr"] or ccx["stdout"]))
-        return result
+        return _fail(result, [f"ccx failed: {ccx['failure']}"])
     if not dat_path.is_file():
-        result["status"] = "failed"
-        result["failures"] = ["ccx reported success but job.dat was "
-                              "not written"]
-        return result
+        return _fail(result, ["ccx reported success but job.dat was "
+                              "not written"])
     try:
         measured = parse_ccx_dat(dat_path.read_text(
             encoding="utf-8", errors="replace"))
     except ValueError as exc:
-        result["status"] = "failed"
-        result["failures"] = [f"could not parse job.dat: {exc}"]
-        return result
+        return _fail(result, [f"could not parse job.dat: {exc}"])
 
     rx_error = _pct_error(measured["rx_N"], RX_REF_N)
     s11_error = _pct_error(measured["s11_max_MPa"], S11_REF_MPA)

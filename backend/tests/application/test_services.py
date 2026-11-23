@@ -1,17 +1,18 @@
-from datetime import datetime, timezone
+from dataclasses import replace
 
 import pytest
 
+from tests.helpers import (
+    BLOCKED_APPROVAL, FIXED_CLOCK, NOW, READY, FixedPreflight,
+    RuleAuthorizer, application, submission,
+)
+
 from ocre_core.application.services import (
     ApplicationError,
-    JobSubmission,
-    OCREApplication,
     PreflightReport,
     Principal,
 )
-from ocre_core.persistence.sqlite import SQLiteJobStore
 from ocre_core.persistence.jobs import OutboxMessage
-from ocre_core.persistence.sync import SQLiteSyncStore
 from ocre_core.jobs import (
     CancellationEvidence,
     CancellationEvidenceKind,
@@ -20,41 +21,12 @@ from ocre_core.jobs import (
 )
 
 
-NOW = datetime(2026, 1, 1, tzinfo=timezone.utc)
-
-
-class Projects:
-    def authorize(self, principal, project_id, action):
-        return project_id in {"p1"} and principal.tenant_id == "t1"
-
-
-class FixedPreflight:
-    def __init__(self, report):
-        self.report = report
-        self.calls = 0
-
-    def evaluate(self, _request):
-        self.calls += 1
-        return self.report
-
-
-def application(tmp_path, preflight):
-    return OCREApplication(
-        sync_store=SQLiteSyncStore(tmp_path / "sync.db"),
-        job_store=SQLiteJobStore(tmp_path / "jobs.db"),
-        authorizer=Projects(),
-        preflight=preflight,
-        clock=lambda: NOW,
-    )
-
-
-def submission():
-    return JobSubmission("rev1", "case", "adapter", "0", {"eir": 1}, {"bundle": 1})
+AUTH = RuleAuthorizer(lambda p, proj: proj in {"p1"} and p.tenant_id == "t1")
 
 
 def test_blocked_approval_fingerprint_preflight_writes_no_job_event_or_outbox(tmp_path):
-    preflight = FixedPreflight(PreflightReport("incomplete", "blocked", ({"code": "approval_fingerprint_unavailable"},)))
-    app = application(tmp_path, preflight)
+    preflight = FixedPreflight(BLOCKED_APPROVAL)
+    app = application(tmp_path, authorizer=AUTH, preflight=preflight, clock=FIXED_CLOCK)
     with pytest.raises(ApplicationError) as error:
         app.submit_job(Principal("t1", "u1"), "p1", submission(), "key")
     assert error.value.code == "preparation_failed"
@@ -68,7 +40,7 @@ def test_blocked_approval_fingerprint_preflight_writes_no_job_event_or_outbox(tm
 
 
 def test_test_only_ready_preflight_proves_atomic_submit_cancel_and_replay(tmp_path):
-    app = application(tmp_path, FixedPreflight(PreflightReport("valid", "ready")))
+    app = application(tmp_path, authorizer=AUTH, preflight=FixedPreflight(READY), clock=FIXED_CLOCK)
     principal = Principal("t1", "u1")
     submitted = app.submit_job(principal, "p1", submission(), "submit-key")
     assert submitted["state"] == "queued"
@@ -89,7 +61,7 @@ def test_test_only_ready_preflight_proves_atomic_submit_cancel_and_replay(tmp_pa
 
 
 def test_sync_identity_comes_from_principal_and_cross_tenant_is_not_found(tmp_path):
-    app = application(tmp_path, FixedPreflight(PreflightReport("incomplete", "blocked")))
+    app = application(tmp_path, authorizer=AUTH, preflight=FixedPreflight(PreflightReport("incomplete", "blocked")), clock=FIXED_CLOCK)
     principal = Principal("t1", "real-actor")
     receipt = app.submit_sync(principal, "p1", {
         "batch_id": "b1",
@@ -106,7 +78,7 @@ def test_sync_identity_comes_from_principal_and_cross_tenant_is_not_found(tmp_pa
 
 
 def test_job_project_mismatch_and_cross_tenant_are_indistinguishable_not_found(tmp_path):
-    app = application(tmp_path, FixedPreflight(PreflightReport("valid", "ready")))
+    app = application(tmp_path, authorizer=AUTH, preflight=FixedPreflight(READY), clock=FIXED_CLOCK)
     owner = Principal("t1", "u1")
     job_id = app.submit_job(owner, "p1", submission(), "k")["job_id"]
     for principal, project in ((Principal("t2", "u2"), "p1"), (owner, "other")):
@@ -116,7 +88,7 @@ def test_job_project_mismatch_and_cross_tenant_are_indistinguishable_not_found(t
 
 
 def test_cancel_collecting_job_returns_conflict_and_cancelled_event_replays_nested_evidence(tmp_path):
-    app = application(tmp_path, FixedPreflight(PreflightReport("valid", "ready")))
+    app = application(tmp_path, authorizer=AUTH, preflight=FixedPreflight(READY), clock=FIXED_CLOCK)
     principal = Principal("t1", "u1")
     job_id = app.submit_job(principal, "p1", submission(), "submit-key")["job_id"]
     assert app.cancel_job(principal, "p1", job_id, "cancel-key")["state"] == "cancel_requested"
@@ -141,7 +113,7 @@ def test_cancel_collecting_job_returns_conflict_and_cancelled_event_replays_nest
     )
     app.job_store.commit_transition(
         expected_sequence=snapshot.sequence,
-        snapshot=type(snapshot)(job_id, event.to_state, event.sequence, NOW, snapshot.payload, tenant_id="t1"),
+        snapshot=replace(snapshot, state=event.to_state, sequence=event.sequence, updated_at=NOW),
         event=event,
         idempotency=None,
         outbox=OutboxMessage("cancelled-message", job_id, event.event_id, "job.cancelled", b""),
@@ -174,9 +146,8 @@ def test_cancel_collecting_job_returns_conflict_and_cancelled_event_replays_nest
         )
         app.job_store.commit_transition(
             expected_sequence=current_snapshot.sequence,
-            snapshot=type(current_snapshot)(
-                collecting_job, target, transition.sequence, NOW,
-                current_snapshot.payload, tenant_id="t1",
+            snapshot=replace(
+                current_snapshot, state=target, sequence=transition.sequence, updated_at=NOW
             ),
             event=transition,
             idempotency=None,

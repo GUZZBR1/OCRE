@@ -1,7 +1,6 @@
 """Escritor DXF R2000 para documentos ``draw.paper.v1`` (Fase 0).
 
-Escreve um documento ``draw.paper.v1`` (como ``dict`` puro — este módulo
-NÃO importa ``document.py`` nem nenhum outro módulo do pacote ``draw``)
+Escreve um documento ``draw.paper.v1`` (como ``dict`` puro)
 como um arquivo DXF R2000, usando ezdxf.
 
 Regras do plano (``PLANO-INTEGRACAO-OCRE-DRAW.md`` §4), implementadas aqui:
@@ -31,13 +30,14 @@ já validada em DXF.
 
 from __future__ import annotations
 
+import hashlib
 import math
 from pathlib import Path
 from typing import Any
 
 import ezdxf
 
-from .paper import DEFAULT_SPEC
+from .paper import DEFAULT_SPEC, paper_size_mm
 
 __all__ = [
     "APPID",
@@ -71,24 +71,10 @@ class DxfExportError(ValueError):
 
 
 def _paper_size(document: dict) -> tuple[float, float]:
-    paper = document.get("paper") or {}
-    width = float(paper.get("width_mm", DEFAULT_PAPER_WIDTH_MM))
-    # Altura EFETIVA da folha: é ela que o documento draw.paper.v1 e o
-    # validador usam como limite dos pontos e como referência do flip
-    # y-down -> y-up. ``height_mm`` é a altura nominal e só vale como
-    # fallback quando o documento não traz ``effective_height_mm``
-    # (ex.: documentos sintéticos).
-    height = float(
-        paper.get(
-            "effective_height_mm",
-            paper.get("height_mm", DEFAULT_PAPER_HEIGHT_MM),
-        )
-    )
-    if not (math.isfinite(width) and math.isfinite(height)):
-        raise DxfExportError("paper.width_mm/height_mm devem ser finitos")
-    if width <= 0 or height <= 0:
-        raise DxfExportError("paper.width_mm/height_mm devem ser positivos")
-    return width, height
+    try:
+        return paper_size_mm(document)
+    except ValueError as exc:
+        raise DxfExportError(str(exc)) from exc
 
 
 def _validate_points(
@@ -221,12 +207,9 @@ def export_dxf(
     O relatório inclui ``output_path`` e o ``sha256`` do arquivo escrito,
     para o sidecar de proveniência.
     """
-    import hashlib
-
     doc, report = build_dxf(document, include_pending=include_pending)
     output_path = Path(output_path)
-    if output_path.parent != Path(".") and not output_path.parent.exists():
-        output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
     doc.saveas(output_path)
     digest = hashlib.sha256(output_path.read_bytes()).hexdigest()
     report["output_path"] = str(output_path)

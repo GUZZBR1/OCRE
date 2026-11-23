@@ -17,11 +17,9 @@ from typing import Any, Mapping
 
 from jsonschema import Draft202012Validator
 
-from ocre_core.validation.validator import StrictJSONError, parse_json_strict, validate
+from ocre_core.validation.validator import SCHEMA_DIR, StrictJSONError, parse_json_strict, validate
 
 
-ROOT = Path(__file__).resolve().parents[3]
-SCHEMA_DIR = ROOT / "schemas" / "eir"
 TOOL_ID = "ocre.eir-migrator"
 TOOL_VERSION = "0.1.0"
 REPORT_VERSION = "0.1.0"

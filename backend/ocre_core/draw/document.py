@@ -16,7 +16,6 @@ from __future__ import annotations
 
 import copy
 import hashlib
-import json
 import math
 import uuid
 from datetime import datetime, timezone
@@ -26,7 +25,10 @@ from .paper import DEFAULT_SPEC, PaperSpec, resolve_paper
 from .validator_draw import (
     SCHEMA_NAME,
     StrictJSONError,
+    _canonical_bytes,
     bundled_schema_sha256,
+    parse_json_strict,
+    polyline_length_mm,
 )
 
 ERASE_REASONS = ("hand-erase", "page-turn", "manual")
@@ -46,39 +48,13 @@ def _parse_rfc3339(value: str) -> datetime:
         raise ValueError(f"not an RFC 3339 date-time: {value!r}") from exc
 
 
-def _pairs_no_duplicates(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
-    result: dict[str, Any] = {}
-    for key, value in pairs:
-        if key in result:
-            raise StrictJSONError(f"duplicate object key: {key}")
-        result[key] = value
-    return result
-
-
-def _reject_constant(value: str) -> None:
-    raise StrictJSONError(f"non-finite JSON number: {value}")
-
-
-def compute_length_mm(points_mm: list[list[float]], closed: bool) -> float:
-    """Polyline length in mm; the closing segment counts when closed."""
-    total = 0.0
-    for (x1, y1), (x2, y2) in zip(points_mm, points_mm[1:]):
-        total += math.hypot(x2 - x1, y2 - y1)
-    if closed and len(points_mm) > 1:
-        (x1, y1), (x2, y2) = points_mm[-1], points_mm[0]
-        total += math.hypot(x2 - x1, y2 - y1)
-    return total
-
-
 def canonical_document_bytes(doc: dict[str, Any]) -> bytes:
     """Canonical serialisation of a document, for hashing only.
 
     Plain ``json.dumps(sort_keys=True)`` — deterministic for a given parsed
     document. This is NOT the JCS/RFC 8785 encoding used by fingerprints.
     """
-    return json.dumps(
-        doc, sort_keys=True, separators=(",", ":"), ensure_ascii=False
-    ).encode("utf-8")
+    return _canonical_bytes(doc)
 
 
 def document_sha256(doc: dict[str, Any]) -> str:
@@ -93,11 +69,7 @@ def dumps(doc: dict[str, Any]) -> str:
 
 def loads(text: str | bytes) -> dict[str, Any]:
     """Parse document JSON strictly (duplicate keys and NaN/Inf rejected)."""
-    if isinstance(text, (bytes, bytearray)):
-        text = bytes(text).decode("utf-8", errors="strict")
-    parsed = json.loads(
-        text, object_pairs_hook=_pairs_no_duplicates, parse_constant=_reject_constant
-    )
+    parsed = parse_json_strict(text)
     if not isinstance(parsed, dict):
         raise StrictJSONError("draw.paper.v1 document must be a JSON object")
     return parsed
@@ -200,6 +172,29 @@ def _check_points(points_mm: Any, closed: bool, doc: dict[str, Any]) -> list[lis
     return clean
 
 
+def _check_circle(circle: Any, doc: dict[str, Any]) -> dict[str, float]:
+    """Validated analytic circle dict (cx_mm, cy_mm, r_mm), on the sheet."""
+    fmt, width_mm, eff_height_mm = _paper_bounds(doc)
+    if not isinstance(circle, dict) or set(circle) != {"cx_mm", "cy_mm", "r_mm"}:
+        raise ValueError("circle must be a dict with cx_mm, cy_mm and r_mm")
+    for key, value in circle.items():
+        if (
+            not isinstance(value, (int, float))
+            or isinstance(value, bool)
+            or not math.isfinite(float(value))
+        ):
+            raise ValueError(f"invalid circle.{key} (finite number required): {value!r}")
+    cx, cy, r = float(circle["cx_mm"]), float(circle["cy_mm"]), float(circle["r_mm"])
+    if r <= 0:
+        raise ValueError(f"circle.r_mm must be positive: {r!r}")
+    if not (0.0 <= cx - r and cx + r <= width_mm and 0.0 <= cy - r and cy + r <= eff_height_mm):
+        raise ValueError(
+            f"circle (cx={cx}, cy={cy}, r={r}) is outside the {fmt} sheet "
+            f"({width_mm} x {eff_height_mm} mm)"
+        )
+    return {"cx_mm": cx, "cy_mm": cy, "r_mm": r}
+
+
 def _find_stroke(doc: dict[str, Any], stroke_id: str) -> dict[str, Any]:
     for stroke in doc["strokes"]:
         if stroke["stroke_id"] == stroke_id:
@@ -224,6 +219,7 @@ def add_stroke(
     closed: bool = False,
     status: str = "pending",
     shape: str | None = None,
+    circle: dict[str, float] | None = None,
     t_start_ms: int | None = None,
     t_end_ms: int | None = None,
     provenance: dict[str, Any] | None = None,
@@ -232,8 +228,10 @@ def add_stroke(
     """Append a stroke; assigns a stable id and the next contiguous order.
 
     Timestamps (``t_start_ms``/``t_end_ms``) are only accepted when the
-    document order is ``temporal-stamps``. Points are validated against
-    the sheet before anything is written.
+    document order is ``temporal-stamps``. ``circle`` carries the analytic
+    circle fit (``cx_mm``/``cy_mm``/``r_mm``, sheet coords) preserved next
+    to the ``points_mm`` discretization — it implies ``shape="circle"``.
+    Points are validated against the sheet before anything is written.
     """
     if status not in STATUSES:
         raise ValueError(f"unknown status: {status!r}")
@@ -241,6 +239,11 @@ def add_stroke(
         raise ValueError("a new stroke cannot be created erased; erase it after adding")
     if shape is not None and shape not in SHAPES:
         raise ValueError(f"unknown shape: {shape!r}")
+    if circle is not None:
+        if shape is not None and shape != "circle":
+            raise ValueError("circle parameters require shape 'circle'")
+        shape = "circle"
+        circle = _check_circle(circle, doc)
     if (t_start_ms is not None or t_end_ms is not None) and doc.get("order_kind") != "temporal-stamps":
         raise ValueError("t_start_ms/t_end_ms require order_kind temporal-stamps")
     if (
@@ -257,11 +260,13 @@ def add_stroke(
         "status": status,
         "points_mm": points,
         "closed": bool(closed),
-        "length_mm": compute_length_mm(points, closed),
+        "length_mm": polyline_length_mm(points, closed),
         "order_kind": doc["order_kind"],
     }
     if shape is not None:
         stroke["shape"] = shape
+    if circle is not None:
+        stroke["circle"] = circle
     if t_start_ms is not None:
         stroke["t_start_ms"] = t_start_ms
     if t_end_ms is not None:

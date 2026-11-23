@@ -1,5 +1,3 @@
-from datetime import datetime, timezone
-
 import pytest
 
 from ocre_core.integrations.synthetic_worker import (
@@ -10,18 +8,7 @@ from ocre_core.integrations.synthetic_worker import (
 from ocre_core.jobs import JobState
 from ocre_core.persistence.jobs import JobSnapshot
 from ocre_core.persistence.sqlite import SQLiteJobStore
-
-
-NOW = datetime(2026, 1, 1, tzinfo=timezone.utc)
-
-
-def queued_job(store, job_id, tenant_id="tenant-a"):
-    snapshot = JobSnapshot(job_id, JobState.QUEUED, 1, NOW, tenant_id=tenant_id)
-    with store._connect() as db:
-        db.execute(
-            "INSERT INTO snapshots VALUES(?,?,?,?,?,?)",
-            (tenant_id, "job", job_id, job_id, 1, store._dump(snapshot)),
-        )
+from tests.helpers import FIXED_CLOCK, NOW, queued_job
 
 
 @pytest.mark.parametrize(
@@ -44,9 +31,9 @@ def test_synthetic_worker_persists_labeled_fake_lifecycle(
     tmp_path, outcome, terminal, expected_states
 ):
     store = SQLiteJobStore(tmp_path / "jobs.db")
-    queued_job(store, "job-1")
+    queued_job(store, "job-1", tenant="tenant-a")
 
-    report = SyntheticWorker(store, lambda: NOW).run(
+    report = SyntheticWorker(store, FIXED_CLOCK).run(
         tenant_id="tenant-a", job_id="job-1", outcome=outcome
     )
 
@@ -66,8 +53,8 @@ def test_synthetic_worker_persists_labeled_fake_lifecycle(
 
 def test_synthetic_worker_is_tenant_scoped_and_requires_queued_job(tmp_path):
     store = SQLiteJobStore(tmp_path / "jobs.db")
-    queued_job(store, "job-1")
-    worker = SyntheticWorker(store, lambda: NOW)
+    queued_job(store, "job-1", tenant="tenant-a")
+    worker = SyntheticWorker(store, FIXED_CLOCK)
 
     with pytest.raises(LookupError):
         worker.run(tenant_id="tenant-b", job_id="job-1", outcome=SyntheticOutcome.SUCCEEDED)
@@ -79,9 +66,9 @@ def test_synthetic_worker_is_tenant_scoped_and_requires_queued_job(tmp_path):
 
 def test_same_job_id_in_two_tenants_has_distinct_fake_event_and_outbox_ids(tmp_path):
     store = SQLiteJobStore(tmp_path / "jobs.db")
-    queued_job(store, "shared-job", "tenant-a")
-    queued_job(store, "shared-job", "tenant-b")
-    worker = SyntheticWorker(store, lambda: NOW)
+    queued_job(store, "shared-job", tenant="tenant-a")
+    queued_job(store, "shared-job", tenant="tenant-b")
+    worker = SyntheticWorker(store, FIXED_CLOCK)
 
     worker.run(tenant_id="tenant-a", job_id="shared-job", outcome=SyntheticOutcome.FAILED)
     worker.run(tenant_id="tenant-b", job_id="shared-job", outcome=SyntheticOutcome.FAILED)
@@ -100,10 +87,10 @@ def test_same_job_id_in_two_tenants_has_distinct_fake_event_and_outbox_ids(tmp_p
 
 def test_unsupported_outcome_is_rejected_without_persisting_partial_lifecycle(tmp_path):
     store = SQLiteJobStore(tmp_path / "jobs.db")
-    queued_job(store, "job-1")
+    queued_job(store, "job-1", tenant="tenant-a")
 
     with pytest.raises(ValueError, match="unsupported synthetic outcome"):
-        SyntheticWorker(store, lambda: NOW).run(
+        SyntheticWorker(store, FIXED_CLOCK).run(
             tenant_id="tenant-a", job_id="job-1", outcome="bogus"
         )
 
@@ -114,7 +101,7 @@ def test_unsupported_outcome_is_rejected_without_persisting_partial_lifecycle(tm
 
 def test_cancelled_outcome_cannot_turn_running_job_into_success(tmp_path):
     store = SQLiteJobStore(tmp_path / "jobs.db")
-    queued_job(store, "job-1")
+    queued_job(store, "job-1", tenant="tenant-a")
     running = JobSnapshot("job-1", JobState.RUNNING, 3, NOW, tenant_id="tenant-a")
     with store._connect() as db:
         db.execute(
@@ -123,7 +110,7 @@ def test_cancelled_outcome_cannot_turn_running_job_into_success(tmp_path):
         )
 
     with pytest.raises(ValueError, match="requires a persisted cancel request"):
-        SyntheticWorker(store, lambda: NOW).run(
+        SyntheticWorker(store, FIXED_CLOCK).run(
             tenant_id="tenant-a", job_id="job-1", outcome=SyntheticOutcome.CANCELLED
         )
 

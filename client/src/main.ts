@@ -16,6 +16,7 @@ const selectElementButton = document.querySelector<HTMLButtonElement>('#select-e
 const selectionEmpty = document.querySelector<HTMLDivElement>('#selection-empty')!;
 const selectionDetail = document.querySelector<HTMLDivElement>('#selection-detail')!;
 const [stressMin, stressMax] = scalarRange(fixture.nodes.map((node) => node.vonMisesMpa));
+const nodesById = new Map(fixture.nodes.map((node) => [node.id, node]));
 const surfaceFaces = boundaryFaces(fixture.elements);
 const faceElementIds = surfaceFaces.map((face) => face.elementId);
 let selectionMode: 'node' | 'element' = 'node';
@@ -78,20 +79,18 @@ selectionMarker.visible = false;
 scene.add(selectionMarker);
 
 function currentPosition(nodeId: string): [number, number, number] {
-  const node = fixture.nodes.find((entry) => entry.id === nodeId)!;
-  return deformedPosition(node, showDeformation, fixture.metadata.displacementScale);
+  return deformedPosition(nodesById.get(nodeId)!, showDeformation, fixture.metadata.displacementScale);
 }
 
 function updateGeometry(): void {
   let cursor = 0;
   const linePositions: number[] = [];
   for (const face of surfaceFaces) {
-    const faceNodes = face.nodeIds.map((id) => fixture.nodes.find((node) => node.id === id)!);
+    const faceNodes = face.nodeIds.map((id) => nodesById.get(id)!);
     for (const node of faceNodes) {
       const position = currentPosition(node.id);
       positions.set(position, cursor);
-      const scalar = showStress ? node.vonMisesMpa : 0;
-      const [red, green, blue] = showStress ? colorForScalar(scalar, stressMin, stressMax) : [0.39, 0.48, 0.59];
+      const [red, green, blue] = showStress ? colorForScalar(node.vonMisesMpa, stressMin, stressMax) : [0.39, 0.48, 0.59];
       colors.set([red, green, blue], cursor);
       cursor += 3;
     }
@@ -132,7 +131,7 @@ function showSelection(kind: 'node' | 'element', id: string): void {
   selectionEmpty.hidden = true;
   selectionDetail.hidden = false;
   if (kind === 'node') {
-    const node = fixture.nodes.find((entry) => entry.id === id)!;
+    const node = nodesById.get(id)!;
     selectionDetail.innerHTML = `<div class="selected-id"><span>NÓ</span><strong>${node.id}</strong></div><dl><div><dt>Tensão equivalente</dt><dd>${formatValue(node.vonMisesMpa)} <span>${fixture.metadata.units.stress}</span></dd></div><div><dt>Deslocamento Z base</dt><dd>${formatValue(node.displacementMm[2])} <span>${fixture.metadata.units.displacement}</span></dd></div><div><dt>Posição Z base</dt><dd>${formatValue(node.positionMm[2])} <span>${fixture.metadata.units.length}</span></dd></div></dl>`;
   } else {
     const element = fixture.elements.find((entry) => entry.id === id)!;
@@ -161,9 +160,8 @@ activeRenderer.domElement.addEventListener('pointerdown', (event) => {
   if (selectionMode === 'node') {
     const hit = raycaster.intersectObject(nodePoints)[0];
     if (!hit || hit.index === undefined) return;
-    const nodeIndex = hit.index;
-    selectedNodeIndex = nodeIndex;
-    showSelection('node', fixture.nodes[nodeIndex]!.id);
+    selectedNodeIndex = hit.index;
+    showSelection('node', fixture.nodes[hit.index]!.id);
     updateSelectionMarker();
   } else {
     const hit = raycaster.intersectObject(surface)[0];

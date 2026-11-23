@@ -145,7 +145,12 @@ def check_dxf(
             # temporário, para não sujar o diretório do DXF original).
             attempt = _run_conversion(binary_path, copy_path, None, timeout_s)
             used_attempt = 2
-        if attempt["returncode"] != 0:
+        reason = (
+            "librecad saiu com código != 0" if attempt["returncode"] != 0
+            else None if out_path.is_file() and out_path.stat().st_size > 0
+            else "librecad saiu com código 0 mas não produziu PDF"
+        )
+        if reason is not None:
             return {
                 "status": "fail",
                 "available": True,
@@ -155,19 +160,7 @@ def check_dxf(
                 "returncode": attempt["returncode"],
                 "stdout": attempt["stdout"],
                 "stderr": attempt["stderr"],
-                "reason": "librecad saiu com código != 0",
-            }
-        if not out_path.is_file() or out_path.stat().st_size == 0:
-            return {
-                "status": "fail",
-                "available": True,
-                "dxf_path": str(dxf_path),
-                "binary": binary_path,
-                "attempt": used_attempt,
-                "returncode": attempt["returncode"],
-                "stdout": attempt["stdout"],
-                "stderr": attempt["stderr"],
-                "reason": "librecad saiu com código 0 mas não produziu PDF",
+                "reason": reason,
             }
         return {
             "status": "pass",

@@ -81,6 +81,8 @@ import subprocess
 import sys
 import tempfile
 from pathlib import Path
+from .librecad_gate import librecad_available
+
 
 __all__ = [
     "DEFAULT_TIMEOUT_S",
@@ -150,10 +152,6 @@ def blender_available(binary: str = "blender") -> str | None:
         return first[0].split()[-1]
     return "presente (versão não lida)"
 
-
-def librecad_available(binary: str = "librecad") -> str | None:
-    """Devolve o caminho do binário ``librecad`` ou ``None`` se ausente."""
-    return shutil.which(binary)
 
 
 def inkscape_available(binary: str = "inkscape") -> str | None:
@@ -236,10 +234,9 @@ def read_frd(frd_path: str | Path):
                     if etype not in _FRD_ELEMENT_TYPES:
                         raise VizError(
                             f".frd {frd_path}: tipo de elemento {etype} não "
-                            "suportado pelo parser (só C3D10/tipo 6)"
+                            f"suportado pelo parser {sorted(_FRD_ELEMENT_TYPES)}"
                         )
-                    cell_type, _n = _FRD_ELEMENT_TYPES[etype]
-                    current_nnodes = _n
+                    cell_type, current_nnodes = _FRD_ELEMENT_TYPES[etype]
                     continue
                 if line.startswith(" -2"):
                     # ids em campos de 10 a partir da coluna 3.

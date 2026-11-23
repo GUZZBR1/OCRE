@@ -1,12 +1,13 @@
-from datetime import datetime, timezone
-
 import pytest
+
+from tests.helpers import (
+    FIXED_CLOCK, NOW, FixedPreflight, RuleAuthorizer, application,
+    insert_snapshot,
+    submission,
+)
 
 from ocre_core.application.services import (
     ApplicationError,
-    JobSubmission,
-    OCREApplication,
-    PreflightReport,
     Principal,
 )
 from ocre_core.integrations.synthetic_runtime import SyntheticRuntime
@@ -14,20 +15,28 @@ from ocre_core.integrations.synthetic_worker import SyntheticOutcome
 from ocre_core.jobs import JobState
 from ocre_core.persistence.jobs import ExecutionSubmitted, JobSnapshot
 from ocre_core.persistence.sqlite import SQLiteJobStore
-from ocre_core.persistence.sync import SQLiteSyncStore
 
 
-NOW = datetime(2026, 1, 1, tzinfo=timezone.utc)
+AUTH = RuleAuthorizer(
+    lambda p, proj: proj == "project" and p.tenant_id.startswith("tenant-")
+)
 
 
-class Projects:
-    def authorize(self, principal, project_id, action):
-        return project_id == "project" and principal.tenant_id.startswith("tenant-")
-
-
-class ReadyPreflight:
-    def evaluate(self, _request):
-        return PreflightReport("valid", "ready")
+def restart_runtime(
+    store, tmp_path, *, tenant_id, job_id, outcome,
+    before_transition=None, after_transition=None,
+):
+    """Runtime factory: same wiring for initial spawn and crash-restart."""
+    return SyntheticRuntime(
+        store,
+        tenant_id=tenant_id,
+        job_id=job_id,
+        consumer_database=tmp_path / f"consumer-{tenant_id}.db",
+        outcome=outcome,
+        clock=FIXED_CLOCK,
+        before_transition=before_transition,
+        after_transition=after_transition,
+    )
 
 
 def setup_runtime(
@@ -39,12 +48,11 @@ def setup_runtime(
     after_transition=None,
 ):
     store = SQLiteJobStore(tmp_path / "jobs.db")
-    app = OCREApplication(
-        sync_store=SQLiteSyncStore(tmp_path / "sync.db"),
-        job_store=store,
-        authorizer=Projects(),
-        preflight=ReadyPreflight(),
-        clock=lambda: NOW,
+    app = application(
+        tmp_path,
+        authorizer=AUTH,
+        preflight=FixedPreflight(),
+        clock=FIXED_CLOCK,
     )
     submitted = {}
     for tenant in tenants:
@@ -52,34 +60,19 @@ def setup_runtime(
         submitted[tenant] = app.submit_job(
             principal,
             "project",
-            JobSubmission("revision", "case", "fake-adapter", "0", {"eir": 1}, {"bundle": 1}),
+            submission(design_revision_id="revision", adapter_id="fake-adapter"),
             f"submit-{tenant}",
         )
     runtimes = {
-        tenant: SyntheticRuntime(
-            store,
-            tenant_id=tenant,
-            job_id=result["job_id"],
-            consumer_database=tmp_path / f"consumer-{tenant}.db",
+        tenant: restart_runtime(
+            store, tmp_path, tenant_id=tenant, job_id=result["job_id"],
             outcome=outcome,
-            clock=lambda: NOW,
             before_transition=before_transition,
             after_transition=after_transition,
         )
         for tenant, result in submitted.items()
     }
     return app, store, submitted, runtimes
-
-
-def restart_runtime(store, tmp_path, *, tenant_id, job_id, outcome):
-    return SyntheticRuntime(
-        store,
-        tenant_id=tenant_id,
-        job_id=job_id,
-        consumer_database=tmp_path / f"consumer-{tenant_id}.db",
-        outcome=outcome,
-        clock=lambda: NOW,
-    )
 
 
 def assert_monotonic_single_terminal(store, tenant, job_id, terminal):
@@ -125,11 +118,8 @@ def test_outbox_routing_is_tenant_scoped_even_with_colliding_job_and_event_ids(t
     for tenant in ("tenant-a", "tenant-b"):
         snapshot = JobSnapshot(job_id, JobState.QUEUED, 1, NOW, tenant_id=tenant)
         event = ExecutionSubmitted(job_id, f"execution-{tenant}", "same-event", 1, NOW)
+        insert_snapshot(store, snapshot)
         with store._connect() as db:
-            db.execute(
-                "INSERT INTO snapshots VALUES(?,?,?,?,?,?)",
-                (tenant, "job", job_id, job_id, 1, store._dump(snapshot)),
-            )
             db.execute(
                 "INSERT INTO events(tenant,job_id,seq,event_id,body) VALUES(?,?,?,?,?)",
                 (tenant, job_id, 1, event.event_id, store._dump(event)),
@@ -140,13 +130,9 @@ def test_outbox_routing_is_tenant_scoped_even_with_colliding_job_and_event_ids(t
             )
 
     runtimes = {
-        tenant: SyntheticRuntime(
-            store,
-            tenant_id=tenant,
-            job_id=job_id,
-            consumer_database=tmp_path / f"consumer-{tenant}.db",
+        tenant: restart_runtime(
+            store, tmp_path, tenant_id=tenant, job_id=job_id,
             outcome=SyntheticOutcome.SUCCEEDED,
-            clock=lambda: NOW,
         )
         for tenant in ("tenant-a", "tenant-b")
     }

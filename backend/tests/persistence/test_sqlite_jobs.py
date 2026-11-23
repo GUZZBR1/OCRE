@@ -1,5 +1,4 @@
 import sqlite3
-from datetime import datetime, timezone
 from dataclasses import replace
 from concurrent.futures import ThreadPoolExecutor
 from threading import Barrier
@@ -10,13 +9,17 @@ from ocre_core.jobs import (AdapterExecutionState, CancellationEvidence, Cancell
 from ocre_core.persistence.jobs import AdapterExecutionSnapshot, ExecutionSubmitted, IdempotencyConflict, IdempotencyRecord, JobSnapshot, OutboxMessage
 from ocre_core.persistence.sqlite import FakeMessageConsumer, FakeOutboxDispatcher, PersistenceConflict, SQLiteJobStore
 
-NOW=datetime(2026,1,1,tzinfo=timezone.utc)
+from tests.helpers import NOW, insert_snapshot, queued_job
 
 def setup_store(tmp_path):
     store=SQLiteJobStore(tmp_path/"jobs.db")
-    snap=JobSnapshot("j1",JobState.QUEUED,1,NOW)
-    with store._connect() as db: db.execute("INSERT INTO snapshots VALUES(?,?,?,?,?,?)",("default","job","j1","j1",1,store._dump(snap)))
+    snap=queued_job(store)
     return store,snap
+
+def kick(store, snap, target, event_id="e1"):
+    """Transition j1 one step from snap's state and commit it (shared setup)."""
+    event=transition_job(job_id="j1",event_id=event_id,current_state=snap.state,current_sequence=1,expected_sequence=1,target_state=target,occurred_at=NOW)
+    store.commit_transition(expected_sequence=1,snapshot=JobSnapshot("j1",event.to_state,2,NOW),event=event,idempotency=None,outbox=OutboxMessage("m1","j1",event.event_id,"t",b""))
 
 def test_transition_atomic_idempotency_restart_and_pages(tmp_path):
     store,snap=setup_store(tmp_path)
@@ -52,15 +55,13 @@ def test_create_execution_is_atomic_and_replayable(tmp_path):
 
 def test_stale_cas_and_event_collision_leave_no_partial_rows(tmp_path):
     store,snap=setup_store(tmp_path)
-    ev=transition_job(job_id="j1",event_id="e1",current_state=snap.state,current_sequence=1,expected_sequence=1,target_state=JobState.PREPARING,occurred_at=NOW)
     with store._connect() as db: db.execute("UPDATE snapshots SET seq=2 WHERE tenant='default' AND kind='job' AND id='j1'")
-    with pytest.raises(PersistenceConflict): store.commit_transition(expected_sequence=1,snapshot=JobSnapshot("j1",ev.to_state,2,NOW),event=ev,idempotency=None,outbox=OutboxMessage("m","j1","e1","t",b""))
+    with pytest.raises(PersistenceConflict): kick(store, snap, JobState.PREPARING)
     assert store.get_snapshot("j1", tenant_id="default").sequence==1
 
 def test_outbox_retry_after_failure_and_consumer_dedup(tmp_path):
     store,snap=setup_store(tmp_path)
-    ev=transition_job(job_id="j1",event_id="e1",current_state=snap.state,current_sequence=1,expected_sequence=1,target_state=JobState.PREPARING,occurred_at=NOW)
-    store.commit_transition(expected_sequence=1,snapshot=JobSnapshot("j1",ev.to_state,2,NOW),event=ev,idempotency=None,outbox=OutboxMessage("m","j1","e1","t",b""))
+    kick(store, snap, JobState.PREPARING)
     calls=[]
     def fail(_): raise RuntimeError("broker down")
     with pytest.raises(RuntimeError): FakeOutboxDispatcher(store,fail).dispatch()
@@ -73,17 +74,7 @@ def test_outbox_retry_after_failure_and_consumer_dedup(tmp_path):
 
 def test_publish_before_ack_crash_redelivers_duplicate(tmp_path):
     store, snap = setup_store(tmp_path)
-    event = transition_job(
-        job_id="j1", event_id="e1", current_state=snap.state,
-        current_sequence=1, expected_sequence=1,
-        target_state=JobState.PREPARING, occurred_at=NOW,
-    )
-    store.commit_transition(
-        expected_sequence=1,
-        snapshot=JobSnapshot("j1", event.to_state, 2, NOW), event=event,
-        idempotency=None,
-        outbox=OutboxMessage("m1", "j1", event.event_id, "jobs", b""),
-    )
+    kick(store, snap, JobState.PREPARING)
     published = []
     original_ack = store.mark_delivered
 
@@ -103,12 +94,7 @@ def test_publish_before_ack_crash_redelivers_duplicate(tmp_path):
 def test_identical_job_ids_are_tenant_scoped_for_snapshots_and_event_replay(tmp_path):
     store = SQLiteJobStore(tmp_path / "jobs.db")
     for tenant in ("tenant-a", "tenant-b"):
-        snapshot = JobSnapshot("shared-job", JobState.QUEUED, 1, NOW, tenant_id=tenant)
-        with store._connect() as db:
-            db.execute(
-                "INSERT INTO snapshots VALUES(?,?,?,?,?,?)",
-                (tenant, "job", "shared-job", "shared-job", 1, store._dump(snapshot)),
-            )
+        insert_snapshot(store, JobSnapshot("shared-job", JobState.QUEUED, 1, NOW, tenant_id=tenant))
         event = transition_job(
             job_id="shared-job", event_id=f"{tenant}-event",
             current_state=JobState.QUEUED, current_sequence=1,
@@ -151,8 +137,7 @@ def test_consumer_recovers_abandoned_claim_after_restart(tmp_path):
 
 def test_cancel_confirmation_must_match_persisted_origin_and_evidence(tmp_path):
     store,snap=setup_store(tmp_path)
-    request=transition_job(job_id="j1",event_id="cancel-request",current_state=snap.state,current_sequence=1,expected_sequence=1,target_state=JobState.CANCEL_REQUESTED,occurred_at=NOW)
-    store.commit_transition(expected_sequence=1,snapshot=JobSnapshot("j1",request.to_state,2,NOW),event=request,idempotency=None,outbox=OutboxMessage("m1","j1",request.event_id,"t",b""))
+    kick(store, snap, JobState.CANCEL_REQUESTED, "cancel-request")
     confirmed=transition_job(job_id="j1",event_id="cancelled",current_state=JobState.CANCEL_REQUESTED,current_sequence=2,expected_sequence=2,target_state=JobState.CANCELLED,occurred_at=NOW,cancellation_origin=JobState.QUEUED,cancellation_evidence=CancellationEvidence("j1",JobState.QUEUED,CancellationEvidenceKind.WORKER_START_PREVENTED,NOW))
     invalid=replace(confirmed,cancellation_evidence=CancellationEvidence("someone-else",JobState.QUEUED,CancellationEvidenceKind.WORKER_START_PREVENTED,NOW))
     with pytest.raises(ValueError):
@@ -162,17 +147,7 @@ def test_cancel_confirmation_must_match_persisted_origin_and_evidence(tmp_path):
 
 def test_cancel_confirmation_racing_completion_has_one_linearized_winner(tmp_path):
     store, snap = setup_store(tmp_path)
-    request = transition_job(
-        job_id="j1", event_id="cancel-request", current_state=snap.state,
-        current_sequence=1, expected_sequence=1,
-        target_state=JobState.CANCEL_REQUESTED, occurred_at=NOW,
-    )
-    store.commit_transition(
-        expected_sequence=1,
-        snapshot=JobSnapshot("j1", request.to_state, 2, NOW), event=request,
-        idempotency=None,
-        outbox=OutboxMessage("m1", "j1", request.event_id, "jobs", b""),
-    )
+    kick(store, snap, JobState.CANCEL_REQUESTED, "cancel-request")
     barrier = Barrier(2)
 
     def candidate(target, event_id, evidence=None):
@@ -273,11 +248,7 @@ def test_persistence_rejects_forged_transition_from_terminal_snapshot(tmp_path):
 def test_persistence_rejects_forged_transition_from_terminal_adapter_snapshot(tmp_path):
     store = SQLiteJobStore(tmp_path / "jobs.db")
     terminal = AdapterExecutionSnapshot("x1", "j1", AdapterExecutionState.EXECUTION_FAILED, 1, NOW)
-    with store._connect() as db:
-        db.execute(
-            "INSERT INTO snapshots VALUES(?,?,?,?,?,?)",
-            ("default", "execution", "x1", "j1", 1, store._dump(terminal)),
-        )
+    insert_snapshot(store, terminal)
     forged = transition_adapter_execution(
         execution_id="x1", event_id="forged-adapter-terminal-rewrite",
         current_state=AdapterExecutionState.RUNNING, current_sequence=1,
