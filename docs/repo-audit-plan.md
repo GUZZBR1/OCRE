@@ -327,7 +327,7 @@ for h, locs in seen.items():
 EOF
 
 # abstrações com único uso: classes/funções privadas usadas 1x
-grep -rnE "^(class|def) _?[A-Za-z]+" backend/ocre_core --include=*.py | head -0   # lista completa vem do script de símbolos da 2B; filtrar contagem == 1
+grep -rnE "^(class|def) _?[A-Za-z]+" backend/ocre_core --include=*.py | head -50   # lista completa vem do script de símbolos da 2B; filtrar contagem == 1
 
 # parâmetros/flags nunca exercitados: parâmetros com default cujo valor nunca é passado
 # (revisão manual guiada por: grep -rn "<func>(" e inspeção dos call sites)
@@ -434,7 +434,7 @@ gh pr create --base main --title "<título>" --body "<findings F-nnn, evidência
 | 2A Bugs | [x] | `.tmp/audit/*` | [x] |
 | 2B Morto | [x] | `.tmp/audit/*` | [x] |
 | 2C Simplificação | [x] | `.tmp/audit/*` | [x] |
-| 3 Relatório | [x] | `docs/repo-audit-findings.md` (PR #22) | [ ] aprovado — aguardando revisão humana |
+| 3 Relatório | [x] | `docs/repo-audit-findings.md` (PR #22 mergeado 2026-11-23; errata em PR de acompanhamento) | [ ] aprovação por finding pendente — gate da Fase 4 |
 | 4 PRs | [ ] | `.tmp/audit/pr-queue.md` + PRs | [ ] por PR |
 
 ## Critérios de parada (o executor para e pergunta)
