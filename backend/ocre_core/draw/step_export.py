@@ -87,6 +87,10 @@ OPEN_STROKES_POLICIES = ("fail", "skip-open")
 # Epsilon geométrico do host (mm): separa "encostado" de "claramente
 # separado/contido" nos testes de cruzamento e contenção.
 _GEOM_EPS = 1e-9
+# Tolerância de borda para círculos analíticos: o fit arredonda a 3
+# casas e um círculo tangente à folha pode exceder cx±r em ~1µm —
+# ruído numérico, não geometria fora da folha.
+CIRCLE_SHEET_EPS_MM = 1e-3
 # Traço ``shape="circle"`` SEM bloco ``circle``: o ajuste Kåsa só
 # promove a polilinha a circunferência analítica quando o desvio radial
 # máximo cabe em ``max(0.05 mm, 0.1% do raio)`` — senão segue a
@@ -313,8 +317,10 @@ def _fit_circle_mm(
                 return None
     # Folha: a circunferência inteira (não só os vértices) deve caber.
     if not (
-        0.0 <= cx - radius and cx + radius <= width_mm
-        and 0.0 <= cy - radius and cy + radius <= height_mm
+        -CIRCLE_SHEET_EPS_MM <= cx - radius
+        and cx + radius <= width_mm + CIRCLE_SHEET_EPS_MM
+        and -CIRCLE_SHEET_EPS_MM <= cy - radius
+        and cy + radius <= height_mm + CIRCLE_SHEET_EPS_MM
     ):
         return None
     return {"center_mm": [cx, cy], "radius_mm": radius, "fitted": True}
@@ -360,8 +366,10 @@ def _stroke_circle(
             f"traço {stroke_id}: 'circle' exige valores finitos e r_mm > 0"
         )
     if not (
-        0.0 <= cx - r and cx + r <= width_mm
-        and 0.0 <= cy - r and cy + r <= height_mm
+        -CIRCLE_SHEET_EPS_MM <= cx - r
+        and cx + r <= width_mm + CIRCLE_SHEET_EPS_MM
+        and -CIRCLE_SHEET_EPS_MM <= cy - r
+        and cy + r <= height_mm + CIRCLE_SHEET_EPS_MM
     ):
         raise StepExportError(
             f"traço {stroke_id}: círculo (cx={cx}, cy={cy}, r={r}) fora da "
