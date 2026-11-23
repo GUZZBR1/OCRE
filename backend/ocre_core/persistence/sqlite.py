@@ -3,14 +3,17 @@ from __future__ import annotations
 
 import sqlite3
 from dataclasses import dataclass, replace
+from datetime import datetime
 from pathlib import Path
 from typing import Callable
 
 from .jobs import (AdapterExecutionSnapshot, CommitReceipt,
-                  IdempotencyConflict, JobSnapshot,
-                  JobPersistencePort, OutboxMessage)
+                  ExecutionSubmitted, IdempotencyConflict, IdempotencyRecord,
+                  JobSnapshot, JobPersistencePort, OutboxMessage)
 from . import codec
-from ocre_core.jobs import ADAPTER_TERMINAL_STATES, TERMINAL_STATES
+from ocre_core.jobs import (ADAPTER_TERMINAL_STATES, AdapterExecutionState,
+                            AdapterExecutionTransition, CancellationEvidence,
+                            JobState, JobTransition, TERMINAL_STATES)
 
 
 class PersistenceConflict(RuntimeError):
@@ -59,15 +62,22 @@ class SQLiteJobStore(JobPersistencePort):
         return None
 
     def _commit(self, *, snapshot, event, expected_sequence, idempotency, outbox):
+        if (not isinstance(snapshot, (JobSnapshot, AdapterExecutionSnapshot))
+                or not isinstance(event, (JobTransition, AdapterExecutionTransition))
+                or not isinstance(outbox, OutboxMessage)
+                or (idempotency is not None and not isinstance(idempotency, IdempotencyRecord))):
+            raise ValueError("commit records do not match port types")
         if event.sequence != expected_sequence + 1 or snapshot.sequence != event.sequence:
             raise ValueError("snapshot/event sequence mismatch")
+        if not isinstance(event.occurred_at, datetime) or event.occurred_at.tzinfo is None or event.occurred_at.utcoffset() is None:
+            raise ValueError("event occurred_at must be timezone-aware")
         agg_id = snapshot.job_id if isinstance(snapshot, JobSnapshot) else snapshot.execution_id
         kind = "job" if isinstance(snapshot, JobSnapshot) else "execution"
         tenant = snapshot.tenant_id
         if idempotency is not None and idempotency.tenant_id != tenant:
             raise ValueError("idempotency tenant differs from snapshot tenant")
-        event_agg = getattr(event, "job_id", getattr(event, "execution_id", None))
-        if event_agg != agg_id or outbox.aggregate_id != agg_id or outbox.event_id != event.event_id:
+        event_agg = event.job_id if isinstance(event, JobTransition) else event.execution_id
+        if event_agg != agg_id or outbox.aggregate_id != agg_id or outbox.event_id != event.event_id or not outbox.message_id:
             raise ValueError("aggregate/event/outbox identity mismatch")
         with self._connect() as db:
             db.execute("BEGIN IMMEDIATE")
@@ -78,21 +88,28 @@ class SQLiteJobStore(JobPersistencePort):
                 row = db.execute("SELECT seq,body FROM snapshots WHERE tenant=? AND kind=? AND id=?", (tenant, kind, agg_id)).fetchone()
                 if row is None or row[0] != expected_sequence: raise PersistenceConflict("stale or missing snapshot")
                 old = self._load(row[1])
-                if event.from_state != old.state: raise ValueError("event from_state differs from persisted snapshot")
+                if not isinstance(old, type(snapshot)) or old.tenant_id != tenant:
+                    raise ValueError("persisted snapshot does not match the aggregate")
+                if event.from_state is not old.state: raise ValueError("event from_state differs from persisted snapshot")
+                state_type = type(old.state)
+                if not isinstance(event.to_state, state_type) or not isinstance(snapshot.state, state_type):
+                    raise ValueError("transition states do not match the persisted vocabulary")
                 terminal_states = ADAPTER_TERMINAL_STATES if isinstance(old, AdapterExecutionSnapshot) else TERMINAL_STATES
                 if old.state in terminal_states: raise ValueError("terminal snapshot is immutable")
-                if snapshot.state != event.to_state: raise ValueError("snapshot state differs from event destination")
+                if event.from_state is event.to_state: raise ValueError("transition event must change state")
+                if snapshot.state is not event.to_state: raise ValueError("snapshot state differs from event destination")
                 origin = old.cancellation_origin
                 if event.to_state.value == "cancel_requested":
-                    if event.from_state.value not in {"queued", "running"} or event.cancellation_origin != old.state:
+                    if event.from_state.value not in {"queued", "running"} or event.cancellation_origin is not old.state:
                         raise ValueError("cancel request origin does not match persisted state")
                     origin = old.state
                 elif event.from_state.value == "cancel_requested":
-                    if event.cancellation_origin != origin: raise ValueError("cancellation origin mismatch")
+                    if origin is None or event.cancellation_origin is not origin: raise ValueError("cancellation origin mismatch")
                     evidence=event.cancellation_evidence
                     if event.to_state.value == "cancelled":
                         expected_kind="worker_start_prevented" if origin.value == "queued" else "process_terminated_by_cancellation"
-                        if evidence is None or evidence.aggregate_id != agg_id or evidence.requested_from_state != origin or evidence.kind.value != expected_kind:
+                        if (not isinstance(evidence, CancellationEvidence) or evidence.aggregate_id != agg_id
+                                or evidence.requested_from_state is not origin or evidence.kind.value != expected_kind):
                             raise ValueError("cancellation evidence does not match persisted request")
                     elif evidence is not None:
                         raise ValueError("cancellation evidence is only valid for cancelled outcome")
@@ -116,9 +133,13 @@ class SQLiteJobStore(JobPersistencePort):
         return self._commit(snapshot=snapshot,event=event,expected_sequence=expected_sequence,idempotency=idempotency,outbox=outbox)
 
     def create_execution(self, *, job_snapshot, execution_snapshot, submitted_event, idempotency, outbox):
-        if job_snapshot.state.value != "queued" or execution_snapshot.state.value != "queued" or job_snapshot.sequence != 1 or execution_snapshot.sequence != 1 or submitted_event.sequence != 1: raise ValueError("execution creation must start queued at sequence 1")
-        if not job_snapshot.job_id or not execution_snapshot.execution_id or not submitted_event.event_id: raise ValueError("submission identity must not be empty")
-        if submitted_event.occurred_at.tzinfo is None or submitted_event.occurred_at.utcoffset() is None: raise ValueError("submitted event must be timezone-aware")
+        if (not isinstance(job_snapshot, JobSnapshot) or not isinstance(execution_snapshot, AdapterExecutionSnapshot)
+                or not isinstance(submitted_event, ExecutionSubmitted) or not isinstance(idempotency, IdempotencyRecord)
+                or not isinstance(outbox, OutboxMessage)):
+            raise ValueError("execution creation records do not match port types")
+        if job_snapshot.state is not JobState.QUEUED or execution_snapshot.state is not AdapterExecutionState.QUEUED or job_snapshot.sequence != 1 or execution_snapshot.sequence != 1 or submitted_event.sequence != 1: raise ValueError("execution creation must start queued at sequence 1")
+        if not job_snapshot.job_id or not execution_snapshot.execution_id or not submitted_event.event_id or not outbox.message_id: raise ValueError("submission identity must not be empty")
+        if not isinstance(submitted_event.occurred_at, datetime) or submitted_event.occurred_at.tzinfo is None or submitted_event.occurred_at.utcoffset() is None: raise ValueError("submitted event must be timezone-aware")
         if job_snapshot.job_id != execution_snapshot.job_id or submitted_event.job_id != job_snapshot.job_id or submitted_event.execution_id != execution_snapshot.execution_id: raise ValueError("submission identity mismatch")
         tenant=job_snapshot.tenant_id
         if idempotency.tenant_id != tenant: raise ValueError("idempotency tenant differs from snapshot tenant")
@@ -153,10 +174,12 @@ class SQLiteJobStore(JobPersistencePort):
 
     def read_events(self, *, tenant_id, job_id, after_cursor=0, limit=100):
         if limit < 1: raise ValueError("limit must be positive")
+        if after_cursor < 0: raise ValueError("after_cursor must be non-negative")
         with self._connect() as db: rows=db.execute("SELECT cursor,seq,body FROM events WHERE tenant=? AND job_id=? AND cursor>? ORDER BY cursor LIMIT ?",(tenant_id,job_id,after_cursor,limit)).fetchall()
         return tuple(PersistedEvent(tenant_id,job_id,seq,self._load(body),cursor) for cursor,seq,body in rows)
 
     def pending_outbox(self, limit=100):
+        if limit < 1: raise ValueError("limit must be positive")
         with self._connect() as db: rows=db.execute("SELECT message_id,tenant,aggregate_id,event_id,topic,body FROM outbox WHERE delivered=0 ORDER BY rowid LIMIT ?",(limit,)).fetchall()
         return tuple(OutboxMessage(row[0], *row[2:]) for row in rows)
 

@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import re
 from pathlib import Path, PurePosixPath
 from typing import Any
@@ -40,6 +41,8 @@ def build_sidecar(*, case_id: str, revision_id: str, manifest_id: str,
     The caller supplies stable semantic IDs; local tags and entity topology are
     intentionally not promoted to persistent identity here.
     """
+    if (manifest_uri is None) != (manifest_sha256 is None):
+        raise ValueError("manifest_uri and manifest_sha256 must be provided together")
     if source_artifacts is None:
         if source_artifact_id is None or source_uri is None or source_sha256 is None:
             raise ValueError("provide source_artifacts or all single-source fields")
@@ -80,10 +83,53 @@ def _issue(code: str, message: str, *, pending: bool = False) -> dict[str, str]:
             "state": "pending" if pending else "invalid"}
 
 
+def _object_no_duplicates(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError(f"duplicate object key: {key}")
+        result[key] = value
+    return result
+
+
+def _reject_constant(value: str) -> None:
+    raise ValueError(f"non-finite JSON number: {value}")
+
+
+def _walk_finite(node: Any) -> None:
+    if isinstance(node, float) and not math.isfinite(node):
+        raise ValueError("non-finite JSON number")
+    if isinstance(node, str):
+        node.encode("utf-8")
+    if isinstance(node, dict):
+        for key, child in node.items():
+            _walk_finite(key)
+            _walk_finite(child)
+    elif isinstance(node, (list, tuple)):
+        for child in node:
+            _walk_finite(child)
+
+
+def _load_manifest_json(path: Path) -> Any:
+    """Strict JSON parse: rejects duplicate keys, non-finite numbers, and
+    nesting beyond the recursion limit instead of crashing or guessing."""
+    parsed = json.loads(
+        path.read_text(encoding="utf-8"),
+        object_pairs_hook=_object_no_duplicates,
+        parse_constant=_reject_constant,
+    )
+    _walk_finite(parsed)
+    return parsed
+
+
 def _safe_local_file(root: Path, uri: Any) -> tuple[Path | None, str | None]:
     if not isinstance(uri, str) or not uri:
         return None, "URI must be a non-empty relative POSIX path"
     if "\\" in uri or "\x00" in uri:
+        return None, "URI must use normalized POSIX path syntax"
+    try:
+        uri.encode("utf-8")
+    except UnicodeEncodeError:
         return None, "URI must use normalized POSIX path syntax"
     raw = PurePosixPath(uri)
     if raw.is_absolute() or any(part in ("", ".", "..") for part in uri.split("/")):
@@ -109,7 +155,10 @@ def audit_sidecar(evidence_root: Path, sidecar: dict[str, Any]) -> dict[str, Any
     missing evidence/references, and ``invalid`` for malformed or contradictory
     evidence. This status never means engineering readiness or mesh acceptance.
     """
-    root = evidence_root.resolve(strict=True)
+    try:
+        root = evidence_root.resolve(strict=True)
+    except (OSError, RuntimeError) as exc:
+        raise ValueError("evidence root must be a resolvable directory") from exc
     if not root.is_dir():
         raise ValueError("evidence root must be a directory")
     issues: list[dict[str, str]] = []
@@ -143,9 +192,9 @@ def audit_sidecar(evidence_root: Path, sidecar: dict[str, Any]) -> dict[str, Any
                 if sidecar.get("manifest_id") != f"sha256:{actual}":
                     issues.append(_issue("manifest_id_mismatch", "manifest_id must equal sha256:<referenced manifest digest>"))
                 try:
-                    loaded_manifest = json.loads(path.read_text(encoding="utf-8"))
-                except (OSError, UnicodeError, json.JSONDecodeError) as exc:
-                    issues.append(_issue("manifest_content", f"prepared manifest is not readable JSON: {exc}"))
+                    loaded_manifest = _load_manifest_json(path)
+                except (OSError, ValueError, RecursionError) as exc:
+                    issues.append(_issue("manifest_content", f"prepared manifest is not strict readable JSON: {exc}"))
                 else:
                     if isinstance(loaded_manifest, dict):
                         prepared_manifest = loaded_manifest
@@ -284,7 +333,7 @@ def audit_sidecar(evidence_root: Path, sidecar: dict[str, Any]) -> dict[str, Any
                 missing_quality_fields = [field for field in required_quality_fields if field not in shape_quality]
                 if missing_quality_fields:
                     issues.append(_issue("quality_metrics_pending", f"mesh {mesh_id} shape_quality is missing {', '.join(missing_quality_fields)}", pending=True))
-                if shape_quality.get("unit") != "1":
+                if "unit" in shape_quality and shape_quality["unit"] != "1":
                     issues.append(_issue("quality_metrics_unit", f"mesh {mesh_id} mean-ratio unit must be dimensionless ('1')"))
                 if shape_quality.get("acceptance_threshold") is not None:
                     issues.append(_issue("quality_threshold", f"mesh {mesh_id} must not define a universal quality threshold"))

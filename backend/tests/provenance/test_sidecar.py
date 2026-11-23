@@ -259,3 +259,69 @@ def test_unknown_source_reference_is_pending(evidence):
     assert report["status"] == "incomplete"
     assert any(issue["code"] == "source_mesh_reference" and issue["state"] == "pending"
                for issue in report["issues"])
+
+
+def test_missing_evidence_root_is_a_value_error(tmp_path):
+    with pytest.raises(ValueError, match="evidence root"):
+        audit_sidecar(tmp_path / "nonexistent", {"sidecar_version": "x"})
+
+
+@pytest.mark.parametrize(
+    "manifest_text",
+    [
+        '{"mesh_artifacts": [], "mesh_artifacts": []}',  # duplicate key
+        '{"mesh_artifacts": [{"mean": NaN}]}',            # non-finite literal
+        '{"mesh_artifacts": [{"mean": 1e999}]}',          # overflows to inf
+        "[" * 200000 + "]" * 200000,                      # nesting beyond recursion limit
+    ],
+)
+def test_non_strict_manifest_is_reported_not_crashing(evidence, manifest_text):
+    root, sidecar = evidence
+    (root / "prepared.json").write_text(manifest_text)
+    manifest_hash = digest(root / "prepared.json")
+    sidecar["manifest_reference"]["sha256"] = manifest_hash
+    sidecar["manifest_id"] = f"sha256:{manifest_hash}"
+
+    report = audit_sidecar(root, sidecar)
+
+    assert report["status"] == "invalid"
+    assert any(issue["code"] == "manifest_content" for issue in report["issues"])
+
+
+def test_uri_with_lone_surrogate_is_reported_not_crashing(evidence):
+    root, sidecar = evidence
+    sidecar["source_artifacts"][0]["uri"] = "bad\ud800.geo"
+
+    report = audit_sidecar(root, sidecar)
+
+    assert report["status"] == "invalid"
+    assert any(issue["code"] == "source_uri" for issue in report["issues"])
+
+
+def test_missing_quality_unit_is_pending_not_invalid(evidence):
+    root, sidecar = evidence
+    del sidecar["mesh_artifacts"][0]["quality_metrics"]["shape_quality"]["unit"]
+
+    report = audit_sidecar(root, sidecar)
+
+    assert report["status"] == "incomplete"
+    assert any(issue["code"] == "quality_metrics_pending" and issue["state"] == "pending"
+               for issue in report["issues"])
+    assert not any(issue["code"] == "quality_metrics_unit" for issue in report["issues"])
+
+
+def test_build_sidecar_requires_manifest_uri_and_hash_together(tmp_path):
+    with pytest.raises(ValueError, match="together"):
+        build_sidecar(
+            case_id="c", revision_id="r", manifest_id="sha256:" + "0" * 64,
+            source_artifact_id="s1", source_uri="s.geo", source_sha256="0" * 64,
+            manifest_uri="prepared.json",
+            mesh_artifacts=[], groups=[],
+        )
+    with pytest.raises(ValueError, match="together"):
+        build_sidecar(
+            case_id="c", revision_id="r", manifest_id="sha256:" + "0" * 64,
+            source_artifact_id="s1", source_uri="s.geo", source_sha256="0" * 64,
+            manifest_sha256="0" * 64,
+            mesh_artifacts=[], groups=[],
+        )

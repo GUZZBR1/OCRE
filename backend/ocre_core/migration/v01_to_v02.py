@@ -67,23 +67,32 @@ def _decode_pointer(pointer: str) -> list[str]:
     return decoded
 
 
+def _array_index(part: str, length: int) -> int | None:
+    """RFC 6901 array index: ASCII digits only, no leading zeros."""
+    if re.fullmatch(r"0|[1-9][0-9]*", part) and int(part) < length:
+        return int(part)
+    return None
+
+
 def _set_pointer(document: Any, pointer: str, value: Any) -> None:
     parts = _decode_pointer(pointer)
     parent = document
     for part in parts[:-1]:
         if isinstance(parent, list):
-            if not part.isdecimal() or int(part) >= len(parent):
+            index = _array_index(part, len(parent))
+            if index is None:
                 raise MigrationInputError(f"resolution pointer does not exist: {pointer}")
-            parent = parent[int(part)]
+            parent = parent[index]
         elif isinstance(parent, dict) and part in parent:
             parent = parent[part]
         else:
             raise MigrationInputError(f"resolution pointer does not exist: {pointer}")
     last = parts[-1]
     if isinstance(parent, list):
-        if not last.isdecimal() or int(last) >= len(parent):
+        index = _array_index(last, len(parent))
+        if index is None:
             raise MigrationInputError(f"resolution pointer does not exist: {pointer}")
-        parent[int(last)] = deepcopy(value)
+        parent[index] = deepcopy(value)
     elif isinstance(parent, dict) and last in parent:
         parent[last] = deepcopy(value)
     else:
@@ -163,7 +172,7 @@ def _pending(draft: Mapping[str, Any], bundle: Any | None) -> list[dict[str, str
             parsed_bundle = parse_json_strict(bundle)
             artifact_ids = {item.get("artifact_id") for item in parsed_bundle.get("artifacts", [])
                             if isinstance(item, dict) and isinstance(item.get("artifact_id"), str)}
-        except (StrictJSONError, AttributeError):
+        except (StrictJSONError, AttributeError, TypeError):
             artifact_ids = set()
     report_id = draft.get("migration", {}).get("report_artifact_id")
     if not isinstance(report_id, str) or artifact_ids is None or report_id not in artifact_ids:
@@ -285,7 +294,8 @@ def migrate_v01_to_v02(
         if not isinstance(resolution["actor"], str) or not resolution["actor"].strip():
             raise MigrationInputError(f"resolution {pointer!r} requires a non-empty actor")
         try:
-            json.dumps(resolution["value"], ensure_ascii=False, allow_nan=False)
+            # The encode step rejects lone surrogates that a draft would later fail to write.
+            json.dumps(resolution["value"], ensure_ascii=False, allow_nan=False).encode("utf-8")
         except (TypeError, ValueError, RecursionError) as exc:
             raise MigrationInputError(f"resolution {pointer!r} value is not finite JSON data") from exc
         _set_pointer(draft, pointer, resolution["value"])

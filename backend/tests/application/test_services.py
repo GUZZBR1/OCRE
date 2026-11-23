@@ -39,6 +39,19 @@ def test_blocked_approval_fingerprint_preflight_writes_no_job_event_or_outbox(tm
         assert db.execute("SELECT COUNT(*) FROM outbox").fetchone()[0] == 0
 
 
+def test_empty_idempotency_keys_are_rejected_before_any_write(tmp_path):
+    app = application(tmp_path, authorizer=AUTH, preflight=FixedPreflight(READY), clock=FIXED_CLOCK)
+    principal = Principal("t1", "u1")
+    for key in ("", None, 7):
+        with pytest.raises(ApplicationError) as error:
+            app.submit_job(principal, "p1", submission(), key)
+        assert (error.value.status, error.value.code) == (422, "validation_failed")
+    job_id = app.submit_job(principal, "p1", submission(), "submit-key")["job_id"]
+    with pytest.raises(ApplicationError) as error:
+        app.cancel_job(principal, "p1", job_id, "")
+    assert (error.value.status, error.value.code) == (422, "validation_failed")
+
+
 def test_test_only_ready_preflight_proves_atomic_submit_cancel_and_replay(tmp_path):
     app = application(tmp_path, authorizer=AUTH, preflight=FixedPreflight(READY), clock=FIXED_CLOCK)
     principal = Principal("t1", "u1")

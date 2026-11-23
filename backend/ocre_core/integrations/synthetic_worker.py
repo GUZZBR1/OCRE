@@ -15,7 +15,6 @@ from typing import Callable
 from ocre_core.jobs import (
     CancellationEvidence,
     CancellationEvidenceKind,
-    ConcurrentJobUpdate,
     JobState,
     transition_job,
 )
@@ -147,12 +146,20 @@ class SyntheticWorker:
                             cancellation_origin=origin,
                         )
                 elif snapshot.state is JobState.COLLECTING:
-                    self._advance(snapshot, tenant_id, JobState.SUCCEEDED)
+                    target = (
+                        JobState.FAILED
+                        if outcome is SyntheticOutcome.FAILED
+                        else JobState.SUCCEEDED
+                    )
+                    self._advance(snapshot, tenant_id, target)
                 else:
                     raise ValueError(
                         f"synthetic worker cannot resume job in {snapshot.state.value}"
                     )
-            except (ConcurrentJobUpdate, PersistenceConflict):
+            # transition_job always sees expected == current here, so it can
+            # only raise ValueError subclasses; PersistenceConflict from the
+            # store's CAS is the sole retryable race.
+            except PersistenceConflict:
                 conflicts += 1
                 if conflicts > 8:
                     raise

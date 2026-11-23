@@ -7,20 +7,29 @@ export function validateFixture(data: LocalFixture): string[] {
   if (data.metadata.kind !== 'synthetic-demo' || data.metadata.synthetic !== true) issues.push('Fixture must be explicitly synthetic.');
   if (data.metadata.source !== 'bundled-local-fixture') issues.push('Fixture source must be local.');
   if (data.metadata.validationStatus !== 'not-validated') issues.push('Demo data cannot claim validation.');
-  const nodeIds = new Set(data.nodes.map((node) => node.id));
-  if (nodeIds.size !== data.nodes.length) issues.push('Node IDs must be unique.');
-  const elementIds = new Set(data.elements.map((element) => element.id));
-  if (elementIds.size !== data.elements.length) issues.push('Element IDs must be unique.');
-  if (data.metadata.units.stress !== 'MPa' || data.metadata.units.displacement !== 'mm') issues.push('Unsupported fixture units.');
-  for (const node of data.nodes) {
+  if (!Number.isFinite(data.metadata.displacementScale)) issues.push('Displacement scale must be finite.');
+  if (data.metadata.units.stress !== 'MPa' || data.metadata.units.displacement !== 'mm' || data.metadata.units.length !== 'mm') issues.push('Unsupported fixture units.');
+  const nodes = Array.isArray(data.nodes) ? data.nodes : [];
+  const elements = Array.isArray(data.elements) ? data.elements : [];
+  if (!nodes.length || !elements.length) issues.push('Fixture must contain at least one node and one element.');
+  const nodeIds = new Set(nodes.map((node) => node.id));
+  if (nodeIds.size !== nodes.length) issues.push('Node IDs must be unique.');
+  const elementIds = new Set(elements.map((element) => element.id));
+  if (elementIds.size !== elements.length) issues.push('Element IDs must be unique.');
+  for (const node of nodes) {
     if (!Number.isFinite(node.vonMisesMpa) || node.vonMisesMpa < 0) issues.push(`Invalid stress on ${node.id}.`);
-    if (![...node.positionMm, ...node.displacementMm].every(Number.isFinite)) issues.push(`Invalid coordinate on ${node.id}.`);
+    if (node.positionMm?.length !== 3 || node.displacementMm?.length !== 3 || ![...node.positionMm, ...node.displacementMm].every(Number.isFinite)) issues.push(`Invalid coordinate on ${node.id}.`);
   }
-  for (const element of data.elements) {
+  for (const element of elements) {
     if (!Number.isFinite(element.vonMisesMpa) || element.vonMisesMpa < 0) issues.push(`Invalid stress on ${element.id}.`);
-    if (element.nodeIds.some((nodeId) => !nodeIds.has(nodeId))) issues.push(`Unknown node reference in ${element.id}.`);
+    if (element.nodeIds?.length !== 4 || new Set(element.nodeIds).size !== 4) issues.push(`Element ${element.id} must reference 4 distinct nodes.`);
+    else if (element.nodeIds.some((nodeId) => !nodeIds.has(nodeId))) issues.push(`Unknown node reference in ${element.id}.`);
   }
   return issues;
+}
+
+export function escapeHtml(value: string): string {
+  return value.replace(/[&<>"']/g, (char) => `&#${char.charCodeAt(0)};`);
 }
 
 export function deformedPosition(node: NodeRecord, enabled: boolean, scale: number): [number, number, number] {

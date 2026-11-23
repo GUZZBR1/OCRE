@@ -45,6 +45,8 @@ class SyncBatch:
         for name in ("project_id", "batch_id", "actor_id"):
             if not isinstance(getattr(self, name), str) or not getattr(self, name):
                 raise ValueError(f"{name} must not be empty")
+        if self.base_revision_id is not None and not isinstance(self.base_revision_id, str):
+            raise TypeError("base_revision_id must be a string or None")
         if not isinstance(self.operations, tuple):
             raise TypeError("operations must be a tuple")
         if any(not isinstance(op, SyncOperation) for op in self.operations):

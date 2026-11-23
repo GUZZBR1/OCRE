@@ -148,6 +148,11 @@ class OCREApplication:
         if not self.authorizer.authorize(principal, project_id, action):
             raise ApplicationError("resource_not_found", 404, "Resource not found")
 
+    @staticmethod
+    def _require_idempotency_key(idempotency_key: Any) -> None:
+        if not isinstance(idempotency_key, str) or not idempotency_key:
+            raise ApplicationError("validation_failed", 422, "Idempotency key must not be empty")
+
     def submit_sync(self, principal: Principal, project_id: str, body: dict[str, Any]) -> dict[str, Any]:
         self._authorize(principal, project_id, "sync:write")
         try:
@@ -202,6 +207,7 @@ class OCREApplication:
 
     def submit_job(self, principal: Principal, project_id: str, request: JobSubmission, idempotency_key: str) -> dict[str, Any]:
         self._authorize(principal, project_id, "jobs:submit")
+        self._require_idempotency_key(idempotency_key)
         # Readiness is evaluated before IDs, snapshots, events, receipts, or outbox writes.
         report = self.preflight.evaluate(request)
         if report.execution_readiness != "ready":
@@ -273,6 +279,7 @@ class OCREApplication:
 
     def cancel_job(self, principal: Principal, project_id: str, job_id: str, idempotency_key: str) -> dict[str, Any]:
         snapshot, _ = self._job(principal, project_id, job_id, "jobs:cancel")
+        self._require_idempotency_key(idempotency_key)
         prior = self.job_store.find_idempotency(tenant_id=principal.tenant_id, operation="job-cancel-v1", key=idempotency_key)
         if prior is not None:
             if prior.snapshot.job_id != job_id:

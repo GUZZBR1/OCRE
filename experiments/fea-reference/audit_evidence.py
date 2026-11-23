@@ -126,7 +126,7 @@ def audit_solver_runs(root: Path, manifest: dict[str, Any]) -> tuple[list[dict[s
             raise AuditError(f"runs[{index}].source_artifacts must be an object")
         source_pairs = (
             ("analysis_deck_sha256", deck, "analysis deck"),
-            ("run_input_sha256", deck, "run input deck"),
+            ("run_input_sha256", run_dir + "/" + deck, "run input deck"),
             ("mesh_input_sha256", source.get("mesh_input"), "mesh input"),
             ("geometry_sha256", source.get("geometry"), "geometry"),
         )
@@ -151,11 +151,14 @@ def audit_prepared_manifest(root: Path, manifest: dict[str, Any]) -> tuple[list[
     errors: list[str] = []
     for index, raw_item in enumerate(artifacts):
         item = required_object(raw_item, f"mesh_artifacts[{index}]")
-        for path_key, digest_key in (
+        # `prepare-gmsh` emits geometry/mesh/deck triples; the C3D8 baseline
+        # `prepare` emits a single self-contained deck as input/sha256.
+        pairs = (("input", "sha256"),) if "input" in item or "sha256" in item else (
             ("geometry", "geometry_sha256"),
             ("mesh_input", "mesh_sha256"),
             ("analysis_input", "analysis_sha256"),
-        ):
+        )
+        for path_key, digest_key in pairs:
             if path_key not in item or digest_key not in item:
                 errors.append(f"mesh_artifacts[{index}] requires {path_key} and {digest_key}")
                 continue

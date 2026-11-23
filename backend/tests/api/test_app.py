@@ -64,6 +64,44 @@ def test_local_transport_injects_principal_and_exposes_only_six_operations(tmp_p
     assert blocked.json()["report"]["diagnostics"][0]["code"] == "approval_fingerprint_unavailable"
 
 
+def test_sync_batches_require_strict_json_and_consistent_problem_details(tmp_path):
+    service = application(tmp_path, authorizer=AUTH, preflight=FixedPreflight(BLOCKED_APPROVAL))
+    client = client_for(service)
+    path = "/v1/projects/project-a/sync-batches"
+    for raw in (
+        b'{"batch_id":"b1","batch_id":"b2","operations":[]}',
+        b'{"batch_id":"b3","operations":[],"base_revision_id":NaN}',
+        b'{"batch_id":"b4","operations":[{"operation_id":"o","payload":"eA=="}],}',
+        b'{"batch_id":"b5","operations":[{"operation_id":"o","payload":"eA==","payload":"eQ=="}]}',
+        b'{"batch_id":5,"operations":"x"}',
+    ):
+        response = client.post(path, headers={"Content-Type": "application/json"}, content=raw)
+        assert response.status_code == 422
+        assert response.json()["code"] == "validation_failed"
+        assert response.headers["content-type"].startswith("application/problem+json")
+    assert service.sync_store.lookup(tenant_id="tenant-a", project_id="project-a", batch_id="b2") is None
+
+
+def test_body_limit_is_configurable_and_precedes_any_commit(tmp_path):
+    preflight = FixedPreflight()
+    service = application(tmp_path, authorizer=AUTH, preflight=preflight)
+    client = TestClient(create_app(service, principal_dependency=lambda: PRINCIPAL, max_body_bytes=64))
+
+    oversized_sync = client.post("/v1/projects/project-a/sync-batches", json={
+        "batch_id": "b", "operations": [{"operation_id": "o", "payload": "eA=="}],
+    })
+    assert oversized_sync.status_code == 413
+    assert oversized_sync.json()["code"] == "request_too_large"
+
+    oversized_job = client.post("/v1/projects/project-a/jobs", headers={"Idempotency-Key": "k"}, json=job_json())
+    assert oversized_job.status_code == 413
+
+    accepted = client.post("/v1/projects/project-a/sync-batches", content=b'{"batch_id":"b","operations":[]}')
+    assert accepted.status_code == 201
+    assert service.sync_store.lookup(tenant_id="tenant-a", project_id="project-a", batch_id="b") is not None
+    assert preflight.calls == 0
+
+
 def test_http_sync_replay_returns_original_receipt_and_rejects_reused_identity(tmp_path):
     service = application(tmp_path, authorizer=AUTH, preflight=FixedPreflight(BLOCKED_APPROVAL))
     client = client_for(service)

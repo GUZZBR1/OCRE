@@ -14,6 +14,8 @@ from ocre_core.application.services import (
     Principal,
 )
 
+DEFAULT_MAX_BODY_BYTES = 16 * 1024 * 1024
+
 
 class SyncOperationBody(BaseModel):
     model_config = ConfigDict(extra="ignore")
@@ -39,11 +41,13 @@ class JobSubmitBody(BaseModel):
     group_manifest: Any | None = None
 
 
-def create_app(application: OCREApplication, *, principal_dependency: Callable[..., Principal]) -> FastAPI:
+def create_app(application: OCREApplication, *, principal_dependency: Callable[..., Principal], max_body_bytes: int = DEFAULT_MAX_BODY_BYTES) -> FastAPI:
     """Construct an app with an explicit identity provider.
 
     Development and tests may inject a fixed principal. Production callers must
     inject their verified identity dependency; this module has no default auth.
+    ``max_body_bytes`` bounds accepted JSON envelopes; the API contract answers
+    an excess with ``request_too_large`` (413) before any partial commit.
     """
     app = FastAPI(title="OCRE local API", version="1.0.0")
 
@@ -55,8 +59,33 @@ def create_app(application: OCREApplication, *, principal_dependency: Callable[.
             content={"code": exc.code, "title": exc.detail, "status": exc.status, **exc.extra},
         )
 
+    async def _strict_body(request: Request) -> Any:
+        """Read a bounded request body and decode it as strict JSON."""
+        declared = request.headers.get("content-length")
+        if declared is not None:
+            try:
+                declared_length = int(declared)
+            except ValueError:
+                declared_length = -1
+            if declared_length > max_body_bytes:
+                raise ApplicationError("request_too_large", 413, "Request body exceeds the configured limit")
+        raw = await request.body()
+        if len(raw) > max_body_bytes:
+            raise ApplicationError("request_too_large", 413, "Request body exceeds the configured limit")
+        # Deferred import: the validator module pulls in jsonschema.
+        from ocre_core.validation.validator import StrictJSONError, parse_json_strict
+
+        try:
+            return parse_json_strict(raw)
+        except StrictJSONError as exc:
+            raise ApplicationError("validation_failed", 422, "Request body is not strict JSON") from exc
+
     @app.post("/v1/projects/{project_id}/sync-batches")
-    def submit_sync(project_id: str, body: SyncBatchBody, principal: Principal = Depends(principal_dependency)):
+    async def submit_sync(project_id: str, request: Request, principal: Principal = Depends(principal_dependency)):
+        try:
+            body = SyncBatchBody.model_validate(await _strict_body(request))
+        except ValidationError as exc:
+            raise ApplicationError("validation_failed", 422, "Invalid sync batch") from exc
         result = application.submit_sync(principal, project_id, body.model_dump())
         return JSONResponse(status_code=200 if result["replayed"] else 201, content=result)
 
@@ -71,13 +100,8 @@ def create_app(application: OCREApplication, *, principal_dependency: Callable[.
         idempotency_key: str = Header(alias="Idempotency-Key", min_length=1),
         principal: Principal = Depends(principal_dependency),
     ):
-        from ocre_core.validation.validator import StrictJSONError, parse_json_strict
-
         try:
-            raw_body = parse_json_strict(await request.body())
-            body = JobSubmitBody.model_validate(raw_body)
-        except StrictJSONError as exc:
-            raise ApplicationError("validation_failed", 422, "Request body is not strict JSON") from exc
+            body = JobSubmitBody.model_validate(await _strict_body(request))
         except ValidationError as exc:
             raise ApplicationError("validation_failed", 422, "Invalid job submission") from exc
         return application.submit_job(

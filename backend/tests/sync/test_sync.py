@@ -110,6 +110,12 @@ def test_truthy_non_string_identity_values_are_rejected():
         BatchReceipt(batch(), 9)
 
 
+def test_base_revision_id_must_be_a_string_or_absent():
+    with pytest.raises(TypeError):
+        batch(base_revision_id=123)
+    assert batch(base_revision_id=None).base_revision_id is None
+
+
 def test_operation_payload_must_remain_opaque_bytes():
     with pytest.raises(TypeError):
         SyncOperation("op-1", {"cad": "not interpreted"})

@@ -16,10 +16,16 @@ def verify_artifact(root: Path, relative_path: str, expected_sha256: str) -> Pat
     Callers should run this against an immutable staged snapshot immediately
     before process launch. It does not make the file immutable after checking.
     """
-    relative = PurePosixPath(relative_path)
-    if not relative_path or relative.is_absolute() or ".." in relative.parts:
+    if not isinstance(relative_path, str) or not relative_path:
         raise UnsafeArtifactPath("artifact path must be a non-empty relative path without '..'")
-    if len(expected_sha256) != 64 or any(char not in "0123456789abcdef" for char in expected_sha256):
+    relative = PurePosixPath(relative_path)
+    if relative.is_absolute() or ".." in relative.parts:
+        raise UnsafeArtifactPath("artifact path must be a non-empty relative path without '..'")
+    if (
+        not isinstance(expected_sha256, str)
+        or len(expected_sha256) != 64
+        or any(char not in "0123456789abcdef" for char in expected_sha256)
+    ):
         raise ValueError("expected_sha256 must be lowercase SHA-256 hex")
 
     trusted_root = root.resolve(strict=True)

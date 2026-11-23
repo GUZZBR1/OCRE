@@ -109,6 +109,16 @@ class CancellationEvidence:
     kind: CancellationEvidenceKind
     observed_at: datetime
 
+    def __post_init__(self) -> None:
+        if not isinstance(self.aggregate_id, str) or not self.aggregate_id:
+            raise ValueError("aggregate_id must not be empty")
+        if not isinstance(self.requested_from_state, (JobState, AdapterExecutionState)):
+            raise TypeError("requested_from_state must be a lifecycle state")
+        if not isinstance(self.kind, CancellationEvidenceKind):
+            raise TypeError("kind must be a CancellationEvidenceKind")
+        if not isinstance(self.observed_at, datetime):
+            raise TypeError("observed_at must be a datetime")
+
 
 @dataclass(frozen=True)
 class JobTransition:
@@ -189,6 +199,8 @@ def transition_job(
     process completion before accepting a cancellation acknowledgement.
     """
     _check_transition_inputs("job", job_id, event_id, current_sequence, expected_sequence)
+    if not isinstance(current_state, JobState) or not isinstance(target_state, JobState):
+        raise TypeError("job transitions require JobState values")
     _validate_transition(
         current_state=current_state,
         target_state=target_state,
@@ -200,6 +212,8 @@ def transition_job(
     _validate_cancellation_evidence(
         job_id, target_state, cancellation_evidence, cancellation_origin
     )
+    if not isinstance(occurred_at, datetime):
+        raise TypeError("occurred_at must be a datetime")
     if occurred_at.tzinfo is None or occurred_at.utcoffset() is None:
         raise ValueError("occurred_at must be timezone-aware")
     return JobTransition(
@@ -232,6 +246,8 @@ def transition_adapter_execution(
     Collecting deliberately has no cancellation transition.
     """
     _check_transition_inputs("execution", execution_id, event_id, current_sequence, expected_sequence)
+    if not isinstance(current_state, AdapterExecutionState) or not isinstance(target_state, AdapterExecutionState):
+        raise TypeError("adapter transitions require AdapterExecutionState values")
     _validate_transition(
         current_state=current_state,
         target_state=target_state,
@@ -243,6 +259,8 @@ def transition_adapter_execution(
     _validate_cancellation_evidence(
         execution_id, target_state, cancellation_evidence, cancellation_origin
     )
+    if not isinstance(occurred_at, datetime):
+        raise TypeError("occurred_at must be a datetime")
     if occurred_at.tzinfo is None or occurred_at.utcoffset() is None:
         raise ValueError("occurred_at must be timezone-aware")
     return AdapterExecutionTransition(
@@ -270,6 +288,8 @@ def _validate_cancellation_evidence(
         return
     if evidence is None:
         raise InvalidJobTransition("cancelled requires authoritative cancellation evidence")
+    if not isinstance(evidence, CancellationEvidence):
+        raise TypeError("cancellation evidence must be a CancellationEvidence")
     if cancellation_origin is None:
         raise InvalidJobTransition("cancel request origin is missing from persisted state")
     if evidence.aggregate_id != aggregate_id:
@@ -296,6 +316,8 @@ def _resolve_cancellation_origin(
     supplied_origin: JobState | AdapterExecutionState | None,
     state_type: type[JobState] | type[AdapterExecutionState],
 ) -> JobState | AdapterExecutionState | None:
+    if supplied_origin is not None and not isinstance(supplied_origin, state_type):
+        raise TypeError("cancellation origin must match the aggregate state type")
     cancel_requested = state_type.CANCEL_REQUESTED
     if target_state == cancel_requested:
         if supplied_origin is not None:
