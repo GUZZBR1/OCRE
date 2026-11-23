@@ -326,6 +326,32 @@ def _semantic(eir: dict[str, Any], bundle: dict[str, Any], groups: dict[str, Any
     if bundle.get("eir_artifact_id") not in artifacts:
         _add(diagnostics, "semantic", "/eir_artifact_id", "unresolved_artifact", "bundle EIR artifact id does not resolve")
 
+    _check_frames(eir, frames, unit_profile, diagnostics)
+
+    _check_geometry(eir, frames, artifacts, unit_profile, diagnostics)
+
+    _check_materials(eir, unit_profile, diagnostics)
+
+    group_ref_ids = _check_cases(eir, rev_id, profile, frames, geometries, materials,
+                                 artifacts, unit_profile, diagnostics)
+
+    selected = _selected_case(eir, case_id)
+    _check_artifacts(eir, bundle, groups, artifacts, group_ref_ids, case_id,
+                     selected, root, purpose, max_artifact_bytes,
+                     max_document_bytes, approval_out, diagnostics)
+
+    _check_capabilities(eir, groups, capabilities, selected, approval_context,
+                        purpose, diagnostics)
+    if eir.get("document_state") != "complete":
+        _add(diagnostics, "semantic", "/document_state", "document_incomplete", "draft EIR cannot pass validation as complete")
+    if purpose == "authoring":
+        for artifact in bundle.get("artifacts", []):
+            if isinstance(artifact, dict) and artifact.get("usage") == "required" and artifact.get("sha256") is None:
+                _add(diagnostics, "semantic", f"/artifacts/{artifact.get('artifact_id')}/sha256", "missing_artifact_hash", "required artifact hash is pending", "warning")
+
+
+def _check_frames(eir: dict[str, Any], frames: dict[str, dict[str, Any]],
+                  unit_profile: dict[str, Any], diagnostics: list[Diagnostic]) -> None:
     frame_items = eir.get("frames", [])
     roots = []
     for i, frame in enumerate(_seq(frame_items)):
@@ -365,6 +391,10 @@ def _semantic(eir: dict[str, Any], bundle: dict[str, Any], groups: dict[str, Any
             if not math.isfinite(norm) or abs(norm - 1.0) > 1e-6:
                 _add(diagnostics, "semantic", f"/frames/{i}/rotation_xyzw", "invalid_quaternion_norm", "quaternion norm must be within 1e-6 of one")
 
+
+def _check_geometry(eir: dict[str, Any], frames: dict[str, dict[str, Any]],
+                    artifacts: dict[str, dict[str, Any]],
+                    unit_profile: dict[str, Any], diagnostics: list[Diagnostic]) -> None:
     for i, geometry in enumerate(_seq(eir.get("geometry"))):
         if not isinstance(geometry, dict): continue
         if geometry.get("frame_id") is not None and geometry.get("frame_id") not in frames:
@@ -375,6 +405,9 @@ def _semantic(eir: dict[str, Any], bundle: dict[str, Any], groups: dict[str, Any
         box = geometry.get("bounding_box")
         if isinstance(box, dict): _check_unit(box.get("unit"), "length", f"/geometry/{i}/bounding_box/unit", diagnostics, unit_profile)
 
+
+def _check_materials(eir: dict[str, Any], unit_profile: dict[str, Any],
+                     diagnostics: list[Diagnostic]) -> None:
     for i, material in enumerate(_seq(eir.get("materials"))):
         if not isinstance(material, dict): continue
         for name, quantity in material.get("properties", {}).items():
@@ -383,6 +416,14 @@ def _semantic(eir: dict[str, Any], bundle: dict[str, Any], groups: dict[str, Any
             elif dim is None:
                 _add(diagnostics, "semantic", f"/materials/{i}/properties/{name}", "unsupported_material_property", "material property has no dimension rule in the selected profile")
 
+
+def _check_cases(eir: dict[str, Any], rev_id: Any, profile: dict[str, Any],
+                 frames: dict[str, dict[str, Any]],
+                 geometries: dict[str, dict[str, Any]],
+                 materials: dict[str, dict[str, Any]],
+                 artifacts: dict[str, dict[str, Any]],
+                 unit_profile: dict[str, Any],
+                 diagnostics: list[Diagnostic]) -> set[str]:
     group_ref_ids: set[str] = set()
     for i, case in enumerate(_seq(eir.get("simulation_cases"))):
         if not isinstance(case, dict): continue
@@ -427,7 +468,18 @@ def _semantic(eir: dict[str, Any], bundle: dict[str, Any], groups: dict[str, Any
                 dimension = "force" if kind == "loads" else "length"
                 for component, quantity in condition.get("components", {}).items():
                     if isinstance(quantity, dict): _check_unit(quantity.get("unit"), dimension, cp + f"/components/{component}/unit", diagnostics, unit_profile)
+    return group_ref_ids
 
+
+def _check_artifacts(eir: dict[str, Any], bundle: dict[str, Any],
+                     groups: dict[str, Any] | None,
+                     artifacts: dict[str, dict[str, Any]],
+                     group_ref_ids: set[str], case_id: str | None,
+                     selected: dict[str, Any] | None, root: Path | None,
+                     purpose: str, max_artifact_bytes: int,
+                     max_document_bytes: int,
+                     approval_out: dict[str, Any] | None,
+                     diagnostics: list[Diagnostic]) -> None:
     for i, artifact in enumerate(_seq(bundle.get("artifacts"))):
         if not isinstance(artifact, dict): continue
         try:
@@ -441,7 +493,6 @@ def _semantic(eir: dict[str, Any], bundle: dict[str, Any], groups: dict[str, Any
 
     manifest_refs = {c.get("group_manifest_ref") for c in _seq(eir.get("simulation_cases"))
                      if isinstance(c, dict) and c.get("group_manifest_ref")}
-    selected = _selected_case(eir, case_id)
     consumed = {ref for ref in (bundle.get("eir_artifact_id"),) if ref}
     if selected is None:
         consumed.update(manifest_refs)
@@ -506,6 +557,13 @@ def _semantic(eir: dict[str, Any], bundle: dict[str, Any], groups: dict[str, Any
     if eir.get("document_origin") == "migration_v0.1":
         aid = migration.get("report_artifact_id") if isinstance(migration, dict) else None
         if aid not in artifacts: _add(diagnostics, "semantic", "/migration/report_artifact_id", "migration_report_unresolved", "migration report artifact does not resolve in bundle")
+
+
+def _check_capabilities(eir: dict[str, Any], groups: dict[str, Any] | None,
+                        capabilities: Mapping[str, Any] | None,
+                        selected: dict[str, Any] | None,
+                        approval_context: Mapping[str, Any] | None, purpose: str,
+                        diagnostics: list[Diagnostic]) -> None:
     if purpose == "execution_preflight":
         if capabilities is None:
             _add(diagnostics, "semantic", "/simulation_cases", "adapter_capabilities_unavailable", "execution readiness cannot be established without declared adapter capabilities")
@@ -531,12 +589,6 @@ def _semantic(eir: dict[str, Any], bundle: dict[str, Any], groups: dict[str, Any
                         _add(diagnostics, "semantic", f"/simulation_cases/{i}/solver/adapter_id", "adapter_capability_mismatch", f"adapter does not declare support for {capability_name}")
         if approval_context is None:
             _add(diagnostics, "semantic", "/", "approval_fingerprint_unavailable", "OCRE-AF/1 approval fingerprint inputs are not part of the supplied validation context")
-    if eir.get("document_state") != "complete":
-        _add(diagnostics, "semantic", "/document_state", "document_incomplete", "draft EIR cannot pass validation as complete")
-    if purpose == "authoring":
-        for artifact in bundle.get("artifacts", []):
-            if isinstance(artifact, dict) and artifact.get("usage") == "required" and artifact.get("sha256") is None:
-                _add(diagnostics, "semantic", f"/artifacts/{artifact.get('artifact_id')}/sha256", "missing_artifact_hash", "required artifact hash is pending", "warning")
 
 
 def _check_unit(unit: Any, dimension: str, pointer: str, diagnostics: list[Diagnostic], profile: dict[str, Any]) -> None:
