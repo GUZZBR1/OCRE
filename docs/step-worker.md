@@ -84,8 +84,11 @@ Regras fail-closed (o host recusa antes de chamar o worker):
   degenerada nunca chega ao kernel.
 - Traço `shape="circle"` com bloco `circle` válido (`cx_mm`/`cy_mm`/
   `r_mm`, schema `draw-paper` 0.1.0) vira wire analítico exato no STEP
-  (`Circle` do build123d, sem facetas); sem o bloco, segue a polilinha
-  discretizada. DXF continua polilinha por compatibilidade.
+  (`Circle` do build123d, sem facetas). Sem o bloco, o host tenta um
+  ajuste de círculo (Kåsa) sobre os pontos: se o desvio radial couber
+  na tolerância o wire analítico sai do ajuste (registrado em `notes`);
+  senão segue a polilinha discretizada — nunca finge círculo. O escritor
+  DXF F0 (`dxf_export.py`) continua polilinha por compatibilidade.
 
 O host confere o volume do sólido contra a área líquida das regiões
 (externa - furos; `pi*r^2` para círculos analíticos) x espessura
