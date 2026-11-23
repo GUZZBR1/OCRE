@@ -7,7 +7,14 @@ from pathlib import Path
 from unittest import mock
 
 import ocre_core.validation.validator as validator
+from ocre_core.validation.approval_fingerprint import jcs
 from ocre_core.validation.validator import ArtifactTooLarge, StrictJSONError, parse_json_strict, validate
+from tests.helpers import (
+    BUNDLE_MANIFEST_NAME,
+    EIR_EXAMPLE_CAPS,
+    eir_approval_context,
+    stage_eir_example_bundle,
+)
 
 ROOT = Path(__file__).resolve().parents[3]
 EXAMPLES = ROOT / "schemas/eir/examples/0.2.0"
@@ -327,6 +334,193 @@ class ValidatorTests(unittest.TestCase):
         self.assertEqual(one, two)
         keys = [(d["stage"], d["pointer"], d["code"], d["message"]) for d in one["diagnostics"]]
         self.assertEqual(sorted(keys), keys)
+
+
+class ApprovalFingerprintTests(unittest.TestCase):
+    def _validate(self, eir, bundle, groups, root, caps=EIR_EXAMPLE_CAPS,
+                  context=None, case_id="axial_bar",
+                  manifest_uri=BUNDLE_MANIFEST_NAME):
+        return validate(eir, bundle, groups, bundle_root=root,
+                        purpose="execution_preflight", adapter_capabilities=caps,
+                        case_id=case_id,
+                        approval_context=eir_approval_context(caps) if context is None else context,
+                        bundle_manifest_uri=manifest_uri)
+
+    def test_verified_context_computes_fingerprint_and_reports_ready(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root, eir, bundle, groups = stage_eir_example_bundle(temp)
+            report = self._validate(eir, bundle, groups, root)
+        self.assertEqual("valid", report.status, report.as_dict())
+        self.assertEqual("ready", report.execution_readiness)
+        self.assertRegex(report.approval_fingerprint, r"^[0-9a-f]{64}$")
+        self.assertEqual(report.approval_fingerprint,
+                         report.as_dict()["approval_fingerprint"])
+
+    def test_fingerprint_is_deterministic_and_binds_staged_bytes(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root, eir, bundle, groups = stage_eir_example_bundle(temp)
+            first = self._validate(eir, bundle, groups, root)
+            second = self._validate(eir, bundle, groups, root)
+            self.assertEqual(first.approval_fingerprint, second.approval_fingerprint)
+            step = next(a for a in bundle["artifacts"] if a["artifact_id"] == "step_source")
+            (root / step["uri"]).write_bytes(b"different step bytes")
+            step["sha256"] = hashlib.sha256(b"different step bytes").hexdigest()
+            (root / BUNDLE_MANIFEST_NAME).write_bytes(jcs(bundle))
+            changed = self._validate(eir, bundle, groups, root)
+            self.assertEqual("ready", changed.execution_readiness)
+            self.assertNotEqual(first.approval_fingerprint, changed.approval_fingerprint)
+
+    def test_single_case_selects_implicitly_and_unknown_case_id_blocks(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root, eir, bundle, groups = stage_eir_example_bundle(temp)
+            implicit = self._validate(eir, bundle, groups, root, case_id=None)
+            self.assertEqual("ready", implicit.execution_readiness)
+            explicit = self._validate(eir, bundle, groups, root)
+            self.assertEqual(implicit.approval_fingerprint, explicit.approval_fingerprint)
+            unknown = self._validate(eir, bundle, groups, root, case_id="no_such_case")
+        self.assertEqual("blocked", unknown.execution_readiness)
+        self.assertIsNone(unknown.approval_fingerprint)
+        self.assertIn("group_manifest_reference_mismatch",
+                      {d.code for d in unknown.diagnostics})
+
+    def test_missing_context_inputs_block_as_incomplete(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root, eir, bundle, groups = stage_eir_example_bundle(temp)
+            for context in ({}, {"validator": eir_approval_context()["validator"]}):
+                report = self._validate(eir, bundle, groups, root, context=context)
+                self.assertEqual("incomplete", report.status)
+                self.assertEqual("blocked", report.execution_readiness)
+                self.assertIn("approval_fingerprint_inputs_missing",
+                              {d.code for d in report.diagnostics})
+
+    def test_adapter_mismatches_block_approval(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root, eir, bundle, groups = stage_eir_example_bundle(temp)
+            wrong_id = [{"stage_id": "solve", "adapter_id": "gmsh", "version": "1",
+                         "binary_sha256": "d" * 64, "capabilities_sha256": "e" * 64}]
+            wrong_version = [{"stage_id": "solve", "adapter_id": "calculix.batch",
+                              "version": "2.22", "binary_sha256": "d" * 64,
+                              "capabilities_sha256": hashlib.sha256(
+                                  jcs(EIR_EXAMPLE_CAPS["calculix.batch"])).hexdigest()}]
+            wrong_caps = [{"stage_id": "solve", "adapter_id": "calculix.batch",
+                           "version": "2.23", "binary_sha256": "d" * 64,
+                           "capabilities_sha256": "0" * 64}]
+            for adapters in (wrong_id, wrong_version, wrong_caps):
+                report = self._validate(eir, bundle, groups, root,
+                                        context=eir_approval_context(adapters=adapters))
+                self.assertEqual("invalid", report.status)
+                self.assertEqual("blocked", report.execution_readiness)
+                self.assertIsNone(report.approval_fingerprint)
+                self.assertIn("approval_adapter_mismatch",
+                              {d.code for d in report.diagnostics})
+
+    def test_malformed_context_values_block_approval(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root, eir, bundle, groups = stage_eir_example_bundle(temp)
+            report = self._validate(eir, bundle, groups, root,
+                                    context=eir_approval_context(validator={"id": "v"}))
+        self.assertEqual("invalid", report.status)
+        self.assertEqual("blocked", report.execution_readiness)
+        self.assertIn("approval_fingerprint_invalid", {d.code for d in report.diagnostics})
+
+    def test_semantic_errors_suppress_fingerprint_even_with_context(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root, eir, bundle, groups = stage_eir_example_bundle(temp)
+            eir["simulation_cases"][0]["material_refs"] = ["unresolved"]
+            report = self._validate(eir, bundle, groups, root)
+        self.assertEqual("invalid", report.status)
+        self.assertEqual("blocked", report.execution_readiness)
+        self.assertIsNone(report.approval_fingerprint)
+        self.assertNotIn("approval_fingerprint_unavailable",
+                         {d.code for d in report.diagnostics})
+
+    def test_bundle_manifest_hash_binds_the_supplied_bytes(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root, eir, bundle, groups = stage_eir_example_bundle(temp)
+            context = eir_approval_context()
+            as_dict = self._validate(eir, bundle, groups, root, context=context)
+            canonical = self._validate(eir, jcs(bundle), groups, root, context=context)
+            pretty = self._validate(eir, json.dumps(bundle, indent=2).encode("utf-8"),
+                                    groups, root, context=context)
+        self.assertEqual("ready", as_dict.execution_readiness)
+        self.assertEqual(as_dict.approval_fingerprint, canonical.approval_fingerprint)
+        self.assertNotEqual(as_dict.approval_fingerprint, pretty.approval_fingerprint)
+
+    def test_parsed_bundle_requires_staged_manifest_bytes(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root, eir, bundle, groups = stage_eir_example_bundle(temp)
+            canonical = self._validate(eir, bundle, groups, root)
+            missing = self._validate(eir, bundle, groups, root, manifest_uri=None)
+            # A staged file with different bytes but the same content is a
+            # distinct manifest: it is approved under its own digest.
+            (Path(root) / BUNDLE_MANIFEST_NAME).write_bytes(
+                json.dumps(bundle, indent=2).encode("utf-8"))
+            reencoded = self._validate(eir, bundle, groups, root)
+            (Path(root) / BUNDLE_MANIFEST_NAME).write_bytes(jcs({"unrelated": 1}))
+            unrelated = self._validate(eir, bundle, groups, root)
+            (Path(root) / BUNDLE_MANIFEST_NAME).write_bytes(
+                b'{"unencodable": 1152921504606846976}')
+            unencodable = self._validate(eir, bundle, groups, root)
+        self.assertEqual("incomplete", missing.status)
+        self.assertEqual("blocked", missing.execution_readiness)
+        self.assertIn("approval_fingerprint_inputs_missing",
+                      {d.code for d in missing.diagnostics})
+        self.assertEqual("ready", reencoded.execution_readiness)
+        self.assertNotEqual(canonical.approval_fingerprint,
+                            reencoded.approval_fingerprint)
+        for report in (unrelated, unencodable):
+            self.assertEqual("invalid", report.status)
+            self.assertEqual("blocked", report.execution_readiness)
+            self.assertIsNone(report.approval_fingerprint)
+            self.assertIn("bundle_manifest_content_mismatch",
+                          {d.code for d in report.diagnostics})
+
+    def test_preparation_policy_key_must_be_present(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root, eir, bundle, groups = stage_eir_example_bundle(temp)
+            context = eir_approval_context()
+            del context["preparation_policy"]
+            report = self._validate(eir, bundle, groups, root, context=context)
+        self.assertEqual("incomplete", report.status)
+        self.assertEqual("blocked", report.execution_readiness)
+        self.assertIsNone(report.approval_fingerprint)
+        self.assertIn("approval_fingerprint_inputs_missing",
+                      {d.code for d in report.diagnostics})
+
+    def test_multi_case_eir_selects_by_case_id_and_consumes_only_that_case(self):
+        with tempfile.TemporaryDirectory() as temp:
+            eir = json.loads((EXAMPLES / "eir.json").read_text(encoding="utf-8"))
+            bundle = json.loads((EXAMPLES / "input-bundle.json").read_text(encoding="utf-8"))
+            other_case = copy.deepcopy(eir["simulation_cases"][0])
+            other_case["case_id"] = "axial_bar_other"
+            other_case["group_manifest_ref"] = "groups_other"
+            other_case["solver"] = dict(other_case["solver"],
+                                        proposed_target_version="9.9")
+            eir["simulation_cases"].append(other_case)
+            manifest_entry = next(a for a in bundle["artifacts"]
+                                  if a["artifact_id"] == "groups_axial_bar")
+            bundle["artifacts"].append(manifest_entry | {
+                "artifact_id": "groups_other", "uri": "groups-other.json"})
+            root, eir, bundle, groups = stage_eir_example_bundle(temp, eir, bundle)
+            resolved = self._validate(eir, bundle, groups, root)
+            unresolved = self._validate(eir, bundle, groups, root, case_id=None)
+            wrong_case = self._validate(eir, bundle, groups, root,
+                                        case_id="axial_bar_other")
+            with mock.patch.object(
+                    validator, "calculate_approval_fingerprint",
+                    wraps=validator.calculate_approval_fingerprint) as capture:
+                self._validate(eir, bundle, groups, root)
+        bound = capture.call_args.args[0]
+        self.assertEqual("ready", resolved.execution_readiness,
+                         resolved.as_dict())
+        consumed_ids = {a["artifact_id"] for a in bound["consumed_artifacts"]}
+        self.assertIn("groups_axial_bar", consumed_ids)
+        self.assertNotIn("groups_other", consumed_ids)
+        self.assertEqual(bound["execution_parameters"]["case_id"], "axial_bar")
+        self.assertEqual("blocked", unresolved.execution_readiness)
+        self.assertIn("group_manifest_reference_mismatch",
+                      {d.code for d in unresolved.diagnostics})
+        self.assertEqual("blocked", wrong_case.execution_readiness)
 
 
 if __name__ == "__main__":

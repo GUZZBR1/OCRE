@@ -8,7 +8,7 @@ import uuid
 from dataclasses import dataclass, fields, is_dataclass
 from datetime import datetime, timezone
 from enum import Enum
-from typing import Any, Protocol
+from typing import Any, Mapping, Protocol
 
 from ocre_core.jobs import (
     TERMINAL_STATES,
@@ -62,17 +62,45 @@ class PreflightReport:
     status: str
     execution_readiness: str
     diagnostics: tuple[dict[str, str], ...] = ()
+    approval_fingerprint: str | None = None
 
     def as_dict(self) -> dict[str, Any]:
         return {
             "status": self.status,
             "execution_readiness": self.execution_readiness,
+            "approval_fingerprint": self.approval_fingerprint,
             "diagnostics": list(self.diagnostics),
         }
 
 
 class PreflightPort(Protocol):
-    def evaluate(self, request: "JobSubmission") -> PreflightReport: ...
+    def evaluate(self, request: "JobSubmission", *, project_id: str | None = None) -> PreflightReport: ...
+
+
+@dataclass(frozen=True)
+class PreflightInputs:
+    """OCRE-AF/1 inputs the platform must supply for a real pre-flight.
+
+    ``bundle_root`` locates the staged immutable bundle for byte
+    verification, ``bundle_manifest_uri`` names the staged manifest file
+    inside it so the fingerprint binds its exact bytes,
+    ``adapter_capabilities`` carries the trusted capability
+    declarations, and ``approval_context`` supplies the normative inputs
+    the validator cannot derive (validator identity, adapter records,
+    preparation policy). ``None`` anywhere means the input is unavailable
+    and the approval stays blocked.
+    """
+
+    bundle_root: str | None = None
+    adapter_capabilities: Mapping[str, Any] | None = None
+    approval_context: Mapping[str, Any] | None = None
+    bundle_manifest_uri: str | None = None
+
+
+class PreflightInputsProvider(Protocol):
+    """Resolves the trusted pre-flight inputs for one submission."""
+
+    def resolve(self, request: "JobSubmission") -> PreflightInputs | None: ...
 
 
 @dataclass(frozen=True)
@@ -87,31 +115,94 @@ class JobSubmission:
 
 
 class ValidatorPreflight:
-    """Uses the current validator; no client-supplied capabilities are trusted."""
+    """Uses the current validator; no client-supplied capabilities are trusted.
 
-    def evaluate(self, request: JobSubmission) -> PreflightReport:
-        from ocre_core.validation.validator import validate
+    With no ``PreflightInputsProvider`` this port cannot assemble the
+    OCRE-AF/1 inputs, so readiness stays blocked. Readiness is reported
+    ``ready`` only when the validator both passes every check and returns
+    a computed approval fingerprint.
+    """
 
+    def __init__(self, inputs_provider: PreflightInputsProvider | None = None):
+        self._inputs_provider = inputs_provider
+
+    def evaluate(self, request: JobSubmission, *, project_id: str | None = None) -> PreflightReport:
+        from ocre_core.validation.validator import StrictJSONError, parse_json_strict, validate
+
+        inputs = self._inputs_provider.resolve(request) if self._inputs_provider is not None else None
         report = validate(
             request.eir,
             request.bundle,
             request.group_manifest,
+            bundle_root=inputs.bundle_root if inputs else None,
             purpose="execution_preflight",
+            adapter_capabilities=inputs.adapter_capabilities if inputs else None,
+            approval_context=inputs.approval_context if inputs else None,
+            case_id=request.case_ref,
+            bundle_manifest_uri=inputs.bundle_manifest_uri if inputs else None,
         )
         diagnostics = tuple(
             {"code": item.code, "pointer": item.pointer, "message": item.message}
             for item in report.diagnostics
         )
-        # OCRE-AF/1 approval fingerprints are not available in this slice.
-        # Even if a validator configuration reports otherwise, this real port
-        # cannot assert execution readiness. Tests may inject a fake port.
-        if not any(item["code"] == "approval_fingerprint_unavailable" for item in diagnostics):
+        # Fail closed: a report is only ready when it carries a computed
+        # OCRE-AF/1 fingerprint. Without supplied inputs the port cannot
+        # produce one, so the unavailable diagnostic is reported even if a
+        # future validator stops emitting it itself.
+        ready = report.execution_readiness == "ready" and report.approval_fingerprint is not None
+        mismatches = ()
+        if ready:
+            eir_doc = request.eir
+            if not isinstance(eir_doc, Mapping):
+                try:
+                    eir_doc = parse_json_strict(request.eir)
+                except (StrictJSONError, TypeError):
+                    eir_doc = {}
+            mismatches = _submission_mismatches(request, inputs, project_id, eir_doc)
+        if mismatches:
+            ready = False
+            diagnostics += tuple(
+                {"code": "submission_binding_mismatch", "pointer": f"/{field}",
+                 "message": f"submitted {field} does not match the approved document or adapter"}
+                for field in mismatches
+            )
+        if not ready and inputs is None and not any(
+            item["code"] == "approval_fingerprint_unavailable" for item in diagnostics
+        ):
             diagnostics += ({"code": "approval_fingerprint_unavailable", "pointer": "", "message": "OCRE-AF/1 approval fingerprint is unavailable"},)
         return PreflightReport(
             report.status,
-            "blocked",
+            "ready" if ready else "blocked",
             diagnostics,
+            report.approval_fingerprint,
         )
+
+
+def _submission_mismatches(request: "JobSubmission", inputs: PreflightInputs | None,
+                           project_id: str | None, eir: Any) -> tuple[str, ...]:
+    """Request fields that diverge from what the approval fingerprint bound.
+
+    The fingerprint binds the EIR revision and the single approved adapter
+    record, so the submission must name the same adapter identity/version
+    and design revision; a mismatched job would be queued with values that
+    were never approved.
+    """
+    mismatched: list[str] = []
+    context = inputs.approval_context if inputs is not None else None
+    adapters = context.get("adapters") if isinstance(context, Mapping) else None
+    approved = adapters[0] if isinstance(adapters, list) and len(adapters) == 1 and isinstance(adapters[0], Mapping) else {}
+    if request.adapter_id != approved.get("adapter_id"):
+        mismatched.append("adapter_id")
+    if request.adapter_version != approved.get("version"):
+        mismatched.append("adapter_version")
+    eir = eir if isinstance(eir, Mapping) else {}
+    revision = eir.get("revision") if isinstance(eir.get("revision"), Mapping) else {}
+    project = eir.get("project") if isinstance(eir.get("project"), Mapping) else {}
+    if request.design_revision_id != revision.get("revision_id"):
+        mismatched.append("design_revision_id")
+    if project_id is not None and project_id != project.get("project_id"):
+        mismatched.append("project_id")
+    return tuple(mismatched)
 
 
 class ApplicationError(Exception):
@@ -209,7 +300,7 @@ class OCREApplication:
         self._authorize(principal, project_id, "jobs:submit")
         self._require_idempotency_key(idempotency_key)
         # Readiness is evaluated before IDs, snapshots, events, receipts, or outbox writes.
-        report = self.preflight.evaluate(request)
+        report = self.preflight.evaluate(request, project_id=project_id)
         if report.execution_readiness != "ready":
             raise ApplicationError("preparation_failed", 422, "Execution preflight is blocked", report=report.as_dict())
         submission = {

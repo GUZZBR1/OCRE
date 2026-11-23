@@ -38,11 +38,11 @@ Continuam como opções de tecnologia/integração: Three.js, OpenCascade.js/WAS
 
 ## Estado e próximos passos
 
-**Estado:** há provas locais em Python para validação EIR v0.2, codificação pura do fingerprint OCRE-AF/1, migração explícita v0.1→draft v0.2, jobs/SQLite/outbox fake e worker sintético; há também um sidecar experimental de proveniência `.geo`/malha e um visualizador local TypeScript/Three.js com fixture fictícia. O codificador do fingerprint ainda não está integrado ao pré-flight: a prontidão continua bloqueada, e drafts migrados nunca liberam aprovação ou execução. Os testes locais incluem falhas de persistência, entrega duplicada/replay e estados sintéticos; não demonstram operação externa.
+**Estado:** há provas locais em Python para validação EIR v0.2, codificação pura do fingerprint OCRE-AF/1, migração explícita v0.1→draft v0.2, jobs/SQLite/outbox fake e worker sintético; há também um sidecar experimental de proveniência `.geo`/malha e um visualizador local TypeScript/Three.js com fixture fictícia. O codificador do fingerprint já está integrado ao pré-flight: com os insumos confiáveis completos o digest é calculado e a prontidão pode ser `ready`; sem um provider real de insumos — ainda inexistente — a porta de aprovação continua bloqueada, e drafts migrados nunca liberam aprovação ou execução. Os testes locais incluem falhas de persistência, entrega duplicada/replay e estados sintéticos; não demonstram operação externa.
 
 **Pendências:** Core Cloud, IAM, banco/fila/serviços externos, workers e motores reais, importação STEP/OCCT, limiar geral de qualidade da malha e validação física geral. A prova estrutural segue restrita ao benchmark sintético documentado; medições de qualidade e resultados numéricos não são critérios gerais nem demonstram validade física fora daquele caso.
 
-Próxima ordem: integrar OCRE-AF/1 ao contexto de aprovação sem alterar o contrato congelado e mantendo o bloqueio até todos os insumos/gates existirem; ampliar e validar falhas/replay no harness local; qualificar proveniência CAD importado e critérios de qualidade para um uso definido; depois planejar infraestrutura cloud e engines reais. O visualizador continua isolado na fixture local.
+Próxima ordem: fornecer os insumos confiáveis de OCRE-AF/1 (provider real de snapshot do bundle, capacidades autoritativas, pacote imutável do validador e binários de adapters), mantendo o bloqueio até todos existirem; ampliar e validar falhas/replay no harness local; qualificar proveniência CAD importado e critérios de qualidade para um uso definido; depois planejar infraestrutura cloud e engines reais. O visualizador continua isolado na fixture local.
 
 ## Documentação
 

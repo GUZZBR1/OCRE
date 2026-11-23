@@ -13,12 +13,19 @@ compatibilidade com infraestrutura de produção.
   axial, referências/manifesto de grupos e verificação confinada de URI/hash
   dos artefatos quando há raiz de bundle. Os contratos e schemas EIR v0.2
   permanecem congelados.
-- `ocre_core.validation.approval_fingerprint`: codificador puro do fingerprint
-  OCRE-AF/1 com canonicalização/framing e validação dos dez campos normativos.
-  Ele ainda não está integrado ao contexto de validação ou aprovação: o
-  pré-flight não dispõe dos insumos verificados e mantém
-  `execution_readiness: blocked` (`approval_fingerprint_unavailable`). Não
-  libera aprovação ou execução.
+- `ocre_core.validation.approval_fingerprint` + `validator`: codificador puro
+  do fingerprint OCRE-AF/1 integrado ao pré-flight. Com `approval_context`
+  (identidade do validador, registros de adapters e política de preparação —
+  insumos que só a plataforma pode declarar), bytes exatos do manifesto
+  staged (`bundle_manifest_uri`), raiz de bundle e capacidades verificadas,
+  o validador monta os dez campos normativos, calcula o digest e só então
+  reporta `execution_readiness: ready`; a porta real também exige que
+  adapter/revisão/projeto da submissão correspondam ao aprovado. Sem esses
+  insumos a porta (`ValidatorPreflight` sem `PreflightInputsProvider`)
+  permanece bloqueada com `approval_fingerprint_unavailable`, e qualquer
+  divergência de case/adapter/capacidade/submissão vira diagnóstico de
+  bloqueio. Ainda não há provider real de insumos nem pacote imutável de
+  validador: a execução local real continua indisponível.
 - `ocre_core.migration.v01_to_v02`: migrador explícito, somente em memória e
   sem alterar bytes de origem, que produz documento `draft` v0.2 e relatório
   versionado com resoluções, pendências e validação de autoria. A migração não
@@ -46,10 +53,12 @@ consultado para esta atualização, a versão instalada é `4.10.3`.
 
 ## Limites e próxima sequência
 
-- Integrar o codificador OCRE-AF/1 ao fluxo de aprovação usando todos os
-  insumos normativos verificados. Até que isso e os demais gates estejam
-  completos, o pré-flight permanece bloqueado; a migração v0.1→v0.2 nunca pode
-  liberar aprovação ou execução.
+- O codificador OCRE-AF/1 já está integrado ao pré-flight: com os dez insumos
+  normativos verificados o digest é calculado e a prontidão pode ser
+  reportada. Falta um `PreflightInputsProvider` real — bundle staged
+  imutável, capacidades autoritativas, pacote imutável do validador e
+  binários de adapter — sem o qual a porta real segue bloqueada. A migração
+  v0.1→v0.2 nunca pode liberar aprovação ou execução.
 - Completar capacidades autoritativas de adapters, cobertura física e
   proveniência CAD/geometria/malha. O sidecar experimental atual registra
   proveniência de geometria sintética `.geo` para malhas e mede uma métrica de
