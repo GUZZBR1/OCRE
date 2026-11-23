@@ -137,6 +137,31 @@ class CliExportTests(unittest.TestCase):
                 hashlib.sha256(dxf_bytes).hexdigest(), summary["dxf_sha256"])
             self.assertIn(b"DRAW_STROKES", dxf_bytes)
 
+    def test_export_dxf_circles_optin(self):
+        import ezdxf
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            code, _out, _summary = self._export(tmp_path, ["--dxf-circles"])
+            self.assertEqual(code, 0, _out)
+            out_dir = tmp_path / "out"
+            sidecar = json.loads((out_dir / "sidecar.json").read_text(encoding="utf-8"))
+            self.assertIs(sidecar["export_parameters"]["emit_circles"], True)
+            dxf = ezdxf.readfile(out_dir / "document.dxf")
+            circles = list(dxf.modelspace().query("CIRCLE"))
+            self.assertEqual(len(circles), 1)
+            self.assertAlmostEqual(circles[0].dxf.radius, 25.0)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            code, _out, _summary = self._export(tmp_path)
+            self.assertEqual(code, 0, _out)
+            out_dir = tmp_path / "out"
+            sidecar = json.loads((out_dir / "sidecar.json").read_text(encoding="utf-8"))
+            self.assertIs(sidecar["export_parameters"]["emit_circles"], False)
+            dxf = ezdxf.readfile(out_dir / "document.dxf")
+            self.assertEqual(list(dxf.modelspace().query("CIRCLE")), [])
+
     def test_export_with_librecad_check_reports_unavailable_without_failing(self):
         # Ambiente-consciente: com o binário presente o gate roda de
         # verdade (dxf2pdf) e deve passar; sem ele, "unavailable".
