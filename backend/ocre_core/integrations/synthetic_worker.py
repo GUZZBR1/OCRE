@@ -104,17 +104,11 @@ class SyntheticWorker:
                     if origin not in {JobState.QUEUED, JobState.RUNNING}:
                         raise ValueError("synthetic cancellation request has no valid origin")
                     if origin is JobState.QUEUED:
-                        evidence = CancellationEvidence(
-                            aggregate_id=job_id,
-                            requested_from_state=origin,
-                            kind=CancellationEvidenceKind.WORKER_START_PREVENTED,
-                            observed_at=self._clock(),
-                        )
                         self._advance(
                             snapshot,
                             tenant_id,
                             JobState.CANCELLED,
-                            cancellation_evidence=evidence,
+                            cancellation_evidence=self._evidence(job_id, origin),
                             cancellation_origin=origin,
                         )
                     elif outcome is SyntheticOutcome.FAILED:
@@ -125,17 +119,11 @@ class SyntheticWorker:
                             cancellation_origin=origin,
                         )
                     elif outcome is SyntheticOutcome.CANCELLED:
-                        evidence = CancellationEvidence(
-                            aggregate_id=job_id,
-                            requested_from_state=origin,
-                            kind=CancellationEvidenceKind.PROCESS_TERMINATED_BY_CANCELLATION,
-                            observed_at=self._clock(),
-                        )
                         self._advance(
                             snapshot,
                             tenant_id,
                             JobState.CANCELLED,
-                            cancellation_evidence=evidence,
+                            cancellation_evidence=self._evidence(job_id, origin),
                             cancellation_origin=origin,
                         )
                     else:
@@ -163,6 +151,18 @@ class SyntheticWorker:
                 conflicts += 1
                 if conflicts > 8:
                     raise
+
+    def _evidence(self, job_id: str, origin: JobState) -> CancellationEvidence:
+        kind = {
+            JobState.QUEUED: CancellationEvidenceKind.WORKER_START_PREVENTED,
+            JobState.RUNNING: CancellationEvidenceKind.PROCESS_TERMINATED_BY_CANCELLATION,
+        }[origin]
+        return CancellationEvidence(
+            aggregate_id=job_id,
+            requested_from_state=origin,
+            kind=kind,
+            observed_at=self._clock(),
+        )
 
     @staticmethod
     def _report(job_id: str, outcome: SyntheticOutcome, result: str) -> SyntheticReport:
