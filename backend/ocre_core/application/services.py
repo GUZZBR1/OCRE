@@ -322,7 +322,7 @@ class OCREApplication:
         job = JobSnapshot(job_id, JobState.QUEUED, 1, now, payload, tenant_id=principal.tenant_id)
         execution = AdapterExecutionSnapshot(execution_id, job_id, AdapterExecutionState.QUEUED, 1, now, payload, tenant_id=principal.tenant_id)
         event = ExecutionSubmitted(job_id, execution_id, event_id, 1, now)
-        idem = IdempotencyRecord(principal.tenant_id, "job-submit-v1", idempotency_key, fingerprint, job_id)
+        idem = IdempotencyRecord(principal.tenant_id, "job-submit-v1", idempotency_key, fingerprint)
         outbox = OutboxMessage(_new_id("msg"), job_id, event_id, "job.submitted", b"")
         try:
             receipt = self.job_store.create_execution(
@@ -334,6 +334,8 @@ class OCREApplication:
             )
         except IdempotencyConflict as exc:
             raise ApplicationError("idempotency_key_reused", 409, "Idempotency key was reused") from exc
+        except PersistenceConflict as exc:
+            raise ApplicationError("sequence_conflict", 409, "Job sequence changed; reload the current status") from exc
         return {
             "job_id": receipt.snapshot.job_id,
             "project_id": project_id,
@@ -394,7 +396,7 @@ class OCREApplication:
         except InvalidJobTransition as exc:
             raise ApplicationError("cancellation_unsupported_in_phase", 409, "Job cannot be cancelled in its current phase") from exc
         updated = JobSnapshot(job_id, event.to_state, event.sequence, now, snapshot.payload, tenant_id=principal.tenant_id)
-        idem = IdempotencyRecord(principal.tenant_id, "job-cancel-v1", idempotency_key, _fingerprint({"project_id": project_id, "job_id": job_id}), job_id)
+        idem = IdempotencyRecord(principal.tenant_id, "job-cancel-v1", idempotency_key, _fingerprint({"project_id": project_id, "job_id": job_id}))
         outbox = OutboxMessage(_new_id("msg"), job_id, event.event_id, "job.cancel_requested", b"")
         try:
             receipt = self.job_store.commit_transition(expected_sequence=snapshot.sequence, snapshot=updated, event=event, idempotency=idem, outbox=outbox)

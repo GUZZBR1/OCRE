@@ -424,6 +424,38 @@ def _engine_version(module_name: str) -> str:
         return "unknown"
 
 
+def _case_result(
+    engine: str,
+    headless: str,
+    *,
+    params: BarParams,
+    timestep_s: float,
+    duration_s: float,
+    drop_gap_m: float,
+    envelope: dict[str, Any],
+    series: list[dict[str, float]],
+    peak_point_m: list[float] | None,
+) -> dict[str, Any]:
+    """Dict de resultado de um caso de contato (PyBullet e MuJoCo).
+
+    Mesmas 11 chaves nos dois runners — só ``engine``, ``version``
+    (resolvida de ``engine``) e ``headless`` mudam entre eles.
+    """
+    return {
+        "engine": engine,
+        "version": _engine_version(engine),
+        "headless": headless,
+        "model_sha256": model_sha256(params),
+        "timestep_s": timestep_s,
+        "duration_s": duration_s,
+        "drop_gap_m": drop_gap_m,
+        "gravity_m_s2": GRAVITY_M_S2,
+        "envelope": envelope,
+        "series": series,
+        "peak_contact_point_m": peak_point_m,
+    }
+
+
 # ---------------------------------------------------------------------------
 # PyBullet: primeiro — envelope de carga, headless p.DIRECT
 # ---------------------------------------------------------------------------
@@ -480,19 +512,17 @@ def run_pybullet_case(
     # Série por-passo (uma amostra por step executado): o impulso é a
     # soma retangular, não a trapezoidal de amostras pontuais.
     envelope["impulse_Ns"] = _impulse_per_step(series, timestep)
-    return {
-        "engine": "pybullet",
-        "version": _engine_version("pybullet"),
-        "headless": "p.DIRECT",
-        "model_sha256": model_sha256(params),
-        "timestep_s": timestep,
-        "duration_s": duration_s,
-        "drop_gap_m": drop_gap_m,
-        "gravity_m_s2": GRAVITY_M_S2,
-        "envelope": envelope,
-        "series": series,
-        "peak_contact_point_m": peak_point,
-    }
+    return _case_result(
+        "pybullet",
+        "p.DIRECT",
+        params=params,
+        timestep_s=timestep,
+        duration_s=duration_s,
+        drop_gap_m=drop_gap_m,
+        envelope=envelope,
+        series=series,
+        peak_point_m=peak_point,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -547,19 +577,17 @@ def run_mujoco_case(
     # Série por-passo (uma amostra por step executado): o impulso é a
     # soma retangular, não a trapezoidal de amostras pontuais.
     envelope["impulse_Ns"] = _impulse_per_step(series, timestep)
-    return {
-        "engine": "mujoco",
-        "version": _engine_version("mujoco"),
-        "headless": "mj_step (CPU, sem viewer)",
-        "model_sha256": model_sha256(params),
-        "timestep_s": timestep,
-        "duration_s": duration_s,
-        "drop_gap_m": drop_gap_m,
-        "gravity_m_s2": GRAVITY_M_S2,
-        "envelope": envelope,
-        "series": series,
-        "peak_contact_point_m": peak_point,
-    }
+    return _case_result(
+        "mujoco",
+        "mj_step (CPU, sem viewer)",
+        params=params,
+        timestep_s=timestep,
+        duration_s=duration_s,
+        drop_gap_m=drop_gap_m,
+        envelope=envelope,
+        series=series,
+        peak_point_m=peak_point,
+    )
 
 
 # ---------------------------------------------------------------------------

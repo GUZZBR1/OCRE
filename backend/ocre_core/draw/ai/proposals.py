@@ -24,6 +24,7 @@ such path.
 from __future__ import annotations
 
 import uuid
+from copy import deepcopy
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from typing import Any
@@ -57,14 +58,15 @@ class Proposal:
     decided_by: str | None = None
     decided_at: str | None = None
 
+    def __post_init__(self) -> None:
+        # Frozen is only shallow: each record must own its content, or a
+        # caller-held dict — or a sibling record from ``replace`` — could
+        # mutate a stored proposal. Transitions rebuild via ``replace``,
+        # which reruns ``__init__`` and therefore this copy.
+        object.__setattr__(self, "content", deepcopy(self.content))
+
     def is_pending(self) -> bool:
         return self.state == "pending"
-
-    def is_confirmed(self) -> bool:
-        return self.state == "confirmed"
-
-    def is_rejected(self) -> bool:
-        return self.state == "rejected"
 
 
 @dataclass(frozen=True)

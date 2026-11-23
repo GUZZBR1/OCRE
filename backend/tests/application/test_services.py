@@ -6,7 +6,7 @@ import pytest
 from tests.helpers import (
     BLOCKED_APPROVAL, BUNDLE_MANIFEST_NAME, EIR_EXAMPLE_CAPS, FIXED_CLOCK,
     NOW, READY, FixedPreflight, RuleAuthorizer, application,
-    eir_approval_context, stage_eir_example_bundle, submission,
+    eir_approval_context, insert_snapshot, stage_eir_example_bundle, submission,
 )
 
 from ocre_core.application.services import (
@@ -16,7 +16,7 @@ from ocre_core.application.services import (
     Principal,
     ValidatorPreflight,
 )
-from ocre_core.persistence.jobs import OutboxMessage
+from ocre_core.persistence.jobs import JobSnapshot, OutboxMessage
 from ocre_core.jobs import (
     CancellationEvidence,
     CancellationEvidenceKind,
@@ -212,6 +212,15 @@ def test_cancel_reports_sequence_conflict_when_commit_finds_stale_snapshot(tmp_p
     app.job_store.get_snapshot = lambda *args, **kwargs: stale
     with pytest.raises(ApplicationError) as error:
         app.cancel_job(principal, "p1", job_id, "cancel-key")
+    assert (error.value.status, error.value.code) == (409, "sequence_conflict")
+
+
+def test_submit_reports_sequence_conflict_when_create_execution_collides(tmp_path, monkeypatch):
+    app = application(tmp_path, authorizer=AUTH, preflight=FixedPreflight(READY), clock=FIXED_CLOCK)
+    monkeypatch.setattr("ocre_core.application.services._new_id", lambda prefix: f"{prefix}_fixed")
+    insert_snapshot(app.job_store, JobSnapshot("job_fixed", JobState.QUEUED, 1, NOW, tenant_id="t1"))
+    with pytest.raises(ApplicationError) as error:
+        app.submit_job(Principal("t1", "u1"), "p1", submission(), "submit-key")
     assert (error.value.status, error.value.code) == (409, "sequence_conflict")
 
 

@@ -760,6 +760,18 @@ def _regions(contours: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return regions
 
 
+def _regions_payload(regions: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Payload ``regions`` do job do worker: cada região vira
+    ``{"outer": wire, "holes": [wire, ...]}`` de descritores."""
+    return [
+        {
+            "outer": _wire_desc(region["outer"]),
+            "holes": [_wire_desc(hole) for hole in region["holes"]],
+        }
+        for region in regions
+    ]
+
+
 def document_to_step(
     document: dict,
     thickness_mm: float | None,
@@ -816,13 +828,7 @@ def document_to_step(
     out_path.parent.mkdir(parents=True, exist_ok=True)
     job: dict[str, Any] = {
         "kind": "export",
-        "regions": [
-            {
-                "outer": _wire_desc(region["outer"]),
-                "holes": [_wire_desc(hole) for hole in region["holes"]],
-            }
-            for region in regions
-        ],
+        "regions": _regions_payload(regions),
         "thickness_mm": float(thickness_mm),
         "material": material,
         "out_path": str(out_path),
@@ -972,13 +978,7 @@ def export_dxf_ac1015(
     with tempfile.TemporaryDirectory(prefix="ocre-step-dxf-") as tmp:
         job: dict[str, Any] = {
             "kind": "export",
-            "regions": [
-                {
-                    "outer": _wire_desc(region["outer"]),
-                    "holes": [_wire_desc(hole) for hole in region["holes"]],
-                }
-                for region in regions
-            ],
+            "regions": _regions_payload(regions),
             "thickness_mm": 1.0,
             "material": "spike-dxf-only",
             "out_path": str(Path(tmp) / "spike.step"),

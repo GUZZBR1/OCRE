@@ -72,7 +72,7 @@ import tempfile
 import time
 from contextlib import redirect_stdout
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple
 
 from .document import (
     SHAPES,
@@ -84,7 +84,7 @@ from .document import (
     stabilize_stroke,
 )
 from .fingerprint import compute_fingerprint
-from .paper import DEFAULT_SPEC, load_draw_config, resolve_paper
+from .paper import DEFAULT_SPEC, PaperSpec, load_draw_config, resolve_paper
 from .sidecar import build_draw_sidecar
 from .validator_draw import (
     SCHEMA_NAME,
@@ -253,6 +253,39 @@ def _resolve_ai_adapter(factory_spec: str):
     return require_model("cli-injected")
 
 
+def _add_common_args(sub: argparse.ArgumentParser) -> None:
+    """Flags shared by ``export`` and ``beta-run``.
+
+    Only flags identical in both subcommands — same option string,
+    required/default/choices AND same help — live here. Flags whose help
+    legitimately differs per subcommand stay inline next to the specific
+    ones.
+    """
+    sub.add_argument("--png", required=True, help="input canvas PNG")
+    sub.add_argument("--vectorize-script", required=True,
+                     help="path to santleme/draw-core src/draw/exporters/vectorize.py (never copied into OCRE)")
+    sub.add_argument("--vectorize-sha256", required=True,
+                     help="pinned SHA-256 of the vectorize script (verified before running)")
+    sub.add_argument("--vectorize-module", default=None,
+                     help="invoke the vectorizer as 'python -m MODULE' instead of "
+                          "executing the script file (required at draw-core HEAD, "
+                          "where vectorize.py uses package-relative imports); the "
+                          "pinned --vectorize-script file is still sha256-verified "
+                          "before running")
+    sub.add_argument("--vectorize-pythonpath", default=None,
+                     help="directories prepended to PYTHONPATH for "
+                          "--vectorize-module (e.g. <draw-core clone>/src); "
+                          "refused without --vectorize-module")
+    sub.add_argument("--origin", required=True, choices=list(_ORIGINS),
+                     help="document source origin (explicit, never a default)")
+    sub.add_argument("--draw-repo", required=True, help="Draw repo the artifacts came from")
+    sub.add_argument("--paper", default=None,
+                     help="paper format from the paper registry (operator flag; "
+                          "default: the current Draw paper, today A4)")
+    sub.add_argument("--clean", action="store_true",
+                     help="request clean vectorization")
+
+
 def _build_parser() -> argparse.ArgumentParser:
     from .step_export import OPEN_STROKES_POLICIES
 
@@ -263,30 +296,13 @@ def _build_parser() -> argparse.ArgumentParser:
     sub = parser.add_subparsers(dest="command", required=True)
 
     exp = sub.add_parser("export", help="vectorize a PNG and export DXF + sidecar + fingerprint")
-    exp.add_argument("--png", required=True, help="input canvas PNG")
-    exp.add_argument("--vectorize-script", required=True,
-                     help="path to santleme/draw-core src/draw/exporters/vectorize.py (never copied into OCRE)")
-    exp.add_argument("--vectorize-sha256", required=True,
-                     help="pinned SHA-256 of the vectorize script (verified before running)")
+    _add_common_args(exp)
     exp.add_argument("--vectorize-python", default=None,
                      help="python interpreter for the vectorize subprocess "
                           "(default: OCRE_VECTORIZE_PYTHON env, else the "
                           "interpreter running this CLI); the resolved path is "
                           "recorded in export_parameters")
-    exp.add_argument("--vectorize-module", default=None,
-                     help="invoke the vectorizer as 'python -m MODULE' instead of "
-                          "executing the script file (required at draw-core HEAD, "
-                          "where vectorize.py uses package-relative imports); the "
-                          "pinned --vectorize-script file is still sha256-verified "
-                          "before running")
-    exp.add_argument("--vectorize-pythonpath", default=None,
-                     help="directories prepended to PYTHONPATH for "
-                          "--vectorize-module (e.g. <draw-core clone>/src); "
-                          "refused without --vectorize-module")
     exp.add_argument("--out-dir", required=True, help="output directory for the derivatives")
-    exp.add_argument("--origin", required=True, choices=list(_ORIGINS),
-                     help="document source origin (explicit, never a default)")
-    exp.add_argument("--draw-repo", required=True, help="Draw repo the artifacts came from")
     exp.add_argument("--draw-commit", required=True,
                      help="pinned Draw revision, full 40-hex git SHA (sidecar requires it)")
     exp.add_argument("--order-kind", default=None,
@@ -298,9 +314,6 @@ def _build_parser() -> argparse.ArgumentParser:
                      help="carimbos temporais do Draw (.npz), repassados "
                           "ao vectorize; primitivas com t_start_ms/t_end_ms "
                           "implicam order_kind temporal-stamps")
-    exp.add_argument("--paper", default=None,
-                     help="paper format from the paper registry (operator flag; "
-                          "default: the current Draw paper, today A4)")
     exp.add_argument("--ai-adapter-factory", default=None,
                      help="optional module:callable returning a ModelAdapter")
     exp.add_argument("--draw-config", default=None,
@@ -310,8 +323,6 @@ def _build_parser() -> argparse.ArgumentParser:
     exp.add_argument("--doc-id", default=None, help="document UUID v4 (generated if omitted)")
     exp.add_argument("--timeout-s", type=float, default=300.0,
                      help="vectorize subprocess timeout in seconds")
-    exp.add_argument("--clean", action="store_true",
-                     help="request clean vectorization")
     exp.add_argument("--epsilon", type=float, default=None)
     exp.add_argument("--thinning", default=None)
     exp.add_argument("--max-p95-px", type=float, default=None,
@@ -353,37 +364,15 @@ def _build_parser() -> argparse.ArgumentParser:
         "beta-run",
         help="run the whole beta v0.1 chain end-to-end (PNG -> CAD -> "
              "STEP -> FEA -> physics -> viz/PDF)")
-    beta.add_argument("--png", required=True, help="input canvas PNG")
-    beta.add_argument("--vectorize-script", required=True,
-                      help="path to santleme/draw-core src/draw/exporters/vectorize.py (never copied "
-                           "into OCRE)")
-    beta.add_argument("--vectorize-sha256", required=True,
-                      help="pinned SHA-256 of the vectorize script "
-                           "(verified before running)")
+    _add_common_args(beta)
     beta.add_argument("--vectorize-python", default=None,
                       help="python interpreter for the vectorize subprocess "
                            "(default: OCRE_VECTORIZE_PYTHON env, else the "
                            "interpreter running this CLI)")
-    beta.add_argument("--vectorize-module", default=None,
-                      help="invoke the vectorizer as 'python -m MODULE' instead "
-                           "of executing the script file (required at draw-core "
-                           "HEAD, where vectorize.py uses package-relative "
-                           "imports); the pinned --vectorize-script file is "
-                           "still sha256-verified before running")
-    beta.add_argument("--vectorize-pythonpath", default=None,
-                      help="directories prepended to PYTHONPATH for "
-                           "--vectorize-module (e.g. <draw-core clone>/src); "
-                           "refused without --vectorize-module")
     beta.add_argument("--out-dir", required=True,
                       help="output directory (report + step subdirs)")
-    beta.add_argument("--origin", required=True, choices=list(_ORIGINS),
-                      help="document source origin (explicit, never a default)")
-    beta.add_argument("--draw-repo", required=True,
-                      help="Draw repo the artifacts came from")
     beta.add_argument("--draw-commit", required=True,
                       help="pinned Draw revision, full 40-hex git SHA")
-    beta.add_argument("--clean", action="store_true",
-                      help="request clean vectorization")
     beta.add_argument("--stamps", default=None, metavar="STAMPS.npz",
                       help="carimbos temporais do Draw (.npz) para o "
                            "vectorize (passo export)")
@@ -416,9 +405,6 @@ def _build_parser() -> argparse.ArgumentParser:
                       help="OpenCADStudio binary for the live-CAD step "
                            "(default: OCS_BINARY env or PATH; without it "
                            "the step is skipped-unavailable, honestly)")
-    beta.add_argument("--paper", default=None,
-                      help="paper format from the paper registry (operator flag; "
-                           "default: the current Draw paper, today A4)")
     beta.add_argument("--draw-config", default=None,
                       help="path to Draw's config.py (paper source; "
                            "overrides the default paper)")
@@ -436,15 +422,47 @@ def _build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _cmd_export(args: argparse.Namespace) -> int:
-    # Lazy imports: `validate` must work without ezdxf installed.
-    from .dxf_export import export_dxf
-    from .librecad_gate import check_dxf
-    from .vectorize_runner import (
-        VectorizeError,
-        _resolve_pythonpath,
-        run_vectorize,
-    )
+class _ExportInputs(NamedTuple):
+    """Phase-1 outputs: resolved paths, paper spec and input hashes."""
+    png_path: Path
+    out_dir: Path
+    spec: PaperSpec
+    paper_mm: tuple[float, float] | None
+    png_sha256: str
+    stamps_path: Path | None
+    stamps_sha256: str | None
+    max_p95_px: float | None
+
+
+class _ExportVectorize(NamedTuple):
+    """Phase-2 outputs: the raw vectorizer result and derived values."""
+    output: dict[str, Any]
+    fidelity_summary: dict[str, Any]
+    polylines: list[dict[str, Any]]
+    order_kind: str
+
+
+class _ExportDocument(NamedTuple):
+    """Phase-3 outputs: the validated master document and its digests."""
+    doc: dict[str, Any]
+    doc_sha256: str
+    schema_sha256: str
+
+
+class _ExportProvenance(NamedTuple):
+    """Phase-4 outputs: the metadata shared by sidecar and fingerprint."""
+    export_parameters: dict[str, Any]
+    consumed_artifacts: list[dict[str, Any]]
+    source_artifacts: list[dict[str, Any]]
+    adapters: list[dict[str, Any]]
+
+
+def _export_resolve_and_probe(args: argparse.Namespace) -> _ExportInputs | int:
+    """Phase 1 — check flags and probe inputs before anything is written.
+
+    Returns the resolved inputs, or the exit code with the error already
+    reported.
+    """
     if not _HEX40_RE.fullmatch(args.draw_commit):
         return _fail(
             "--draw-commit must be a full 40-hex git revision "
@@ -523,6 +541,34 @@ def _cmd_export(args: argparse.Namespace) -> int:
         if spec is not DEFAULT_SPEC
         else None
     )
+    return _ExportInputs(
+        png_path=png_path,
+        out_dir=out_dir,
+        spec=spec,
+        paper_mm=paper_mm,
+        png_sha256=png_sha256,
+        stamps_path=stamps_path,
+        stamps_sha256=stamps_sha256,
+        max_p95_px=max_p95_px,
+    )
+
+
+def _export_vectorize(
+    args: argparse.Namespace,
+    inputs: _ExportInputs,
+) -> _ExportVectorize | int:
+    """Phase 2 — run the pinned vectorizer and gate its fidelity.
+
+    Returns the vectorizer outcome, or the exit code with the error
+    already reported.
+    """
+    # Lazy import, kept from the original single-body _cmd_export.
+    from .vectorize_runner import VectorizeError, run_vectorize
+
+    png_path = inputs.png_path
+    stamps_path = inputs.stamps_path
+    paper_mm = inputs.paper_mm
+    max_p95_px = inputs.max_p95_px
 
     try:
         vectorized = run_vectorize(
@@ -589,6 +635,28 @@ def _cmd_export(args: argparse.Namespace) -> int:
     order_kind = args.order_kind or (
         "temporal-stamps" if has_stamps else "unknown"
     )
+    return _ExportVectorize(
+        output=vectorized,
+        fidelity_summary=fidelity_summary,
+        polylines=polylines,
+        order_kind=order_kind,
+    )
+
+
+def _export_build_document(
+    args: argparse.Namespace,
+    inputs: _ExportInputs,
+    vectorize: _ExportVectorize,
+) -> _ExportDocument | int:
+    """Phase 3 — build the draw.paper document and validate fail-closed.
+
+    Returns the document and its digests, or the exit code with the
+    error already reported.
+    """
+    spec = inputs.spec
+    polylines = vectorize.polylines
+    order_kind = vectorize.order_kind
+
     # Build the document (master) from the vectorizer polylines.
     doc = new_document(
         {"repo": args.draw_repo, "commit": args.draw_commit, "origin": args.origin},
@@ -631,6 +699,37 @@ def _cmd_export(args: argparse.Namespace) -> int:
 
     doc_sha_hex = document_sha256(doc)
     schema_sha = bundled_schema_sha256()
+    return _ExportDocument(
+        doc=doc,
+        doc_sha256=doc_sha_hex,
+        schema_sha256=schema_sha,
+    )
+
+
+def _export_provenance(
+    args: argparse.Namespace,
+    inputs: _ExportInputs,
+    vectorize: _ExportVectorize,
+) -> _ExportProvenance:
+    """Phase 4 — assemble the provenance metadata (pure assembly).
+
+    The same objects feed the bundle manifest, the DRAW-AF/1
+    fingerprint inputs and the sidecar, so the three can never disagree
+    about what ran.
+    """
+    # Lazy import, kept from the original single-body _cmd_export.
+    from .vectorize_runner import _resolve_pythonpath
+
+    vectorized = vectorize.output
+    fidelity_summary = vectorize.fidelity_summary
+    order_kind = vectorize.order_kind
+    spec = inputs.spec
+    png_path = inputs.png_path
+    png_sha256 = inputs.png_sha256
+    stamps_path = inputs.stamps_path
+    stamps_sha256 = inputs.stamps_sha256
+    paper_mm = inputs.paper_mm
+    max_p95_px = inputs.max_p95_px
 
     vectorize_parameters: dict[str, Any] = {
         "script_sha256": vectorized["script_sha256"],
@@ -716,6 +815,36 @@ def _cmd_export(args: argparse.Namespace) -> int:
                  "layer": "DRAW_STROKES"})),
         },
     ]
+    return _ExportProvenance(
+        export_parameters=export_parameters,
+        consumed_artifacts=consumed_artifacts,
+        source_artifacts=source_artifacts,
+        adapters=adapters,
+    )
+
+
+def _export_write_outputs(
+    args: argparse.Namespace,
+    inputs: _ExportInputs,
+    document: _ExportDocument,
+    provenance: _ExportProvenance,
+) -> int:
+    """Phase 5 — DXF to a temp path, observer, fingerprint and sidecar,
+    then promote the DXF and write the remaining derivatives atomically,
+    run the opt-in LibreCAD gate and print the summary."""
+    # Lazy imports: `validate` must work without ezdxf installed.
+    from .dxf_export import export_dxf
+    from .librecad_gate import check_dxf
+
+    out_dir = inputs.out_dir
+    png_sha256 = inputs.png_sha256
+    doc = document.doc
+    doc_sha_hex = document.doc_sha256
+    schema_sha = document.schema_sha256
+    export_parameters = provenance.export_parameters
+    consumed_artifacts = provenance.consumed_artifacts
+    source_artifacts = provenance.source_artifacts
+    adapters = provenance.adapters
 
     # DXF first (to a temp file — promoted only after every metadata
     # file is ready), so its hash can go into the bundle manifest and
@@ -852,6 +981,22 @@ def _cmd_export(args: argparse.Namespace) -> int:
     if librecad_status == "fail":
         return _fail("LibreCAD gate G0.2 failed for the exported DXF", 1)
     return 0
+
+
+def _cmd_export(args: argparse.Namespace) -> int:
+    # Phase helpers return their payload, or the exit code (int) with
+    # the error already reported.
+    inputs = _export_resolve_and_probe(args)
+    if isinstance(inputs, int):
+        return inputs
+    vectorize = _export_vectorize(args, inputs)
+    if isinstance(vectorize, int):
+        return vectorize
+    document = _export_build_document(args, inputs, vectorize)
+    if isinstance(document, int):
+        return document
+    provenance = _export_provenance(args, inputs, vectorize)
+    return _export_write_outputs(args, inputs, document, provenance)
 
 
 def _cmd_fea_axial(args: argparse.Namespace) -> int:
@@ -1188,91 +1333,81 @@ def _beta_step_step(ctx: dict[str, Any]) -> dict[str, Any]:
         temp_context = tempfile.TemporaryDirectory(dir=step_dir)
         step_path = Path(temp_context.name) / "drawing.step"
     try:
-        report = document_to_step(
-            ctx["doc"], args.thickness_mm, args.material, step_path,
-            timeout_s=args.timeout_s,
-            open_strokes_policy=args.open_strokes_policy)
-    except StepExportError as exc:
+        try:
+            report = document_to_step(
+                ctx["doc"], args.thickness_mm, args.material, step_path,
+                timeout_s=args.timeout_s,
+                open_strokes_policy=args.open_strokes_policy)
+        except StepExportError as exc:
+            return _beta_step_done(
+                "step", "blocked", started,
+                {"thickness_mm": args.thickness_mm,
+                 "material": args.material,
+                 "open_strokes_policy": args.open_strokes_policy},
+                error=f"STEP export refused (fail-closed): {exc}",
+            )
+        except StepWorkerError as exc:
+            return _beta_step_done(
+                "step", "failed", started,
+                {"thickness_mm": args.thickness_mm,
+                 "material": args.material,
+                 "open_strokes_policy": args.open_strokes_policy},
+                error=f"STEP worker failed: {exc}",
+            )
+        if staging:
+            from .ai.observer import observe_conversion
+            observation = observe_conversion(ctx["doc"], ctx["ai_adapter"], stage="step",
+                                            artifacts={step_path.name: step_path.read_bytes()})
+            ctx["step_observation"] = observation
+            if observation.get("status") == "confirmed-error":
+                return _beta_step_done("step", "failed", started,
+                                       {"step": report, "observation": observation},
+                                       error="STEP observer confirmed a conversion error")
+        try:
+            brepcheck = validate_step(step_path, timeout_s=args.timeout_s)
+        except StepWorkerError as exc:
+            return _beta_step_done(
+                "step", "failed", started,
+                {"step": report},
+                error=f"BRepCheck failed: {exc}",
+            )
+        if brepcheck.get("brepcheck_valid") is not True:
+            # O passo depende do BRepCheck do worker (docstring): um STEP
+            # que o próprio kernel recusa não passa — com ou sem oráculo.
+            return _beta_step_done(
+                "step", "failed", started,
+                {"step": report, "brepcheck": brepcheck},
+                error="worker BRepCheck says the STEP is not valid",
+            )
+        try:
+            oracle = oracle_step(step_path, timeout_s=args.timeout_s)
+        except StepWorkerError as exc:
+            return _beta_step_done(
+                "step", "failed", started,
+                {"step": report, "brepcheck": brepcheck},
+                error=f"FreeCAD oracle failed: {exc}",
+            )
+        if oracle.get("status") == "fail":
+            return _beta_step_done(
+                "step", "failed", started,
+                {"step": report, "brepcheck": brepcheck, "oracle": oracle},
+                error="FreeCAD oracle says the STEP is not valid",
+            )
+        if staging:
+            manifest = Path(report["material_manifest_path"])
+            final_manifest = final_step_path.with_suffix(".step.manifest.json")
+            os.replace(step_path, final_step_path)
+            os.replace(manifest, final_manifest)
+            step_path = final_step_path
+            report["output_path"] = str(step_path)
+            report["material_manifest_path"] = str(final_manifest)
+        detail = {"step": report, "brepcheck": brepcheck, "oracle": oracle}
+        if ctx.get("step_observation") is not None:
+            detail["observation"] = ctx["step_observation"]
+        return _beta_step_done("step", "ok", started, detail)
+    finally:
         if temp_context is not None:
             temp_context.cleanup()
-        return _beta_step_done(
-            "step", "blocked", started,
-            {"thickness_mm": args.thickness_mm,
-             "material": args.material,
-             "open_strokes_policy": args.open_strokes_policy},
-            error=f"STEP export refused (fail-closed): {exc}",
-        )
-    except StepWorkerError as exc:
-        if temp_context is not None:
-            temp_context.cleanup()
-        return _beta_step_done(
-            "step", "failed", started,
-            {"thickness_mm": args.thickness_mm,
-             "material": args.material,
-             "open_strokes_policy": args.open_strokes_policy},
-            error=f"STEP worker failed: {exc}",
-        )
-    if staging:
-        from .ai.observer import observe_conversion
-        observation = observe_conversion(ctx["doc"], ctx["ai_adapter"], stage="step",
-                                        artifacts={step_path.name: step_path.read_bytes()})
-        ctx["step_observation"] = observation
-        if observation.get("status") == "confirmed-error":
-            temp_context.cleanup()
-            return _beta_step_done("step", "failed", started,
-                                     {"step": report, "observation": observation},
-                                     error="STEP observer confirmed a conversion error")
-    try:
-        brepcheck = validate_step(step_path, timeout_s=args.timeout_s)
-    except StepWorkerError as exc:
-        if temp_context is not None:
-            temp_context.cleanup()
-        return _beta_step_done(
-            "step", "failed", started,
-            {"step": report},
-            error=f"BRepCheck failed: {exc}",
-        )
-    if brepcheck.get("brepcheck_valid") is not True:
-        # O passo depende do BRepCheck do worker (docstring): um STEP
-        # que o próprio kernel recusa não passa — com ou sem oráculo.
-        if temp_context is not None:
-            temp_context.cleanup()
-        return _beta_step_done(
-            "step", "failed", started,
-            {"step": report, "brepcheck": brepcheck},
-            error="worker BRepCheck says the STEP is not valid",
-        )
-    try:
-        oracle = oracle_step(step_path, timeout_s=args.timeout_s)
-    except StepWorkerError as exc:
-        if temp_context is not None:
-            temp_context.cleanup()
-        return _beta_step_done(
-            "step", "failed", started,
-            {"step": report, "brepcheck": brepcheck},
-            error=f"FreeCAD oracle failed: {exc}",
-        )
-    if oracle.get("status") == "fail":
-        if temp_context is not None:
-            temp_context.cleanup()
-        return _beta_step_done(
-            "step", "failed", started,
-            {"step": report, "brepcheck": brepcheck, "oracle": oracle},
-            error="FreeCAD oracle says the STEP is not valid",
-        )
-    if staging:
-        manifest = Path(report["material_manifest_path"])
-        final_manifest = final_step_path.with_suffix(".step.manifest.json")
-        os.replace(step_path, final_step_path)
-        os.replace(manifest, final_manifest)
-        temp_context.cleanup()
-        step_path = final_step_path
-        report["output_path"] = str(step_path)
-        report["material_manifest_path"] = str(final_manifest)
-    detail = {"step": report, "brepcheck": brepcheck, "oracle": oracle}
-    if ctx.get("step_observation") is not None:
-        detail["observation"] = ctx["step_observation"]
-    return _beta_step_done("step", "ok", started, detail)
 
 
 def _beta_step_fea(ctx: dict[str, Any]) -> dict[str, Any]:
@@ -1628,6 +1763,166 @@ def _beta_text_report(report: dict[str, Any]) -> str:
     return "\n".join(lines) + "\n"
 
 
+def _beta_preflight(
+    args: argparse.Namespace,
+) -> tuple[list[str], dict[str, Any] | None]:
+    """Fail-closed checks run before any heavy work.
+
+    Returns the collected errors (empty means go) and the validated
+    working document when ``--document`` was given.
+    """
+    preflight_errors: list[str] = []
+    if not _HEX40_RE.fullmatch(args.draw_commit or ""):
+        preflight_errors.append(
+            "--draw-commit must be a full 40-hex git revision "
+            f"(got {args.draw_commit!r})")
+    png_path = Path(args.png)
+    if not png_path.is_file():
+        preflight_errors.append(f"PNG not found: {png_path}")
+    if not Path(args.vectorize_script).is_file():
+        preflight_errors.append(
+            f"vectorize script not found: {args.vectorize_script}")
+    if args.vectorize_pythonpath and not args.vectorize_module:
+        preflight_errors.append(
+            "--vectorize-pythonpath requires --vectorize-module")
+    if args.thickness_mm is None:
+        preflight_errors.append(
+            "thickness-mm is required and declared by a human "
+            "(thickness is never invented)")
+    elif not (math.isfinite(args.thickness_mm) and args.thickness_mm > 0):
+        preflight_errors.append(
+            f"thickness-mm must be positive and finite "
+            f"(got {args.thickness_mm!r})")
+    if not _material_declared(args.material) and not (args.ai_adapter_factory or args.proposal_file or args.confirm_proposal or args.reject_proposal):
+        preflight_errors.append(
+            "material is required and declared by a human "
+            "(material is never invented)")
+    if not (math.isfinite(args.timeout_s) and args.timeout_s > 0):
+        preflight_errors.append(
+            f"--timeout-s must be positive and finite "
+            f"(got {args.timeout_s!r})")
+    working_doc: dict[str, Any] | None = None
+    if args.document:
+        doc_path = Path(args.document)
+        if not doc_path.is_file():
+            preflight_errors.append(
+                f"--document not found: {doc_path}")
+        else:
+            try:
+                working_doc = loads_document(doc_path.read_bytes())
+                validate_draw_document_or_raise(working_doc)
+            except ValueError as exc:
+                preflight_errors.append(
+                    f"--document failed validation: {exc}")
+    return preflight_errors, working_doc
+
+
+def _process_proposals(
+    args: argparse.Namespace,
+    ctx: dict[str, Any],
+    proposal_file: Path,
+    report: dict[str, Any],
+    steps: list[dict[str, Any]],
+) -> bool:
+    """Load/update proposals bound to the current document."""
+    ai_adapter = ctx["ai_adapter"]
+    doc = ctx.get("doc")
+    if doc is None:
+        return True
+    try:
+        from dataclasses import asdict
+        from .ai.proposals import PROPOSAL_STATES, Proposal, confirm, reject
+        from .ai.semantics import analyze, material_for_step
+        digest = document_sha256(doc)
+        ledger = (
+            json.loads(proposal_file.read_text(encoding="utf-8"))
+            if proposal_file.is_file() else None
+        )
+        if ledger is not None:
+            if not isinstance(ledger, dict):
+                raise ValueError("proposal ledger must be a JSON object")
+            if (ledger.get("document_sha256") != digest
+                    or ledger.get("revision") != doc.get("revision")):
+                raise ValueError("proposal ledger document revision/hash mismatch")
+            if not isinstance(ledger.get("proposals"), list):
+                raise ValueError("proposal ledger proposals must be a list")
+        if ledger is None and ai_adapter is not None:
+            proposals = analyze(doc, ai_adapter, explicit_material=args.material)
+            ledger = {
+                "document_sha256": digest,
+                "revision": doc["revision"],
+                "proposals": [asdict(proposal) for proposal in proposals],
+            }
+            proposal_file.parent.mkdir(parents=True, exist_ok=True)
+            _atomic_write_json(proposal_file, ledger)
+        if ledger is not None:
+            confirmed, rejected = set(args.confirm_proposal), set(args.reject_proposal)
+            if confirmed & rejected:
+                raise ValueError("proposal ids cannot be both confirmed and rejected")
+            if args.confirmed_by and not (confirmed or rejected):
+                raise ValueError("--confirmed-by requires a proposal action")
+            if (confirmed or rejected) and not args.confirmed_by:
+                raise ValueError("--confirmed-by is required with proposal actions")
+            proposals_by_id: dict[str, Proposal] = {}
+            for raw_proposal in ledger["proposals"]:
+                if not isinstance(raw_proposal, dict):
+                    raise ValueError("each ledger proposal must be an object")
+                proposal = Proposal(**raw_proposal)
+                if proposal.proposal_id in proposals_by_id:
+                    raise ValueError(f"duplicate proposal id: {proposal.proposal_id}")
+                if (proposal.document_revision != doc.get("revision")
+                        or proposal.document_sha256 != digest):
+                    raise ValueError(
+                        f"proposal {proposal.proposal_id} document revision/hash mismatch"
+                    )
+                if proposal.state not in PROPOSAL_STATES:
+                    raise ValueError(f"invalid state for proposal {proposal.proposal_id}")
+                proposals_by_id[proposal.proposal_id] = proposal
+            known = set(proposals_by_id)
+            requested = confirmed | rejected
+            if requested - known:
+                raise ValueError(f"unknown proposal ids: {sorted(requested - known)}")
+            for proposal_id in confirmed:
+                proposal = proposals_by_id[proposal_id]
+                if proposal.state == "rejected":
+                    raise ValueError(f"cannot confirm rejected proposal {proposal_id}")
+                if proposal.state == "pending":
+                    proposals_by_id[proposal_id] = confirm(proposal, by=args.confirmed_by)
+            for proposal_id in rejected:
+                proposal = proposals_by_id[proposal_id]
+                if proposal.state == "confirmed":
+                    raise ValueError(f"cannot reject confirmed proposal {proposal_id}")
+                if proposal.state == "pending":
+                    proposals_by_id[proposal_id] = reject(proposal, by=args.confirmed_by)
+            ledger["proposals"] = [asdict(p) for p in proposals_by_id.values()]
+            if requested:
+                _atomic_write_json(proposal_file, ledger)
+            report["proposals"] = {
+                "path": str(proposal_file),
+                "count": len(ledger["proposals"]),
+                "document_sha256": digest,
+            }
+            materials = {
+                material
+                for proposal in proposals_by_id.values()
+                if (material := material_for_step(doc, proposal)) is not None
+            }
+            if len(materials) > 1:
+                raise ValueError("multiple distinct confirmed materials require resolution")
+            if not _material_declared(args.material) and materials:
+                args.material = next(iter(materials))
+    except Exception as exc:
+        report["proposal_error"] = str(exc)
+    if not _material_declared(args.material):
+        steps.append(_beta_step_report(
+            "human-confirmation", "blocked", 0,
+            {"proposal_file": str(proposal_file)},
+            error="valid declared or confirmed material required",
+        ))
+        return False
+    return True
+
+
 def _cmd_beta_run(args: argparse.Namespace) -> int:
     out_dir = Path(args.out_dir).resolve()
     proposal_file = Path(args.proposal_file).resolve() if args.proposal_file else out_dir / "proposals.json"
@@ -1691,49 +1986,7 @@ def _cmd_beta_run(args: argparse.Namespace) -> int:
         return int(report["exit_code"])
 
     # --- Preflight (fail-closed, before any heavy work). ---
-    preflight_errors: list[str] = []
-    if not _HEX40_RE.fullmatch(args.draw_commit or ""):
-        preflight_errors.append(
-            "--draw-commit must be a full 40-hex git revision "
-            f"(got {args.draw_commit!r})")
-    png_path = Path(args.png)
-    if not png_path.is_file():
-        preflight_errors.append(f"PNG not found: {png_path}")
-    if not Path(args.vectorize_script).is_file():
-        preflight_errors.append(
-            f"vectorize script not found: {args.vectorize_script}")
-    if args.vectorize_pythonpath and not args.vectorize_module:
-        preflight_errors.append(
-            "--vectorize-pythonpath requires --vectorize-module")
-    if args.thickness_mm is None:
-        preflight_errors.append(
-            "thickness-mm is required and declared by a human "
-            "(thickness is never invented)")
-    elif not (math.isfinite(args.thickness_mm) and args.thickness_mm > 0):
-        preflight_errors.append(
-            f"thickness-mm must be positive and finite "
-            f"(got {args.thickness_mm!r})")
-    if not _material_declared(args.material) and not (args.ai_adapter_factory or args.proposal_file or args.confirm_proposal or args.reject_proposal):
-        preflight_errors.append(
-            "material is required and declared by a human "
-            "(material is never invented)")
-    if not (math.isfinite(args.timeout_s) and args.timeout_s > 0):
-        preflight_errors.append(
-            f"--timeout-s must be positive and finite "
-            f"(got {args.timeout_s!r})")
-    working_doc: dict[str, Any] | None = None
-    if args.document:
-        doc_path = Path(args.document)
-        if not doc_path.is_file():
-            preflight_errors.append(
-                f"--document not found: {doc_path}")
-        else:
-            try:
-                working_doc = loads_document(doc_path.read_bytes())
-                validate_draw_document_or_raise(working_doc)
-            except ValueError as exc:
-                preflight_errors.append(
-                    f"--document failed validation: {exc}")
+    preflight_errors, working_doc = _beta_preflight(args)
     if preflight_errors:
         report["status"] = "blocked"
         report["exit_code"] = 2
@@ -1765,105 +2018,6 @@ def _cmd_beta_run(args: argparse.Namespace) -> int:
             working_doc, ctx["doc_sha256"])
         report["documents"]["working_source"] = "example-document (--document)"
 
-    def process_proposals(ctx: dict[str, Any], proposal_file: Path) -> bool:
-        """Load/update proposals bound to the current document."""
-        ai_adapter = ctx["ai_adapter"]
-        doc = ctx.get("doc")
-        if doc is None:
-            return True
-        try:
-            from dataclasses import asdict
-            from .ai.proposals import PROPOSAL_STATES, Proposal, confirm, reject
-            from .ai.semantics import analyze, material_for_step
-            digest = document_sha256(doc)
-            ledger = (
-                json.loads(proposal_file.read_text(encoding="utf-8"))
-                if proposal_file.is_file() else None
-            )
-            if ledger is not None:
-                if not isinstance(ledger, dict):
-                    raise ValueError("proposal ledger must be a JSON object")
-                if (ledger.get("document_sha256") != digest
-                        or ledger.get("revision") != doc.get("revision")):
-                    raise ValueError("proposal ledger document revision/hash mismatch")
-                if not isinstance(ledger.get("proposals"), list):
-                    raise ValueError("proposal ledger proposals must be a list")
-            if ledger is None and ai_adapter is not None:
-                proposals = analyze(doc, ai_adapter, explicit_material=args.material)
-                ledger = {
-                    "document_sha256": digest,
-                    "revision": doc["revision"],
-                    "proposals": [asdict(proposal) for proposal in proposals],
-                }
-                proposal_file.parent.mkdir(parents=True, exist_ok=True)
-                _atomic_write_json(proposal_file, ledger)
-            if ledger is not None:
-                confirmed, rejected = set(args.confirm_proposal), set(args.reject_proposal)
-                if confirmed & rejected:
-                    raise ValueError("proposal ids cannot be both confirmed and rejected")
-                if args.confirmed_by and not (confirmed or rejected):
-                    raise ValueError("--confirmed-by requires a proposal action")
-                if (confirmed or rejected) and not args.confirmed_by:
-                    raise ValueError("--confirmed-by is required with proposal actions")
-                proposals_by_id: dict[str, Proposal] = {}
-                for raw_proposal in ledger["proposals"]:
-                    if not isinstance(raw_proposal, dict):
-                        raise ValueError("each ledger proposal must be an object")
-                    proposal = Proposal(**raw_proposal)
-                    if proposal.proposal_id in proposals_by_id:
-                        raise ValueError(f"duplicate proposal id: {proposal.proposal_id}")
-                    if (proposal.document_revision != doc.get("revision")
-                            or proposal.document_sha256 != digest):
-                        raise ValueError(
-                            f"proposal {proposal.proposal_id} document revision/hash mismatch"
-                        )
-                    if proposal.state not in PROPOSAL_STATES:
-                        raise ValueError(f"invalid state for proposal {proposal.proposal_id}")
-                    proposals_by_id[proposal.proposal_id] = proposal
-                known = set(proposals_by_id)
-                requested = confirmed | rejected
-                if requested - known:
-                    raise ValueError(f"unknown proposal ids: {sorted(requested - known)}")
-                for proposal_id in confirmed:
-                    proposal = proposals_by_id[proposal_id]
-                    if proposal.state == "rejected":
-                        raise ValueError(f"cannot confirm rejected proposal {proposal_id}")
-                    if proposal.state == "pending":
-                        proposals_by_id[proposal_id] = confirm(proposal, by=args.confirmed_by)
-                for proposal_id in rejected:
-                    proposal = proposals_by_id[proposal_id]
-                    if proposal.state == "confirmed":
-                        raise ValueError(f"cannot reject confirmed proposal {proposal_id}")
-                    if proposal.state == "pending":
-                        proposals_by_id[proposal_id] = reject(proposal, by=args.confirmed_by)
-                ledger["proposals"] = [asdict(p) for p in proposals_by_id.values()]
-                if requested:
-                    _atomic_write_json(proposal_file, ledger)
-                report["proposals"] = {
-                    "path": str(proposal_file),
-                    "count": len(ledger["proposals"]),
-                    "document_sha256": digest,
-                }
-                materials = {
-                    material
-                    for proposal in proposals_by_id.values()
-                    if (material := material_for_step(doc, proposal)) is not None
-                }
-                if len(materials) > 1:
-                    raise ValueError("multiple distinct confirmed materials require resolution")
-                if not _material_declared(args.material) and materials:
-                    args.material = next(iter(materials))
-        except Exception as exc:
-            report["proposal_error"] = str(exc)
-        if not _material_declared(args.material):
-            steps.append(_beta_step_report(
-                "human-confirmation", "blocked", 0,
-                {"proposal_file": str(proposal_file)},
-                error="valid declared or confirmed material required",
-            ))
-            return False
-        return True
-
     # --- The chain, in order. Step 1 is unrolled: only after it
     # succeeds does the working document exist for the report and the
     # proposal gate, and only then do the remaining steps run. ---
@@ -1879,7 +2033,7 @@ def _cmd_beta_run(args: argparse.Namespace) -> int:
             ctx["export_doc"], ctx["export_doc_sha256"])
         report["documents"]["working"] = _doc_entry(
             ctx["doc"], ctx["doc_sha256"])
-        if process_proposals(ctx, proposal_file):
+        if _process_proposals(args, ctx, proposal_file, report, steps):
             runners = [_beta_step_ocs, _beta_step_step]
             if not args.cad_only:
                 runners += [_beta_step_fea, _beta_step_physics,
