@@ -235,6 +235,7 @@ def audit_sidecar(evidence_root: Path, sidecar: dict[str, Any]) -> dict[str, Any
             linked_source_id = mesh.get("source_artifact_id")
             linked_source_hash = mesh.get("source_sha256")
             digest = mesh.get("sha256")
+            quality_metrics = mesh.get("quality_metrics")
             if not isinstance(linked_source_id, str) or not linked_source_id:
                 issues.append(_issue("source_mesh_reference", f"mesh {mesh_id} has no source_artifact_id", pending=True))
             elif linked_source_id not in sources_by_id:
@@ -262,7 +263,7 @@ def audit_sidecar(evidence_root: Path, sidecar: dict[str, Any]) -> dict[str, Any
                     volume = mesh.get("geometry_volume")
                     if isinstance(volume, dict) and volume.get("value") != recorded.get("volume_mm3"):
                         issues.append(_issue("manifest_report_mismatch", f"mesh {mesh_id} geometry volume differs from the prepared manifest"))
-                    quality = mesh.get("quality_metrics", {}).get("shape_quality") if isinstance(mesh.get("quality_metrics"), dict) else None
+                    quality = quality_metrics.get("shape_quality") if isinstance(quality_metrics, dict) else None
                     recorded_quality = recorded.get("shape_quality")
                     if quality is not None:
                         if not isinstance(recorded_quality, dict):
@@ -273,7 +274,6 @@ def audit_sidecar(evidence_root: Path, sidecar: dict[str, Any]) -> dict[str, Any
                                     issues.append(_issue("manifest_report_mismatch", f"mesh {mesh_id} shape-quality {field} differs from the prepared manifest"))
                             if "method" in quality and quality["method"] != recorded_quality.get("metric"):
                                 issues.append(_issue("manifest_report_mismatch", f"mesh {mesh_id} shape-quality method differs from the prepared manifest"))
-            quality_metrics = mesh.get("quality_metrics")
             if quality_metrics is not None and not isinstance(quality_metrics, (dict, list)):
                 issues.append(_issue("quality_metrics_shape", f"mesh {mesh_id} quality_metrics must be an object or array"))
             if not isinstance(quality_metrics, dict) or not isinstance(quality_metrics.get("shape_quality"), dict):

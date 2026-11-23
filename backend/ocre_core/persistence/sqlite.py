@@ -62,6 +62,7 @@ class SQLiteJobStore(JobPersistencePort):
         if event.sequence != expected_sequence + 1 or snapshot.sequence != event.sequence:
             raise ValueError("snapshot/event sequence mismatch")
         agg_id = snapshot.job_id if isinstance(snapshot, JobSnapshot) else snapshot.execution_id
+        kind = "job" if isinstance(snapshot, JobSnapshot) else "execution"
         tenant = snapshot.tenant_id
         if idempotency is not None and idempotency.tenant_id != tenant:
             raise ValueError("idempotency tenant differs from snapshot tenant")
@@ -74,7 +75,7 @@ class SQLiteJobStore(JobPersistencePort):
                 if idempotency:
                     prior = self._prior(db, idempotency)
                     if prior: db.rollback(); return prior
-                row = db.execute("SELECT seq,body FROM snapshots WHERE tenant=? AND kind=? AND id=?", (tenant, "job" if isinstance(snapshot, JobSnapshot) else "execution", agg_id)).fetchone()
+                row = db.execute("SELECT seq,body FROM snapshots WHERE tenant=? AND kind=? AND id=?", (tenant, kind, agg_id)).fetchone()
                 if row is None or row[0] != expected_sequence: raise PersistenceConflict("stale or missing snapshot")
                 old = self._load(row[1])
                 if event.from_state != old.state: raise ValueError("event from_state differs from persisted snapshot")
@@ -98,7 +99,7 @@ class SQLiteJobStore(JobPersistencePort):
                 elif event.cancellation_evidence is not None:
                     raise ValueError("cancellation evidence without persisted cancellation request")
                 snapshot = replace(snapshot, cancellation_origin=origin)
-                db.execute("UPDATE snapshots SET seq=?,body=? WHERE tenant=? AND kind=? AND id=?", (snapshot.sequence,self._dump(snapshot),tenant,"job" if isinstance(snapshot,JobSnapshot) else "execution",agg_id))
+                db.execute("UPDATE snapshots SET seq=?,body=? WHERE tenant=? AND kind=? AND id=?", (snapshot.sequence,self._dump(snapshot),tenant,kind,agg_id))
                 db.execute("INSERT INTO events(tenant,job_id,seq,event_id,body) VALUES(?,?,?,?,?)", (tenant,snapshot.job_id,event.sequence,event.event_id,self._dump(event)))
                 if idempotency: db.execute("INSERT INTO receipts VALUES(?,?,?,?,?)",(tenant,idempotency.operation,idempotency.key,idempotency.request_fingerprint,self._dump(CommitReceipt(snapshot,event))))
                 db.execute("INSERT INTO outbox(message_id,tenant,aggregate_id,event_id,topic,body) VALUES(?,?,?,?,?,?)",(outbox.message_id,tenant,outbox.aggregate_id,outbox.event_id,outbox.topic,outbox.payload))

@@ -139,10 +139,12 @@ def _ascii_fields(value: dict[str, Any], fields: tuple[str, ...], label: str) ->
 def _json_payload(field_id: int, value: Any) -> bytes:
     # Canonical sorting must never mutate a caller-owned request/fixture.
     value = deepcopy(value)
-    if field_id == 3:
-        _object(value, {"id", "version", "sha256"}, "profile")
-        _ascii_fields(value, ("id", "version"), "profile")
-        _sha_hex(value["sha256"], "profile.sha256")
+    if field_id in (3, 9, 10):
+        # profile, unit_policy and preparation_policy share the same shape.
+        name = FIELD_NAMES[field_id - 1]
+        _object(value, {"id", "version", "sha256"}, name)
+        _ascii_fields(value, ("id", "version"), name.replace("_", " "))
+        _sha_hex(value["sha256"], f"{name}.sha256")
     elif field_id == 4:
         if not isinstance(value, list):
             raise FingerprintInputError("schemas must be a list")
@@ -192,14 +194,6 @@ def _json_payload(field_id: int, value: Any) -> bytes:
             _sha_hex(item["binary_sha256"], "adapter.binary_sha256")
             _sha_hex(item["capabilities_sha256"], "adapter.capabilities_sha256")
         value.sort(key=lambda item: (item["stage_id"].encode("ascii"), item["adapter_id"].encode("ascii")))
-    elif field_id == 9:
-        _object(value, {"id", "version", "sha256"}, "unit_policy")
-        _ascii_fields(value, ("id", "version"), "unit policy")
-        _sha_hex(value["sha256"], "unit_policy.sha256")
-    elif field_id == 10:
-        _object(value, {"id", "version", "sha256"}, "preparation_policy")
-        _ascii_fields(value, ("id", "version"), "preparation policy")
-        _sha_hex(value["sha256"], "preparation_policy.sha256")
     return jcs(value)
 
 
