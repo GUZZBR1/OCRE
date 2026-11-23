@@ -140,9 +140,9 @@ class ProcessBatchHost:
         else:
             # A child that exited inside its timeout can leave buffered pipe
             # data the drains still need to read; that lag is not a timeout.
-            # Bound it by the same budget used below for stuck drains instead
-            # of the already-spent deadline.
-            drain_deadline = time.monotonic() + self.termination_grace_seconds + 1.0
+            # Drains keep at least the remaining deadline budget and at least
+            # the grace budget used below for stuck drains.
+            drain_deadline = max(deadline, time.monotonic() + self.termination_grace_seconds + 1.0)
         for drain in (stdout, stderr):
             drain.join(timeout=max(0, drain_deadline - time.monotonic()))
         if stdout.is_alive() or stderr.is_alive():
