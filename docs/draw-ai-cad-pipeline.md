@@ -104,3 +104,40 @@ O leitor STEP do OCCT recupera o nome. Propriedades físicas, como densidade,
 ficam ausentes. O manifesto vincula material, IDs de traços e geometria ao
 SHA-256 do STEP. Use `load_step_material_manifest` para ler o manifesto e
 validar o vínculo em integrações que usam esse arquivo.
+
+## Vetorizador por módulo
+
+O modo padrão executa `vectorize.py` como arquivo solto — válido para a
+revisão pinada self-contained. No HEAD do `draw-core` o vetorizador usa
+imports relativos de pacote (`from .export_vectors import ...`) e a execução
+direta quebra com `ImportError`; nesse caso a invocação é por módulo, com o
+`src` do clone no `PYTHONPATH` (ou o pacote instalado no ambiente — aí basta
+`--vectorize-module`, sem `--vectorize-pythonpath`):
+
+```bash
+export PYTHONPATH=backend
+VECTORIZE_SHA=$(sha256sum ~/draw/draw-core/src/draw/exporters/vectorize.py | cut -d' ' -f1)
+python -m ocre_core.draw.cli export \
+  --png canvas.png \
+  --vectorize-script ~/draw/draw-core/src/draw/exporters/vectorize.py \
+  --vectorize-sha256 "$VECTORIZE_SHA" \
+  --vectorize-module draw.exporters.vectorize \
+  --vectorize-pythonpath ~/draw/draw-core/src \
+  --out-dir build/export \
+  --origin upstream-canvas-png \
+  --draw-repo ~/draw/draw-core \
+  --draw-commit 0123456789abcdef0123456789abcdef01234567
+```
+
+O SHA-256 pinado é verificado no arquivo de `--vectorize-script` e, no modo
+módulo, também no arquivo de entrada real resolvido pelo Python no mesmo
+ambiente/cwd do subprocesso (`importlib.util.find_spec`) antes de executar `-m`
+(fail-closed se divergir ou não tiver arquivo regular) — note que o pin cobre
+o arquivo `vectorize.py`; o comportamento no HEAD também depende de
+`export_vectors.py` (mesmo pacote, mesmo clone). `--vectorize-pythonpath` sem
+`--vectorize-module` é recusado, e entradas relativas no `PYTHONPATH` herdado
+são absolutizadas antes de trocar para o diretório isolado de saída. As flags
+de invocação e `module_origin` (caminho real executado) entram em
+`export_parameters.vectorize` no sidecar e no fingerprint — o modo de invocação
+e a origem resolvida fazem parte do registro do que rodou. As mesmas flags
+existem em `beta-run`.

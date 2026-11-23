@@ -13,6 +13,7 @@ import hashlib
 import io
 import json
 import os
+import shutil
 import sys
 import tempfile
 import unittest
@@ -383,6 +384,70 @@ class CliExportTests(unittest.TestCase):
             self.assertFalse((out_dir / "document.json").exists())
             self.assertFalse((out_dir / ".document.dxf.tmp").exists())
 
+    def test_export_refuses_vectorize_pythonpath_without_module(self):
+        # --vectorize-pythonpath sem --vectorize-module não faria
+        # efeito nenhum: combinação sem sentido é recusada com exit 2
+        # antes de qualquer escrita.
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            err = io.StringIO()
+            with redirect_stderr(err):
+                code, _out, _summary = self._export(
+                    tmp_path, ["--vectorize-pythonpath", str(tmp_path)])
+            self.assertEqual(code, 2)
+            self.assertIn("--vectorize-module", err.getvalue())
+            self.assertFalse((tmp_path / "out" / "document.json").exists())
+
+    def test_export_module_mode_records_invocation_in_parameters(self):
+        # O fake copiado para um diretório vira um módulo importável;
+        # o modo de invocação vai para export_parameters (fingerprint e
+        # sidecar) — registro do que rodou.
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            mod_dir = tmp_path / "pkg"
+            mod_dir.mkdir()
+            shutil.copyfile(FAKE_VECTORIZE, mod_dir / "fake_vectorize_mod.py")
+            # Sem OCRE_VECTORIZE_PYTHON no ambiente: o interpretador
+            # registrado em vec["python"] é o default sys.executable.
+            env = dict(os.environ)
+            env.pop("OCRE_VECTORIZE_PYTHON", None)
+            with mock.patch.dict(os.environ, env, clear=True):
+                code, out, _summary = self._export(tmp_path, [
+                    "--vectorize-module", "fake_vectorize_mod",
+                    "--vectorize-pythonpath", str(mod_dir),
+                ])
+            self.assertEqual(code, 0, out)
+            sidecar = json.loads(
+                (tmp_path / "out" / "sidecar.json").read_text(encoding="utf-8"))
+            self.assertEqual(validate_draw_sidecar(sidecar), [])
+            vec = sidecar["export_parameters"]["vectorize"]
+            self.assertEqual(vec["module"], "fake_vectorize_mod")
+            self.assertEqual(
+                vec["module_origin"],
+                str((mod_dir / "fake_vectorize_mod.py").resolve()),
+            )
+            self.assertEqual(vec["pythonpath"], str(mod_dir.resolve()))
+            # O interpretador resolvido é registrado sempre (PR #14).
+            self.assertEqual(vec["python"], os.path.abspath(sys.executable))
+            fp = json.loads(
+                (tmp_path / "out" / "fingerprint.json").read_text(encoding="utf-8"))
+            self.assertEqual(
+                fp["inputs"]["export_parameters"], sidecar["export_parameters"])
+            self.assertEqual(
+                fp["inputs"]["export_parameters"]["vectorize"]["module"],
+                "fake_vectorize_mod")
+
+    def test_export_file_mode_keeps_module_out_of_parameters(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            code, out, _summary = self._export(tmp_path)
+            self.assertEqual(code, 0, out)
+            sidecar = json.loads(
+                (tmp_path / "out" / "sidecar.json").read_text(encoding="utf-8"))
+            vec = sidecar["export_parameters"]["vectorize"]
+            self.assertNotIn("module", vec)
+            self.assertNotIn("pythonpath", vec)
+
     def test_vectorize_python_flag_lands_in_export_parameters(self):
         # O interpretador resolvido faz parte da proveniência: entra em
         # export_parameters.vectorize.python (sidecar E fingerprint).
@@ -439,6 +504,9 @@ class CliExportTests(unittest.TestCase):
             png="canvas.png", vectorize_script="vectorize.py",
             vectorize_sha256="a" * 64,
             vectorize_python="/opt/venv/bin/python",
+            # O _beta_step_export mergeado também lê os campos do modo
+            # módulo; um namespace produzido pelo parser real os teria.
+            vectorize_module=None, vectorize_pythonpath=None,
             document=None, origin="upstream-canvas-png",
             draw_repo="santleme/draw", draw_commit=COMMIT,
             draw_config=None, timeout_s=300.0, clean=False, stamps=None,

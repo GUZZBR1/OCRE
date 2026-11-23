@@ -2,7 +2,26 @@
 
 Roda o script de vetorização do Draw como subprocesso, sem copiar o
 script para o OCRE e sem importar nada dele. O script vive no Draw
-(``src/draw/exporters/vectorize.py``, CLI verificada por leitura em 2026-11-05)::
+(``src/draw/exporters/vectorize.py``, CLI verificada por leitura em 2026-11-05).
+Dois modos de invocação, mesmos argumentos e mesmas garantias:
+
+- **arquivo** (default): ``python src/draw/exporters/vectorize.py ...`` —
+  válido para a revisão pinada (self-contained, sha 5f0dad51);
+- **módulo** (``module=``): ``PYTHONPATH=<clone>/src python -m
+  draw.exporters.vectorize ...`` — exigido pelo HEAD do draw-core, onde
+  o vectorize usa imports relativos de pacote (``from .export_vectors
+  import ...``) e a execução direta quebra com ImportError. Tanto
+  ``pythonpath`` quanto entradas relativas do ``PYTHONPATH`` herdado
+  são absolutizados no cwd do chamador antes de isolar ``cwd=out_dir``
+  (com ``pythonpath`` à frente do herdado); ``pythonpath`` sem
+  ``module`` é recusado (não teria efeito — fail-closed).
+
+Nos dois modos o sha256 conferido antes de rodar é o do ARQUIVO
+``.py`` passado em ``script_path``; no modo módulo o runner também
+resolve no mesmo ``env``/``cwd`` do subprocesso o arquivo real do
+módulo (``importlib.util.find_spec``) e exige que seus bytes batam com
+``expected_sha256`` antes de invocar ``-m``, devolvendo esse caminho em
+``module_origin``::
 
     python src/draw/exporters/vectorize.py canvas.png --json saida.json
         [--out saida.svg] [--clean] [--stamps canvas_stamps.npz]
@@ -291,6 +310,122 @@ def find_vectorize_python(explicit: str | Path | None = None) -> Path:
     return candidate if candidate.is_absolute() else Path.cwd() / candidate
 
 
+def _resolve_pythonpath(pythonpath: str | Path) -> str:
+    """Resolve cada entrada de ``pythonpath`` para caminho absoluto.
+
+    Aceita uma entrada única ou várias separadas por ``os.pathsep``.
+    A resolução acontece aqui (cwd do chamador), nunca dentro do
+    subprocesso — o cwd isolado tornaria uma entrada relativa ambígua.
+    """
+    return os.pathsep.join(
+        str(Path(part).resolve())
+        for part in str(pythonpath).split(os.pathsep)
+        if part
+    )
+
+
+def _build_module_env(pythonpath: str | Path | None) -> dict[str, str] | None:
+    """Monta ``env`` para ``python -m`` preservando precedência de ``PYTHONPATH``.
+
+    Entradas relativas tanto de ``pythonpath`` quanto do ``PYTHONPATH``
+    herdado são absolutizadas no cwd do chamador antes de o subprocesso
+    trocar para ``out_dir``. Quando ``pythonpath`` é ``None`` e o
+    ``PYTHONPATH`` herdado já é todo absoluto (ou ausente), devolve
+    ``None`` para herança direta.
+    """
+    existing_pythonpath = os.environ.get("PYTHONPATH")
+    resolved_existing = (
+        _resolve_pythonpath(existing_pythonpath) if existing_pythonpath else ""
+    )
+    if pythonpath is not None:
+        parts = [
+            part
+            for part in (_resolve_pythonpath(pythonpath), resolved_existing)
+            if part
+        ]
+        env = dict(os.environ)
+        env["PYTHONPATH"] = os.pathsep.join(parts)
+        return env
+    if existing_pythonpath and resolved_existing != existing_pythonpath:
+        env = dict(os.environ)
+        env["PYTHONPATH"] = resolved_existing
+        return env
+    return None
+
+
+_MODULE_PROBE = (
+    "import importlib.util, json, sys\n"
+    "from pathlib import Path\n"
+    "name, report_path = sys.argv[1], Path(sys.argv[2])\n"
+    "spec = importlib.util.find_spec(name)\n"
+    "if spec is not None and spec.submodule_search_locations is not None:\n"
+    "    spec = importlib.util.find_spec(f'{name}.__main__')\n"
+    "if spec is None or not spec.has_location or not spec.origin:\n"
+    "    raise SystemExit(f'módulo sem arquivo executável: {name!r}')\n"
+    "report_path.write_text(json.dumps({'origin': spec.origin}))\n"
+)
+
+
+def _resolve_module_entry(
+    module: str,
+    *,
+    python: Path,
+    out_dir: Path,
+    env: dict[str, str] | None,
+    timeout_s: float,
+) -> Path:
+    """Resolve no mesmo interpretador/env/cwd do subprocesso o arquivo real de ``module``.
+
+    A sonda roda com o interpretador resolvido por
+    ``find_vectorize_python``, nunca ``sys.executable``:
+    ``find_spec`` depende do ``sys.path`` de QUEM executa — sondar num
+    venv e rodar ``-m`` noutro poderia verificar um arquivo e executar
+    outro, esvaziando o pin.
+
+    A resposta da sonda vai por arquivo em ``out_dir``, não por
+    stdout: ``find_spec`` importa os pacotes-pai do módulo e um
+    ``__init__`` que imprima misturaria lixo ao JSON — resposta
+    ausente ou inválida continua sendo recusa.
+    """
+    probe_report = out_dir / ".vectorize-module-probe.json"
+    try:
+        completed = subprocess.run(
+            [str(python), "-c", _MODULE_PROBE, module, str(probe_report)],
+            cwd=str(out_dir),
+            capture_output=True,
+            text=True,
+            timeout=timeout_s,
+            shell=False,
+            check=False,
+            env=env,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise VectorizeError(
+            f"resolução do módulo {module!r} excedeu {timeout_s}s"
+        ) from exc
+    if completed.returncode != 0:
+        stderr = (completed.stderr or "").strip()[-_MAX_CAPTURE_CHARS:]
+        raise VectorizeError(
+            f"não foi possível resolver o módulo {module!r} para "
+            f"verificação do pin: {stderr!r}"
+        )
+    try:
+        origin = json.loads(probe_report.read_text(encoding="utf-8"))["origin"]
+    except (OSError, ValueError, KeyError, TypeError) as exc:
+        raise VectorizeError(
+            f"saída inválida ao resolver o módulo {module!r}: {exc}"
+        ) from exc
+    finally:
+        probe_report.unlink(missing_ok=True)
+    resolved = Path(origin).resolve()
+    if not resolved.is_file():
+        raise VectorizeError(
+            f"origem resolvida do módulo {module!r} não é arquivo regular: "
+            f"{resolved}"
+        )
+    return resolved
+
+
 def run_vectorize(
     png_path: str | Path,
     script_path: str | Path,
@@ -305,18 +440,36 @@ def run_vectorize(
     thinning: str | None = None,
     paper_mm: tuple[float, float] | None = None,
     vectorize_python: str | Path | None = None,
+    module: str | None = None,
+    pythonpath: str | Path | None = None,
 ) -> dict:
     """Roda o vectorize do Draw sobre ``png_path`` e devolve o resultado.
 
     ``expected_sha256`` é o hash pinado do ``src/draw/exporters/vectorize.py``; o
-    script é conferido antes de qualquer execução. ``vectorize_python``
-    escolhe o interpretador do subprocesso (``find_vectorize_python``:
-    argumento > ``OCRE_VECTORIZE_PYTHON`` > ``sys.executable``); o
-    caminho resolvido sai em ``result["python_path"]`` para a
-    proveniência. O JSON de saída é escrito num diretório isolado
-    (``output_dir`` ou um temporário, que é removido ao fim quando
-    criado aqui) e lido de volta.
+    script é conferido antes de qualquer execução, nos dois modos de
+    invocação. ``vectorize_python`` escolhe o interpretador do
+    subprocesso (``find_vectorize_python``: argumento >
+    ``OCRE_VECTORIZE_PYTHON`` > ``sys.executable``); o caminho
+    resolvido sai em ``result["python_path"]`` para a proveniência.
+    O JSON de saída é escrito num diretório isolado (``output_dir`` ou
+    um temporário, que é removido ao fim quando criado aqui) e lido de
+    volta.
+
+    Sem ``module`` o vectorize roda como arquivo
+    (``python <script_path> ...``). Com ``module`` a invocação vira
+    ``python -m <module> ...``: entradas relativas de ``pythonpath`` e do
+    ``PYTHONPATH`` herdado são absolutizadas no cwd do chamador (com
+    ``pythonpath`` à frente), o arquivo real do módulo é resolvido no
+    mesmo interpretador/``env``/``cwd`` do subprocesso e verificado
+    contra ``expected_sha256`` antes da execução, e seu caminho é
+    retornado em ``module_origin``. ``pythonpath`` sem ``module`` é
+    recusado (fail-closed, não teria efeito).
     """
+    if pythonpath is not None and module is None:
+        raise VectorizeError(
+            "pythonpath sem module não faz sentido: o PYTHONPATH só é "
+            "injetado na invocação por módulo (python -m); recusado"
+        )
     png_path = Path(png_path).resolve()
     script_path = Path(script_path).resolve()
     if stamps_path is not None:
@@ -342,11 +495,32 @@ def run_vectorize(
         out_dir = Path(output_dir)
         out_dir.mkdir(parents=True, exist_ok=True)
     try:
+        env = _build_module_env(pythonpath) if module is not None else None
+        resolved_module_path: Path | None = None
+        if module is not None:
+            resolved_module_path = _resolve_module_entry(
+                module, python=python, out_dir=out_dir, env=env,
+                timeout_s=timeout_s,
+            )
+            module_sha256 = sha256_file(resolved_module_path)
+            if module_sha256 != expected_sha256:
+                raise VectorizeError(
+                    f"sha256 do módulo {module!r} ({resolved_module_path}) "
+                    f"divergiu do pinado (esperado {expected_sha256}, "
+                    f"obtido {module_sha256}); recusado — possível "
+                    "desalinhamento entre --vectorize-script e o pacote "
+                    "resolvido no sys.path"
+                )
+            actual_sha256 = module_sha256
+
         json_path = out_dir / "vectorize.json"
         svg_path = out_dir / "vectorize.svg"
-        command = [
-            str(python),
-            str(script_path),
+        command = [str(python)]
+        if module is not None:
+            command += ["-m", module]
+        else:
+            command.append(str(script_path))
+        command += [
             str(png_path),
             "--json",
             str(json_path),
@@ -378,6 +552,7 @@ def run_vectorize(
                 timeout=timeout_s,
                 shell=False,
                 check=False,
+                env=env,
             )
         except subprocess.TimeoutExpired as exc:
             raise VectorizeError(
@@ -411,6 +586,11 @@ def run_vectorize(
             "script_path": str(script_path),
             "script_sha256": actual_sha256,
             "python_path": str(python),
+            "module_origin": (
+                str(resolved_module_path)
+                if resolved_module_path is not None
+                else None
+            ),
             "png_path": str(png_path),
             "json_path": str(json_path),
             "svg_path": str(svg_path),

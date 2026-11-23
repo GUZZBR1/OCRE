@@ -7,7 +7,8 @@ Runnable as::
 
 Subcommands:
 
-- ``export``: PNG -> vectorize (black-box subprocess, SHA-pinned) ->
+- ``export``: PNG -> vectorize (black-box subprocess, SHA-pinned;
+  script-file execution or ``python -m`` via ``--vectorize-module``) ->
   ``draw.paper.v1`` document -> DXF R2000 + sidecar + DRAW-AF/1
   fingerprint. The document is validated BEFORE any derivative is
   written (fail-closed). The LibreCAD gate (G0.2) is opt-in via
@@ -272,6 +273,16 @@ def _build_parser() -> argparse.ArgumentParser:
                           "(default: OCRE_VECTORIZE_PYTHON env, else the "
                           "interpreter running this CLI); the resolved path is "
                           "recorded in export_parameters")
+    exp.add_argument("--vectorize-module", default=None,
+                     help="invoke the vectorizer as 'python -m MODULE' instead of "
+                          "executing the script file (required at draw-core HEAD, "
+                          "where vectorize.py uses package-relative imports); the "
+                          "pinned --vectorize-script file is still sha256-verified "
+                          "before running")
+    exp.add_argument("--vectorize-pythonpath", default=None,
+                     help="directories prepended to PYTHONPATH for "
+                          "--vectorize-module (e.g. <draw-core clone>/src); "
+                          "refused without --vectorize-module")
     exp.add_argument("--out-dir", required=True, help="output directory for the derivatives")
     exp.add_argument("--origin", required=True, choices=list(_ORIGINS),
                      help="document source origin (explicit, never a default)")
@@ -348,6 +359,16 @@ def _build_parser() -> argparse.ArgumentParser:
                       help="python interpreter for the vectorize subprocess "
                            "(default: OCRE_VECTORIZE_PYTHON env, else the "
                            "interpreter running this CLI)")
+    beta.add_argument("--vectorize-module", default=None,
+                      help="invoke the vectorizer as 'python -m MODULE' instead "
+                           "of executing the script file (required at draw-core "
+                           "HEAD, where vectorize.py uses package-relative "
+                           "imports); the pinned --vectorize-script file is "
+                           "still sha256-verified before running")
+    beta.add_argument("--vectorize-pythonpath", default=None,
+                      help="directories prepended to PYTHONPATH for "
+                           "--vectorize-module (e.g. <draw-core clone>/src); "
+                           "refused without --vectorize-module")
     beta.add_argument("--out-dir", required=True,
                       help="output directory (report + step subdirs)")
     beta.add_argument("--origin", required=True, choices=list(_ORIGINS),
@@ -411,7 +432,11 @@ def _cmd_export(args: argparse.Namespace) -> int:
     # Lazy imports: `validate` must work without ezdxf installed.
     from .dxf_export import export_dxf
     from .librecad_gate import check_dxf
-    from .vectorize_runner import VectorizeError, run_vectorize
+    from .vectorize_runner import (
+        VectorizeError,
+        _resolve_pythonpath,
+        run_vectorize,
+    )
     if not _HEX40_RE.fullmatch(args.draw_commit):
         return _fail(
             "--draw-commit must be a full 40-hex git revision "
@@ -420,6 +445,12 @@ def _cmd_export(args: argparse.Namespace) -> int:
         return _fail(
             f"--timeout-s must be positive and finite "
             f"(got {args.timeout_s!r})", 2)
+    # --vectorize-pythonpath sem --vectorize-module não faria efeito
+    # nenhum (o PYTHONPATH só é injetado na invocação "python -m"):
+    # combinação sem sentido é recusada antes de qualquer escrita.
+    if args.vectorize_pythonpath and not args.vectorize_module:
+        return _fail(
+            "--vectorize-pythonpath requires --vectorize-module", 2)
     png_path = Path(args.png)
     if not png_path.is_file():
         return _fail(f"PNG not found: {png_path}", 2)
@@ -498,6 +529,8 @@ def _cmd_export(args: argparse.Namespace) -> int:
             stamps_path=stamps_path,
             paper_mm=paper_mm,
             vectorize_python=args.vectorize_python,
+            module=args.vectorize_module,
+            pythonpath=args.vectorize_pythonpath,
         )
     except VectorizeError as exc:
         return _fail(f"vectorize failed: {exc}", 1)
@@ -602,6 +635,15 @@ def _cmd_export(args: argparse.Namespace) -> int:
     }
     if stamps_sha256 is not None:
         vectorize_parameters["stamps_sha256"] = stamps_sha256
+    if args.vectorize_module is not None:
+        # O modo de invocação faz parte do registro do que rodou; sem a
+        # flag o modo arquivo não deixa rastro (status quo).
+        vectorize_parameters["module"] = args.vectorize_module
+        if vectorized.get("module_origin") is not None:
+            vectorize_parameters["module_origin"] = vectorized["module_origin"]
+        if args.vectorize_pythonpath is not None:
+            vectorize_parameters["pythonpath"] = _resolve_pythonpath(
+                args.vectorize_pythonpath)
     if paper_mm is not None:
         vectorize_parameters["paper_mm"] = list(paper_mm)
     if max_p95_px is not None:
@@ -936,6 +978,8 @@ def _beta_step_export(ctx: dict[str, Any]) -> dict[str, Any]:
         vectorize_script=args.vectorize_script,
         vectorize_sha256=args.vectorize_sha256,
         vectorize_python=args.vectorize_python,
+        vectorize_module=args.vectorize_module,
+        vectorize_pythonpath=args.vectorize_pythonpath,
         out_dir=str(export_dir),
         origin=args.origin,
         draw_repo=args.draw_repo,
@@ -1585,6 +1629,8 @@ def _cmd_beta_run(args: argparse.Namespace) -> int:
             "vectorize_script": args.vectorize_script,
             "vectorize_sha256": args.vectorize_sha256,
             "vectorize_python": args.vectorize_python,
+            "vectorize_module": args.vectorize_module,
+            "vectorize_pythonpath": args.vectorize_pythonpath,
             "origin": args.origin,
             "draw_repo": args.draw_repo,
             "draw_commit": args.draw_commit,
@@ -1642,6 +1688,9 @@ def _cmd_beta_run(args: argparse.Namespace) -> int:
     if not Path(args.vectorize_script).is_file():
         preflight_errors.append(
             f"vectorize script not found: {args.vectorize_script}")
+    if args.vectorize_pythonpath and not args.vectorize_module:
+        preflight_errors.append(
+            "--vectorize-pythonpath requires --vectorize-module")
     if args.thickness_mm is None:
         preflight_errors.append(
             "thickness-mm is required and declared by a human "
