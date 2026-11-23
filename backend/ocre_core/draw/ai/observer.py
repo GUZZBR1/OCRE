@@ -83,6 +83,11 @@ def _json_findings(raw: Any) -> list[dict[str, Any]]:
     return json.loads(json.dumps(normalized, ensure_ascii=True, allow_nan=False))
 
 
+def _unavailable(detail: str) -> dict[str, Any]:
+    """The honest result whenever observation cannot run — never a guess."""
+    return {"status": "unavailable", "findings": [], "alerts": [], "detail": detail}
+
+
 def observe_conversion(document: dict[str, Any], adapter: Any, *, stage: str,
                        artifacts: dict[str, bytes]) -> dict[str, Any]:
     """Observe ``stage`` (``dxf``/``step``) over filename-to-bytes artifacts.
@@ -98,11 +103,9 @@ def observe_conversion(document: dict[str, Any], adapter: Any, *, stage: str,
     if not isinstance(artifacts, dict) or any(not isinstance(n, str) for n in artifacts):
         raise ValueError("artifacts must be a dict[str, bytes]")
     if len(artifacts) > MAX_ARTIFACTS or any(len(n) > 256 for n in artifacts):
-        return {"status": "unavailable", "findings": [], "alerts": [],
-                "detail": "artifact count/name exceeds observer limits"}
+        return _unavailable("artifact count/name exceeds observer limits")
     if any(not isinstance(data, bytes) for data in artifacts.values()):
-        return {"status": "unavailable", "findings": [], "alerts": [],
-                "detail": "artifact payload must be bytes"}
+        return _unavailable("artifact payload must be bytes")
     selected = {name: bytes(data) for name, data in artifacts.items()
                 if name.lower().endswith(_EXTENSIONS[stage]) and isinstance(data, bytes)}
     findings = []
@@ -111,12 +114,10 @@ def observe_conversion(document: dict[str, Any], adapter: Any, *, stage: str,
                          "detail": f"no expected {stage.upper()} artifact supplied"})
     else:
         if sum(map(len, selected.values())) > MAX_TOTAL_ARTIFACT_BYTES:
-            return {"status": "unavailable", "findings": [], "alerts": [],
-                    "detail": "artifact set exceeds 4 MB independent-check limit"}
+            return _unavailable("artifact set exceeds 4 MB independent-check limit")
         for name, data in selected.items():
             if len(data) > MAX_ARTIFACT_BYTES:
-                return {"status": "unavailable", "findings": [], "alerts": [],
-                        "detail": "artifact exceeds 2 MB independent-check limit"}
+                return _unavailable("artifact exceeds 2 MB independent-check limit")
             findings += _check_dxf(name, data) if stage == "dxf" else _check_step(name, data)
     if findings:
         return {"status": "confirmed-error", "findings": findings[:MAX_FINDINGS],
@@ -131,20 +132,18 @@ def observe_conversion(document: dict[str, Any], adapter: Any, *, stage: str,
                          "preview_hex": data[:64].hex()} for n, data in selected.items()}
         context = build_context(document, stage=stage, artifact_summaries=summaries)
     except Exception as exc:
-        return {"status": "unavailable", "findings": [], "alerts": [],
-                "detail": f"observation context unavailable: {type(exc).__name__}"}
+        return _unavailable(f"observation context unavailable: {type(exc).__name__}")
     try:
         checker = ((getattr(adapter, "check_conversion", None) or getattr(adapter, "check_coherence", None))
                    if adapter is not None else None)
     except Exception:
         checker = None
     if not callable(checker):
-        return {"status": "unavailable", "findings": [], "alerts": [], "detail": "observer adapter unavailable"}
+        return _unavailable("observer adapter unavailable")
     try:
         advisories = _json_findings(checker(context))
     except Exception as exc:
-        return {"status": "unavailable", "findings": [], "alerts": [],
-                "detail": f"observer provider failed: {type(exc).__name__}"}
+        return _unavailable(f"observer provider failed: {type(exc).__name__}")
     if advisories:
         return {"status": "observed", "findings": advisories, "alerts": [],
                 "detail": "advisory findings require human review"}

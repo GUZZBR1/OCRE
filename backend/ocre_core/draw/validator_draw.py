@@ -92,10 +92,16 @@ def _reject_constant(value: str) -> None:
 def _walk_finite(node: Any) -> None:
     if isinstance(node, float) and not math.isfinite(node):
         raise StrictJSONError("non-finite JSON number")
+    if isinstance(node, str):
+        try:
+            node.encode("utf-8")
+        except UnicodeEncodeError as exc:
+            raise StrictJSONError("JSON strings must not contain lone surrogates") from exc
     if isinstance(node, dict):
         for key, child in node.items():
             if not isinstance(key, str):
                 raise StrictJSONError("JSON object keys must be strings")
+            _walk_finite(key)
             _walk_finite(child)
     elif isinstance(node, (list, tuple)):
         for child in node:
@@ -118,7 +124,9 @@ def parse_json_strict(value: Any) -> Any:
             )
             _walk_finite(parsed)
             return parsed
-        except (json.JSONDecodeError, StrictJSONError, RecursionError) as exc:
+        # ValueError covers JSONDecodeError, StrictJSONError, and CPython's
+        # digit-limit rejection for oversized integer literals.
+        except (ValueError, RecursionError) as exc:
             raise StrictJSONError(str(exc)) from exc
     try:
         _walk_finite(value)
@@ -533,7 +541,18 @@ def _check_previous(
             _add(diagnostics, "semantic", f"{ptr}/status", "invalid_status_transition",
                  f"status transition {prev_status} -> {status} is not allowed")
         if prev_status in (STATUS_STABLE, STATUS_ERASED):
-            for field in ("points_mm", "closed", "length_mm", "shape", "circle"):
+            immutable = [
+                "points_mm", "closed", "length_mm", "shape", "circle",
+                "order", "t_start_ms", "t_end_ms",
+            ]
+            if prev_status == STATUS_ERASED:
+                immutable.append("erased_at_ms")
+                if prev.get("erased_inferred") is not True:
+                    # Tombstone provisional pode ser confirmada depois
+                    # (confirm_erasure grava erased_reason e remove
+                    # erased_inferred) — a tombstone confirmada é final.
+                    immutable += ["erased_reason", "erased_inferred"]
+            for field in immutable:
                 if stroke.get(field) != prev.get(field):
                     _add(diagnostics, "semantic", f"{ptr}/{field}",
                          "stable_points_mutated",

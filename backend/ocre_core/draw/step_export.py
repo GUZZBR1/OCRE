@@ -349,7 +349,17 @@ def _closed_stable_profiles(
             )
         clean: list[list[float]] = []
         for point in points:
-            if not isinstance(point, (list, tuple)) or len(point) != 2:
+            # Mesma regra de document._check_points: bool e não-número
+            # (str, None, ...) são recusados ANTES do float() — bool não
+            # é número aqui e float() deixaria TypeError escapar cru.
+            if (
+                not isinstance(point, (list, tuple))
+                or len(point) != 2
+                or any(
+                    isinstance(v, bool) or not isinstance(v, (int, float))
+                    for v in point
+                )
+            ):
                 raise StepExportError(f"traço {stroke_id}: ponto inválido {point!r}")
             x, y = float(point[0]), float(point[1])
             if not (math.isfinite(x) and math.isfinite(y)):
@@ -696,8 +706,20 @@ def document_to_step(
     if not result.get("ok"):
         raise StepWorkerError(f"exportação STEP falhou no worker: {result.get('error')}")
 
-    # Sanidade do host, sem OCP: volume do sólido vs área x espessura.
-    volume = float(result["volume_mm3"])
+    # O worker devolveu ok=True mas pode ter omitido campos (resultado
+    # parcial): cada chave usada abaixo é conferida antes — KeyError
+    # cru aqui seria bug de protocolo, não erro de exportação.
+    for key in ("volume_mm3", "sha256", "bytes", "bbox_mm"):
+        if key not in result:
+            raise StepWorkerError(
+                f"worker STEP devolveu resultado sem {key!r}: {result!r}"
+            )
+    try:
+        volume = float(result["volume_mm3"])
+    except (TypeError, ValueError) as exc:
+        raise StepWorkerError(
+            f"worker STEP devolveu volume_mm3 inválido: {result['volume_mm3']!r}"
+        ) from exc
     if expected_volume <= 0 or abs(volume - expected_volume) / expected_volume > VOLUME_TOLERANCE_REL:
         raise StepWorkerError(
             f"volume do sólido ({volume} mm³) diverge do esperado "
@@ -969,7 +991,16 @@ def oracle_step(
                 "stderr": stderr[-2000:],
                 "reason": "freecadcmd rodou mas não escreveu o relatório JSON",
             }
-        report = json.loads(report_path.read_text(encoding="utf-8"))
+        try:
+            report = json.loads(report_path.read_text(encoding="utf-8"))
+        except (ValueError, OSError) as exc:
+            raise StepWorkerError(
+                f"oráculo FreeCAD escreveu relatório ilegível: {exc}"
+            ) from exc
+    if not isinstance(report, dict):
+        raise StepWorkerError(
+            f"oráculo FreeCAD escreveu relatório não-objeto: {report!r}"
+        )
     report["status"] = "pass" if report.get("is_valid") else "fail"
     report["available"] = True
     report["step_path"] = str(step_path)

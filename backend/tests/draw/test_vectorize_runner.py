@@ -66,6 +66,20 @@ class NormalizeTests(unittest.TestCase):
         ])
         self.assertEqual(without, 0)
 
+    def test_malformed_points_are_vectorize_error(self):
+        # Ponto não numérico/desempacotável era ValueError/TypeError
+        # cru; o contrato do runner é VectorizeError.
+        for bad_points in (
+            [["a", "b"], [1, 2]],
+            [[1, 2, 3], [4, 5]],
+            [5, [1, 2]],
+            [[None, 1], [2, 3]],
+        ):
+            with self.subTest(points_mm=bad_points):
+                with self.assertRaises(VectorizeError):
+                    normalize_primitives(
+                        [{"type": "polyline", "points_mm": bad_points}])
+
 
 class RunVectorizeTests(unittest.TestCase):
     def setUp(self):

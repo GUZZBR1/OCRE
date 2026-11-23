@@ -20,29 +20,7 @@ from ocre_core.draw.dxf_export import (
     build_dxf,
     export_dxf,
 )
-
-HEIGHT = 296.47
-
-
-def make_doc(strokes, **paper):
-    doc = {
-        "schema": "draw.paper.v1",
-        "paper": {"width_mm": 210.0, "height_mm": HEIGHT, **paper},
-        "strokes": strokes,
-    }
-    return doc
-
-
-def stroke(stroke_id, points, status="stable", closed=False, **extra):
-    item = {
-        "stroke_id": stroke_id,
-        "order": 0,
-        "status": status,
-        "points_mm": points,
-        "closed": closed,
-    }
-    item.update(extra)
-    return item
+from tests.draw.helpers import HEIGHT, make_doc, stroke
 
 
 class DxfExportTests(unittest.TestCase):
@@ -175,6 +153,22 @@ class DxfExportTests(unittest.TestCase):
             [[10.0, float("inf")], [50.0, 20.0]],
             [[-1.0, 20.0], [50.0, 20.0]],
             [[10.0, 20.0], [50.0, HEIGHT + 0.01]],
+        ):
+            with self.subTest(points=bad_points):
+                doc = make_doc([stroke("s-0001", bad_points)])
+                with self.assertRaises(DxfExportError):
+                    build_dxf(doc)
+
+    def test_fail_closed_bool_string_and_none_points(self):
+        # Mesma regra de document._check_points: bool não é número e
+        # não-número (str/None/dict) recusa como DxfExportError — antes
+        # o float() aceitava bool/str numérica e deixava TypeError cru.
+        for bad_points in (
+            [[True, 1.0], [50.0, 20.0]],
+            [[False, 1.0], [50.0, 20.0]],
+            [["10", 1.0], [50.0, 20.0]],
+            [[None, 1.0], [50.0, 20.0]],
+            [[{"x": 1}, 1.0], [50.0, 20.0]],
         ):
             with self.subTest(points=bad_points):
                 doc = make_doc([stroke("s-0001", bad_points)])

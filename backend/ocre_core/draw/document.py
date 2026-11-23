@@ -246,6 +246,13 @@ def add_stroke(
         circle = _check_circle(circle, doc)
     if (t_start_ms is not None or t_end_ms is not None) and doc.get("order_kind") != "temporal-stamps":
         raise ValueError("t_start_ms/t_end_ms require order_kind temporal-stamps")
+    # Schema: integer >= 0. Checar o tipo ANTES da comparação — um
+    # "x"/1.5/-10/True aqui escapava cru ou era gravado sem validar.
+    for stamp in (t_start_ms, t_end_ms):
+        if stamp is not None and (
+            not isinstance(stamp, int) or isinstance(stamp, bool) or stamp < 0
+        ):
+            raise ValueError("t_start_ms/t_end_ms must be integers >= 0")
     if (
         t_start_ms is not None and t_end_ms is not None
         and t_end_ms < t_start_ms
@@ -308,7 +315,9 @@ def erase_stroke(
     stroke = _find_stroke(doc, stroke_id)
     if stroke["status"] == "erased":
         raise ValueError(f"stroke {stroke_id} is already erased")
-    if at_ms < 0 or isinstance(at_ms, bool):
+    # Schema: integer >= 0 — o tipo vem ANTES da comparação, senão
+    # "x"/None escapam como TypeError e 1.5 passava silencioso.
+    if not isinstance(at_ms, int) or isinstance(at_ms, bool) or at_ms < 0:
         raise ValueError("erased_at_ms must be a non-negative integer")
     if inferred:
         stroke.pop("erased_reason", None)

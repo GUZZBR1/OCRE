@@ -96,6 +96,8 @@ class SQLiteJobStore(JobPersistencePort):
                             raise ValueError("cancellation evidence does not match persisted request")
                     elif evidence is not None:
                         raise ValueError("cancellation evidence is only valid for cancelled outcome")
+                elif event.cancellation_origin is not None:
+                    raise ValueError("cancellation origin outside cancellation flow")
                 elif event.cancellation_evidence is not None:
                     raise ValueError("cancellation evidence without persisted cancellation request")
                 snapshot = replace(snapshot, cancellation_origin=origin)
@@ -105,6 +107,8 @@ class SQLiteJobStore(JobPersistencePort):
                 db.execute("INSERT INTO outbox(message_id,tenant,aggregate_id,event_id,topic,body) VALUES(?,?,?,?,?,?)",(outbox.message_id,tenant,outbox.aggregate_id,outbox.event_id,outbox.topic,outbox.payload))
                 db.commit()
                 return CommitReceipt(snapshot,event)
+            except sqlite3.IntegrityError as exc:
+                db.rollback(); raise PersistenceConflict("persisted identity collision") from exc
             except Exception:
                 db.rollback(); raise
 
@@ -112,7 +116,9 @@ class SQLiteJobStore(JobPersistencePort):
         return self._commit(snapshot=snapshot,event=event,expected_sequence=expected_sequence,idempotency=idempotency,outbox=outbox)
 
     def create_execution(self, *, job_snapshot, execution_snapshot, submitted_event, idempotency, outbox):
-        if job_snapshot.state.value != "queued" or execution_snapshot.state.value != "queued" or job_snapshot.sequence != 1 or execution_snapshot.sequence != 1: raise ValueError("execution creation must start queued at sequence 1")
+        if job_snapshot.state.value != "queued" or execution_snapshot.state.value != "queued" or job_snapshot.sequence != 1 or execution_snapshot.sequence != 1 or submitted_event.sequence != 1: raise ValueError("execution creation must start queued at sequence 1")
+        if not job_snapshot.job_id or not execution_snapshot.execution_id or not submitted_event.event_id: raise ValueError("submission identity must not be empty")
+        if submitted_event.occurred_at.tzinfo is None or submitted_event.occurred_at.utcoffset() is None: raise ValueError("submitted event must be timezone-aware")
         if job_snapshot.job_id != execution_snapshot.job_id or submitted_event.job_id != job_snapshot.job_id or submitted_event.execution_id != execution_snapshot.execution_id: raise ValueError("submission identity mismatch")
         tenant=job_snapshot.tenant_id
         if idempotency.tenant_id != tenant: raise ValueError("idempotency tenant differs from snapshot tenant")
@@ -129,6 +135,7 @@ class SQLiteJobStore(JobPersistencePort):
                 db.execute("INSERT INTO receipts VALUES(?,?,?,?,?)",(tenant,idempotency.operation,idempotency.key,idempotency.request_fingerprint,self._dump(receipt)))
                 db.execute("INSERT INTO outbox(message_id,tenant,aggregate_id,event_id,topic,body) VALUES(?,?,?,?,?,?)",(outbox.message_id,tenant,outbox.aggregate_id,outbox.event_id,outbox.topic,outbox.payload))
                 db.commit(); return receipt
+            except sqlite3.IntegrityError as exc: db.rollback(); raise PersistenceConflict("persisted identity collision") from exc
             except Exception: db.rollback(); raise
 
     def get_snapshot(self, job_id, *, tenant_id):
@@ -163,9 +170,9 @@ class FakeOutboxDispatcher:
     def dispatch(self, limit=100):
         sent=0
         for message in self.store.pending_outbox(limit):
-            self.publish(message)
-            self.store.mark_delivered(message.message_id)
-            sent += 1
+            if self.publish(message) is not False:
+                self.store.mark_delivered(message.message_id)
+                sent += 1
         return sent
 
 
