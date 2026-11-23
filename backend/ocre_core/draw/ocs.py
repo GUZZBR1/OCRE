@@ -667,52 +667,9 @@ class OcsClient:
         nunca recebeu esse traço, não é divergência. Ids desconhecidos
         ou ``erased`` em ``expected_live`` são recusados.
         """
-        if not isinstance(document, dict) or not isinstance(
-            document.get("strokes"), list
-        ):
-            raise ValueError(
-                "sync_document precisa de um documento draw.paper.v1 "
-                "(dict com lista 'strokes')"
-            )
-        doc_ids: dict[str, str] = {}
-        for stroke in document["strokes"]:
-            sid = stroke.get("stroke_id") if isinstance(stroke, dict) else None
-            status = stroke.get("status") if isinstance(stroke, dict) else None
-            if not isinstance(sid, str) or not sid:
-                raise ValueError(f"traço sem stroke_id válido: {stroke!r}")
-            if status not in ("pending", "stable", "erased"):
-                raise ValueError(
-                    f"traço {sid} com status desconhecido: {status!r}"
-                )
-            if sid in doc_ids:
-                # Um segundo traço com o mesmo id seria engolido pelo
-                # dict e as provas rodariam sobre um mapa corrompido.
-                raise ValueError(
-                    f"documento com stroke_id duplicado: {sid!r}")
-            doc_ids[sid] = status
+        doc_ids = _doc_stroke_index(document)
         erased_ids = [sid for sid, st in doc_ids.items() if st == "erased"]
-        if expected_live is None:
-            # Sem projeção informada: stable-only é a melhor aproximação
-            # do conjunto que o DXF da F0 carrega (pending e traços de
-            # 1 ponto nunca entram no CAD).
-            live_ids = [sid for sid, st in doc_ids.items() if st == "stable"]
-        else:
-            if not isinstance(expected_live, list) or any(
-                not isinstance(sid, str) for sid in expected_live
-            ):
-                raise ValueError("expected_live deve ser uma lista de stroke_ids")
-            if len(set(expected_live)) != len(expected_live):
-                raise ValueError("expected_live com stroke_id duplicado")
-            bad = [
-                sid for sid in expected_live
-                if doc_ids.get(sid) in (None, "erased")
-            ]
-            if bad:
-                raise ValueError(
-                    f"expected_live com ids que não são traços vivos do "
-                    f"documento: {bad}"
-                )
-            live_ids = list(expected_live)
+        live_ids = _resolve_live_ids(doc_ids, expected_live)
         current = self.scan_stroke_ids()
         unknown_in_cad = [sid for sid in current if sid not in doc_ids]
         if unknown_in_cad:
@@ -1086,6 +1043,74 @@ class OcsClient:
             remaining.remove(index)
             handle_of_index[index] = handle
         return handle_of_index
+
+
+def _doc_stroke_index(document: dict) -> dict[str, str]:
+    """Índice ``stroke_id -> status`` de um documento ``draw.paper.v1``.
+
+    Valida a forma do documento e de cada traço — um mapa corrompido
+    (id ausente/duplicado, status desconhecido) invalidaria as provas
+    do sync, então falha fechada com ``ValueError``.
+    """
+    if not isinstance(document, dict) or not isinstance(
+        document.get("strokes"), list
+    ):
+        raise ValueError(
+            "sync_document precisa de um documento draw.paper.v1 "
+            "(dict com lista 'strokes')"
+        )
+    doc_ids: dict[str, str] = {}
+    for stroke in document["strokes"]:
+        sid = stroke.get("stroke_id") if isinstance(stroke, dict) else None
+        status = stroke.get("status") if isinstance(stroke, dict) else None
+        if not isinstance(sid, str) or not sid:
+            raise ValueError(f"traço sem stroke_id válido: {stroke!r}")
+        if status not in ("pending", "stable", "erased"):
+            raise ValueError(
+                f"traço {sid} com status desconhecido: {status!r}"
+            )
+        if sid in doc_ids:
+            # Um segundo traço com o mesmo id seria engolido pelo
+            # dict e as provas rodariam sobre um mapa corrompido.
+            raise ValueError(
+                f"documento com stroke_id duplicado: {sid!r}")
+        doc_ids[sid] = status
+    return doc_ids
+
+
+def _resolve_live_ids(
+    doc_ids: dict[str, str], expected_live: list[str] | None
+) -> list[str]:
+    """Traços vivos que o CAD deve carregar no ``sync_document``.
+
+    Sem ``expected_live``: os ``stable`` do documento. Com ele (a
+    projeção ``included_stroke_ids`` do escritor DXF): a lista é
+    validada — ids desconhecidos ou ``erased`` são recusados — e
+    adotada como está.
+    """
+    if expected_live is None:
+        # Sem projeção informada: stable-only é a melhor aproximação
+        # do conjunto que o DXF da F0 carrega (pending e traços de
+        # 1 ponto nunca entram no CAD).
+        live_ids = [sid for sid, st in doc_ids.items() if st == "stable"]
+    else:
+        if not isinstance(expected_live, list) or any(
+            not isinstance(sid, str) for sid in expected_live
+        ):
+            raise ValueError("expected_live deve ser uma lista de stroke_ids")
+        if len(set(expected_live)) != len(expected_live):
+            raise ValueError("expected_live com stroke_id duplicado")
+        bad = [
+            sid for sid in expected_live
+            if doc_ids.get(sid) in (None, "erased")
+        ]
+        if bad:
+            raise ValueError(
+                f"expected_live com ids que não são traços vivos do "
+                f"documento: {bad}"
+            )
+        live_ids = list(expected_live)
+    return live_ids
 
 
 def _audit_dropped(audit_report: dict) -> Any:
