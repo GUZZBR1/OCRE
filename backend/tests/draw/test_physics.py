@@ -25,6 +25,7 @@ from ocre_core.draw.physics import (
     bar_urdf,
     compare_envelopes,
     envelope_from_series,
+    _impulse_per_step,
     model_sha256,
     mujoco_available,
     pinocchio_available,
@@ -106,6 +107,21 @@ class EnvelopeTests(unittest.TestCase):
             envelope_from_series(fine)["impulse_Ns"],
             places=10,
         )
+
+    def test_per_step_impulse_counts_last_step_at_both_frequencies(self):
+        # Regressão do review: numa série POR-PASSO o último passo segue
+        # com força de apoio não-nula. A soma retangular f·Δt conta o
+        # passo inteiro e é idêntica nas duas frequências (240 Hz
+        # PyBullet vs 1 kHz MuJoCo); a trapezoidal subestimaria 0.5·Δt,
+        # um erro distinto por engine.
+        impulses = []
+        for dt in (1.0 / 240.0, 1.0 / 1000.0):
+            n = int(round(0.5 / dt))
+            series = [{"t_s": i * dt, "f_normal_N": 1.0}
+                      for i in range(n)]
+            impulses.append(_impulse_per_step(series, dt))
+        self.assertAlmostEqual(impulses[0], impulses[1], places=10)
+        self.assertAlmostEqual(impulses[0], 0.5, places=10)
 
     def test_envelope_rejects_nan_and_non_monotonic_time(self):
         with self.assertRaises(PhysicsModelError):
