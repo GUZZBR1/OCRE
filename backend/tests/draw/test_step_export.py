@@ -204,6 +204,57 @@ class StepExportHostTests(unittest.TestCase):
         with self.assertRaises(StepExportError):
             document_to_step(doc, THICKNESS_MM, "PLA", Path("x.step"))
 
+    def test_circle_fit_from_points_without_block(self):
+        """shape='circle' sem bloco: Kåsa ajusta a polilinha discretizada
+        e o contorno ganha descritor analítico marcado como 'fitted'."""
+        cpts = [[55.0 + 5.0 * math.cos(2 * math.pi * i / 16),
+                 30.0 + 5.0 * math.sin(2 * math.pi * i / 16)]
+                for i in range(16)]
+        doc = make_doc([stroke("s-0001", cpts, closed=True, shape="circle")])
+        contours, _ids, _skipped = step_export._closed_stable_profiles(doc)
+        circle = contours[0]["circle"]
+        self.assertIsNotNone(circle)
+        self.assertTrue(circle["fitted"])
+        self.assertAlmostEqual(circle["center_mm"][0], 55.0, places=3)
+        self.assertAlmostEqual(circle["center_mm"][1], HEIGHT - 30.0, places=3)
+        self.assertAlmostEqual(circle["radius_mm"], 5.0, places=3)
+
+    def test_circle_shape_with_bad_fit_stays_a_polyline(self):
+        """Polilinha deformada marcada 'circle' (desvio radial acima da
+        tolerância) não vira círculo: segue a polilinha — fallback seguro."""
+        # Elipse achatada (a=6, b=3): desvio radial ~3 mm >> tolerância.
+        epts = [[55.0 + 6.0 * math.cos(2 * math.pi * i / 24),
+                 30.0 + 3.0 * math.sin(2 * math.pi * i / 24)]
+                for i in range(24)]
+        doc = make_doc([stroke("s-0001", epts, closed=True, shape="circle")])
+        contours, _ids, _skipped = step_export._closed_stable_profiles(doc)
+        self.assertIsNone(contours[0]["circle"])
+
+    def test_thin_arc_marked_circle_stays_a_polyline(self):
+        """Arco fino ajustaria um círculo enorme: a trava de raio coerente
+        com a dispersão impede a promoção — segue a polilinha."""
+        apts = [[60.0 + 0.1 * math.cos(t), 40.0 + 0.1 * math.sin(t)]
+                for t in (-0.05, 0.0, 0.05)]
+        # 3 pontos quase colineares (arco de ~6°): sem trava caberia
+        # qualquer círculo gigante.
+        doc = make_doc([stroke("s-0001", apts, closed=True, shape="circle")])
+        contours, _ids, _skipped = step_export._closed_stable_profiles(doc)
+        self.assertIsNone(contours[0]["circle"])
+
+    def test_declared_circle_block_beats_fit(self):
+        """O bloco ``circle`` declarado tem prioridade: pontos fora da
+        circunferência declarada não disparam o ajuste Kåsa."""
+        cpts = [[55.0 + 5.0 * math.cos(2 * math.pi * i / 12),
+                 30.0 + 5.0 * math.sin(2 * math.pi * i / 12)]
+                for i in range(12)]
+        doc = make_doc([stroke(
+            "s-0001", cpts, closed=True, shape="circle",
+            circle={"cx_mm": 55.0, "cy_mm": 30.0, "r_mm": 4.0})])
+        contours, _ids, _skipped = step_export._closed_stable_profiles(doc)
+        circle = contours[0]["circle"]
+        self.assertNotIn("fitted", circle)
+        self.assertAlmostEqual(circle["radius_mm"], 4.0)
+
     def test_invalid_circle_params_are_refused(self):
         cpts = [[55.0 + 5.0 * math.cos(2 * math.pi * i / 12),
                  30.0 + 5.0 * math.sin(2 * math.pi * i / 12)]
@@ -446,19 +497,21 @@ class StepExportTests(unittest.TestCase):
         self.assertTrue(check["brepcheck_valid"])
         self.assertEqual(check["solids"], 1)
 
-    def test_circle_shape_without_block_stays_a_polyline(self):
-        """shape='circle' sem parâmetros analíticos: compatível — segue a
-        polilinha discretizada (volume do prisma de 12 lados, não πr²)."""
+    def test_circle_shape_without_block_fits_analytic_circle(self):
+        """shape='circle' sem bloco: os pontos discretizados ajustam um
+        círculo (Kåsa) e o sólido é o cilindro exato πr², não o prisma."""
         cpts = [[55.0 + 5.0 * math.cos(2 * math.pi * i / 12),
                  30.0 + 5.0 * math.sin(2 * math.pi * i / 12)]
                 for i in range(12)]
         doc = make_doc([stroke("s-0001", cpts, closed=True, shape="circle")])
         out = self.dir / "poly-circle.step"
         report = document_to_step(doc, THICKNESS_MM, "PLA", out)
-        expected = 0.5 * 12 * 25.0 * math.sin(2 * math.pi / 12) * THICKNESS_MM
+        expected = math.pi * 25.0 * THICKNESS_MM
         self.assertAlmostEqual(
             report["volume_mm3"], expected, delta=expected * VOLUME_REL_TOL
         )
+        check = validate_step(out)
+        self.assertTrue(check["brepcheck_valid"])
 
     def test_two_disjoint_profiles_export_compound(self):
         doc = make_doc([
@@ -739,6 +792,125 @@ class OpenStrokesPolicyTests(unittest.TestCase):
         self.assertEqual(
             report["skipped"], [{"stroke_id": "s-0002", "reason": "open"}]
         )
+
+
+class CircleFitTests(unittest.TestCase):
+    """Ajuste Kåsa (``shape="circle"`` sem bloco ``circle``) — só host.
+
+    Mesmo padrão de ``OpenStrokesPolicyTests``: ``_run_worker`` mockado
+    prova a fronteira do documento (wire ``circle`` vs ``polygon`` no
+    job e a nota de ajuste no relatório), não a geometria OCCT.
+    """
+
+    _REPO_TMP = Path(__file__).resolve().parents[3] / ".tmp"
+
+    def setUp(self):
+        self._REPO_TMP.mkdir(exist_ok=True)
+        self.tmp = tempfile.TemporaryDirectory(
+            prefix="ocre-circle-fit-", dir=self._REPO_TMP
+        )
+        self.addCleanup(self.tmp.cleanup)
+        self.dir = Path(self.tmp.name)
+
+    def _export(self, doc, **kwargs):
+        """``document_to_step`` com worker fake; devolve (report, job)."""
+        captured = {}
+
+        def fake_worker(job, *, timeout_s, worker_python=None):
+            captured["job"] = job
+
+            def wire_area(desc):
+                if desc["kind"] == "circle":
+                    return math.pi * desc["radius_mm"] ** 2
+                return step_export._polygon_area_mm2(desc["points_mm"])
+
+            area = sum(
+                wire_area(region["outer"])
+                - sum(wire_area(hole) for hole in region["holes"])
+                for region in job["regions"]
+            )
+            return {
+                "ok": True,
+                "sha256": "f" * 64,
+                "bytes": 10,
+                "volume_mm3": area * float(job["thickness_mm"]),
+                "bbox_mm": [[0.0, 0.0, 0.0], [1.0, 1.0, 1.0]],
+                "file_schema": "AP242",
+                "worker_versions": {"build123d": "fake"},
+                "notes": [],
+            }
+
+        with mock.patch.object(
+            step_export, "_run_worker", side_effect=fake_worker
+        ):
+            report = document_to_step(
+                doc, THICKNESS_MM, "PLA", self.dir / "doc.step", **kwargs
+            )
+        return report, captured["job"]
+
+    def test_fitted_circle_wire_reaches_job(self):
+        """16-gon marcado 'circle' sem bloco: o wire no job é o círculo
+        analítico ajustado (e 'fitted' não vaza para o worker)."""
+        cpts = [[55.0 + 5.0 * math.cos(2 * math.pi * i / 16),
+                 30.0 + 5.0 * math.sin(2 * math.pi * i / 16)]
+                for i in range(16)]
+        doc = make_doc([stroke("s-0001", cpts, closed=True, shape="circle")])
+        report, job = self._export(doc)
+        outer = job["regions"][0]["outer"]
+        self.assertEqual(
+            set(outer), {"kind", "center_mm", "radius_mm"}
+        )
+        self.assertEqual(outer["kind"], "circle")
+        self.assertAlmostEqual(outer["center_mm"][0], 55.0, places=3)
+        self.assertAlmostEqual(outer["center_mm"][1], HEIGHT - 30.0, places=3)
+        self.assertAlmostEqual(outer["radius_mm"], 5.0, places=3)
+        self.assertIn("s-0001", report["notes"][0])
+        self.assertIn("ajustado", report["notes"][0])
+        expected = math.pi * 25.0 * THICKNESS_MM
+        self.assertAlmostEqual(
+            report["volume_mm3"], expected, delta=expected * VOLUME_REL_TOL
+        )
+
+    def test_bad_fit_sends_polygon_wire_without_note(self):
+        epts = [[55.0 + 6.0 * math.cos(2 * math.pi * i / 24),
+                 30.0 + 3.0 * math.sin(2 * math.pi * i / 24)]
+                for i in range(24)]
+        doc = make_doc([stroke("s-0001", epts, closed=True, shape="circle")])
+        report, job = self._export(doc)
+        self.assertEqual(job["regions"][0]["outer"]["kind"], "polygon")
+        self.assertEqual(report["notes"], [])
+
+    def test_fitted_circle_inside_plate_is_a_hole(self):
+        """Círculo ajustado contido na chapa vira furo analítico exato."""
+        cpts = [[55.0 + 3.0 * math.cos(2 * math.pi * i / 16),
+                 25.0 + 3.0 * math.sin(2 * math.pi * i / 16)]
+                for i in range(16)]
+        doc = make_doc([
+            stroke("s-0001", RECT, closed=True),
+            stroke("s-0002", cpts, closed=True, shape="circle"),
+        ])
+        report, job = self._export(doc)
+        holes = job["regions"][0]["holes"]
+        self.assertEqual(len(holes), 1)
+        self.assertEqual(holes[0]["kind"], "circle")
+        expected = (1000.0 - math.pi * 9.0) * THICKNESS_MM
+        self.assertAlmostEqual(
+            report["volume_mm3"], expected, delta=expected * VOLUME_REL_TOL
+        )
+
+    def test_declared_block_wins_over_fit(self):
+        """Bloco ``circle`` declarado tem prioridade e não gera nota."""
+        cpts = [[55.0 + 5.0 * math.cos(2 * math.pi * i / 12),
+                 30.0 + 5.0 * math.sin(2 * math.pi * i / 12)]
+                for i in range(12)]
+        doc = make_doc([stroke(
+            "s-0001", cpts, closed=True, shape="circle",
+            circle={"cx_mm": 55.0, "cy_mm": 30.0, "r_mm": 5.0})])
+        report, job = self._export(doc)
+        outer = job["regions"][0]["outer"]
+        self.assertEqual(outer["kind"], "circle")
+        self.assertNotIn("fitted", outer)
+        self.assertEqual(report["notes"], [])
 
 
 if __name__ == "__main__":

@@ -12,8 +12,10 @@ instalado vence e quebra o outro).
 Regras (fichas ``cad.md`` / ``formatos.md`` + decisão do Senado):
 
 - Traço fechado ``stable`` -> perfil 2D (polilinha fechada, em mm,
-  Y já no sentido CAD: ``y_cad = altura_efetiva_mm - y_papel``) ->
-  ``extrude(thickness)`` -> sólido STEP.
+  Y já no sentido CAD: ``y_cad = altura_efetiva_mm - y_papel`` — ou
+  circunferência analítica quando ``shape="circle"`` traz o bloco
+  ``circle`` ou os pontos ajustam um círculo) -> ``extrude(thickness)``
+  -> sólido STEP. Contornos aninhados viram furos/ilhas (par-ímpar).
 - Espessura e material são DECLARADOS por humano (argumento) — nunca
   inventados. Espessura ausente/``None``/<=0 ou material vazio =
   recusa fail-closed.
@@ -85,6 +87,12 @@ OPEN_STROKES_POLICIES = ("fail", "skip-open")
 # Epsilon geométrico do host (mm): separa "encostado" de "claramente
 # separado/contido" nos testes de cruzamento e contenção.
 _GEOM_EPS = 1e-9
+# Traço ``shape="circle"`` SEM bloco ``circle``: o ajuste Kåsa só
+# promove a polilinha a circunferência analítica quando o desvio radial
+# máximo cabe em ``max(0.05 mm, 0.1% do raio)`` — senão segue a
+# polilinha discretizada (fallback seguro, nunca finge círculo).
+_CIRCLE_FIT_TOL_MM = 0.05
+_CIRCLE_FIT_TOL_REL = 1e-3
 _FREECAD_ORACLE_SCRIPT = "freecad_oracle.py"
 ORACLE_UNAVAILABLE = "unavailable"
 MATERIAL_MANIFEST_SCHEMA = "ocre.step-material-manifest.v1"
@@ -239,21 +247,71 @@ def _paper_size(document: dict) -> tuple[float, float]:
         raise StepExportError(str(exc)) from exc
 
 
+def _fit_circle_mm(points: list[list[float]]) -> dict[str, Any] | None:
+    """Círculo ajustado (Kåsa) sobre pontos CAD, ou None se não couber.
+
+    Ajuste algébrico centrado no baricentro (sistema 2x2 bem
+    condicionado). Exige raio finito e coerente com a dispersão dos
+    pontos — sem essa trava um arco fino ajustaria um círculo enorme —
+    e desvio radial máximo dentro de ``max(_CIRCLE_FIT_TOL_MM,
+    _CIRCLE_FIT_TOL_REL * r)``. Devolve o mesmo descritor do bloco
+    ``circle`` declarado, mais ``"fitted": True`` para o relatório.
+    """
+    n = len(points)
+    mean_x = sum(p[0] for p in points) / n
+    mean_y = sum(p[1] for p in points) / n
+    suu = svv = suv = suz = svz = 0.0
+    spread_sq = 0.0
+    for x, y in points:
+        u, v = x - mean_x, y - mean_y
+        z = u * u + v * v
+        suu += u * u
+        svv += v * v
+        suv += u * v
+        suz += u * z
+        svz += v * z
+        spread_sq = max(spread_sq, z)
+    det = suu * svv - suv * suv
+    if not (det > 0.0) or spread_sq <= 0.0:
+        return None  # pontos colineares ou coincidentes: sem círculo
+    # u²+v² + a·u + b·v + c = 0; com Σu = Σv = 0 sobra um 2x2 para a, b.
+    a = (suv * svz - svv * suz) / det
+    b = (suv * suz - suu * svz) / det
+    cx, cy = mean_x - a / 2.0, mean_y - b / 2.0
+    radius = math.sqrt((a * a + b * b) / 4.0 + (suu + svv) / n)
+    if not (math.isfinite(radius) and 0.0 < radius <= 2.0 * math.sqrt(spread_sq)):
+        return None
+    tol = max(_CIRCLE_FIT_TOL_MM, _CIRCLE_FIT_TOL_REL * radius)
+    max_dev = max(abs(math.hypot(x - cx, y - cy) - radius) for x, y in points)
+    if max_dev > tol:
+        return None
+    return {"center_mm": [cx, cy], "radius_mm": radius, "fitted": True}
+
+
 def _stroke_circle(
-    stroke: dict, stroke_id: str, *, width_mm: float, height_mm: float
+    stroke: dict,
+    stroke_id: str,
+    *,
+    points_cad: list[list[float]],
+    width_mm: float,
+    height_mm: float,
 ) -> dict[str, Any] | None:
     """Descritor analítico CAD de um traço ``shape == "circle"``, ou None.
 
-    Lê o bloco opcional ``circle`` (``cx_mm``/``cy_mm``/``r_mm``, paper
-    coords y-down) e devolve ``{"center_mm": [cx, cy_cad], "radius_mm": r}``
-    — já com o flip do CAD (``y_cad = height_mm - cy_mm``). Parâmetro
-    malformado, não finito, ``r_mm <= 0`` ou círculo fora da folha recusa
-    fail-closed: um ajuste de círculo corrompido nunca vira polilinha por
-    engano. Traço ``circle`` sem o bloco segue a polilinha (compatível).
+    O bloco opcional ``circle`` (``cx_mm``/``cy_mm``/``r_mm``, paper
+    coords y-down) tem prioridade e devolve ``{"center_mm": [cx,
+    cy_cad], "radius_mm": r}`` — já com o flip do CAD (``y_cad =
+    height_mm - cy_mm``). Parâmetro malformado, não finito, ``r_mm <=
+    0`` ou círculo fora da folha recusa fail-closed: um ajuste de
+    círculo corrompido nunca vira polilinha por engano. Sem o bloco,
+    tenta o ajuste Kåsa sobre ``points_cad`` (polilinha discretizada);
+    ajuste ruim segue a polilinha (compatível, fallback seguro).
     """
-    if stroke.get("shape") != "circle" or stroke.get("circle") is None:
+    if stroke.get("shape") != "circle":
         return None
-    circle = stroke["circle"]
+    circle = stroke.get("circle")
+    if circle is None:
+        return _fit_circle_mm(points_cad)
     if (
         not isinstance(circle, dict)
         or not all(
@@ -365,7 +423,8 @@ def _closed_stable_profiles(
             "stroke_id": stroke_id,
             "points": clean,
             "circle": _stroke_circle(
-                stroke, stroke_id, width_mm=width_mm, height_mm=height_mm
+                stroke, stroke_id, points_cad=clean,
+                width_mm=width_mm, height_mm=height_mm,
             ),
         })
         stroke_ids.append(stroke_id)
@@ -643,9 +702,10 @@ def document_to_step(
     de traços ``stable`` ABERTOS (ver ``OPEN_STROKES_POLICIES``); o
     padrão ``"fail"`` mantém a recusa fail-closed. Contornos fechados
     aninhados viram furos/ilhas (regra par-ímpar) e traços
-    ``shape="circle"`` com bloco ``circle`` válido viram fio analítico
-    no worker. Devolve o relatório da exportação (caminho, sha256,
-    volume, bbox, FILE_SCHEMA real, versões pinadas).
+    ``shape="circle"`` com bloco ``circle`` válido — ou cujos pontos
+    ajustam um círculo (Kåsa) — viram fio analítico no worker. Devolve
+    o relatório da exportação (caminho, sha256, volume, bbox,
+    FILE_SCHEMA real, versões pinadas).
     """
     if thickness_mm is None:
         raise StepExportError(
@@ -725,7 +785,12 @@ def document_to_step(
         "bbox_mm": result["bbox_mm"],
         "worker_versions": result.get("worker_versions", {}),
         "timestamp_param_used": result.get("timestamp_param_used"),
-        "notes": result.get("notes", []),
+        "notes": [
+            f"traço {contour['stroke_id']}: círculo ajustado dos pontos "
+            "(traço 'circle' sem bloco 'circle' declarado)"
+            for contour in contours
+            if contour["circle"] is not None and contour["circle"].get("fitted")
+        ] + result.get("notes", []),
         "material_in_step_native": bool(result.get("material_in_step_native", False)),
     }
     # AP214 emitted by the current build123d/OCP writer does not encode
