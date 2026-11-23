@@ -93,6 +93,7 @@ __all__ = [
     "BATCH_MAX_STEPS",
     "DEFAULT_PORT",
     "DEFAULT_TIMEOUT_S",
+    "ENTITY_SCAN_LIMIT",
     "LAYER",
     "OcsClient",
     "OcsError",
@@ -109,6 +110,18 @@ DEFAULT_PORT = 8090
 DEFAULT_TIMEOUT_S = 60.0
 BATCH_MAX_STEPS = 64
 _PROTOCOL = 1
+# Limite pedido nas varreduras de entidades. A API do OCS pagina por
+# ``limit`` e não expõe offset: uma resposta com exatamente ``limit``
+# itens pode estar truncada e uma varredura truncada NÃO prova
+# completude (um traço fora da janela seria invisível ao scan —
+# verified_absent viraria mentira). O limite é alto justamente para a
+# resposta cheia ser prova de que nada ficou de fora.
+ENTITY_SCAN_LIMIT = 10000
+# Tolerância do pareamento por geometria (mm): coordenadas que
+# sobem ao OCS pelo DXF e voltam via JSON chegam praticamente exatas;
+# qualquer divergência maior significa geometria alterada — e entidade
+# alterada não pode ser rotulada com segurança.
+_GEOMETRY_TOLERANCE_MM = 1e-6
 
 
 class OcsError(RuntimeError):
@@ -298,7 +311,21 @@ class OcsClient:
         try:
             with urllib.request.urlopen(request, timeout=self.timeout_s) as resp:
                 raw = resp.read()
-                return resp.status, (json.loads(raw) if raw else {})
+                try:
+                    parsed = json.loads(raw) if raw else {}
+                except json.JSONDecodeError as exc:
+                    raise OcsError(
+                        f"resposta de {method} {path} não é JSON: "
+                        f"{raw[:200]!r}",
+                        code="bad_response",
+                    ) from exc
+                if not isinstance(parsed, dict):
+                    raise OcsError(
+                        f"resposta de {method} {path} não é um objeto "
+                        f"JSON: {parsed!r}",
+                        code="bad_response",
+                    )
+                return resp.status, parsed
         except urllib.error.HTTPError as exc:
             raw = exc.read()
             try:
@@ -332,6 +359,17 @@ class OcsClient:
         ``unwrap="body"`` devolve o corpo inteiro (``audit`` e
         ``xdata_get`` respondem sem chave ``result`` na v2026.44).
         """
+        reserved = {"protocol", "op", "request_id", "document_id"}
+        if params is not None and not isinstance(params, dict):
+            raise ValueError(f"params deve ser um dict: {params!r}")
+        if params and reserved & params.keys():
+            # Um params com essas chaves sobrescreveria o envelope de
+            # silêncio — op divergente da rota ou request_id trocado
+            # quebram a idempotência sem erro visível.
+            raise ValueError(
+                f"params não pode conter chaves reservadas do "
+                f"envelope {sorted(reserved)}: {sorted(reserved & params.keys())}"
+            )
         body: dict[str, Any] = {
             "protocol": _PROTOCOL,
             "op": op,
@@ -393,19 +431,46 @@ class OcsClient:
             raise OcsError(f"resposta de /entities sem lista: {parsed}", code="bad_response")
         return entities
 
-    def stroke_handles(self) -> list[str]:
-        """Handles dos traços do Draw: layer ``DRAW_STROKES`` em ``*Model_Space``.
+    def _stroke_entities(self, *, limit: int = ENTITY_SCAN_LIMIT) -> list[dict]:
+        """Entidades de traço do Draw (dicts completos, com geometria).
 
-        O filtro por ``space`` é do lado do cliente: a query do OCS
-        também devolve geometria de definição de bloco (ex.: as setas
+        O filtro por ``layer`` vai na query (o OCS aceita ``?layer=``);
+        o por ``space`` é do lado do cliente: a query também devolve
+        geometria de definição de bloco (ex.: as setas
         ``_ARCHTICK``/``_CLOSEDBLANK``/``_CLOSEDFILLED`` do template
         DXF do ezdxf, em layer ``0``) — essas NÃO são traços.
+
+        Uma resposta com exatamente ``limit`` itens pode estar
+        truncada (a API não expõe offset): falha fechada, porque toda
+        prova de presença/ausência deste módulo parte da varredura
+        COMPLETA. Menos que o limite é prova de completude; mais, um
+        servidor que ignorou o cap (completa do mesmo jeito).
         """
+        entities = self.query_entities(layer=LAYER, detail="geometry", limit=limit)
+        if len(entities) == limit:
+            raise OcsError(
+                f"/entities devolveu {len(entities)} entidades de traço "
+                f"(= o limite pedido, {limit}): a lista pode estar "
+                "truncada e a varredura não provaria completude",
+                code="entities_truncated",
+            )
         return [
-            str(entity["handle"])
-            for entity in self.query_entities(detail="geometry")
+            entity for entity in entities
             if entity.get("layer") == LAYER and entity.get("space") == "*Model_Space"
         ]
+
+    def stroke_handles(self) -> list[str]:
+        """Handles dos traços do Draw: layer ``DRAW_STROKES`` em ``*Model_Space``."""
+        handles: list[str] = []
+        for entity in self._stroke_entities():
+            handle = entity.get("handle")
+            if not isinstance(handle, str) or not handle:
+                raise OcsError(
+                    f"entidade de traço sem handle: {entity!r}",
+                    code="bad_response",
+                )
+            handles.append(handle)
+        return handles
 
     # -- Documentos ---------------------------------------------------------
 
@@ -456,10 +521,38 @@ class OcsClient:
         if not parsed.get("ok", False):
             raise _error_from_body(parsed, _status)
         items = parsed.get("items", [])
+        if not isinstance(items, list):
+            raise OcsError(
+                f"xdata_get devolveu 'items' não-lista: {parsed}",
+                code="bad_response",
+            )
         for item in items:
-            if str(item.get("handle", "")).upper() == handle.upper():
-                values = (item.get("xdata") or {}).get(APPID) or []
-                return str(values[0]) if values else None
+            if isinstance(item, dict) and str(
+                item.get("handle", "")
+            ).upper() == handle.upper():
+                xdata = item.get("xdata")
+                if xdata is None:
+                    return None
+                if not isinstance(xdata, dict):
+                    raise OcsError(
+                        f"xdata_get devolveu xdata malformado para "
+                        f"{handle}: {xdata!r}",
+                        code="bad_response",
+                    )
+                values = xdata.get(APPID)
+                if values is None:
+                    return None
+                if (
+                    not isinstance(values, list)
+                    or not values
+                    or not isinstance(values[0], str)
+                ):
+                    raise OcsError(
+                        f"xdata_get devolveu lista {APPID} malformada "
+                        f"para {handle}: {values!r}",
+                        code="bad_response",
+                    )
+                return values[0]
         return None
 
     # -- Apagar (borracha) ---------------------------------------------------
@@ -475,8 +568,17 @@ class OcsClient:
         scanned: dict[str, str] = {}
         for handle in self.stroke_handles():
             stroke_id = self.get_stroke_id(handle)
-            if stroke_id is not None:
-                scanned[stroke_id] = handle
+            if stroke_id is None:
+                continue
+            if stroke_id in scanned:
+                # Dois handles com o mesmo id = CAD corrompido: o dict
+                # esconderia um deles e a prova rodaria incompleta.
+                raise OcsError(
+                    f"stroke_id duplicado no CAD: {stroke_id} "
+                    f"(handles {scanned[stroke_id]} e {handle})",
+                    code="duplicate_stroke_in_cad",
+                )
+            scanned[stroke_id] = handle
         return scanned
 
     def erase_strokes(
@@ -582,6 +684,11 @@ class OcsClient:
                 raise ValueError(
                     f"traço {sid} com status desconhecido: {status!r}"
                 )
+            if sid in doc_ids:
+                # Um segundo traço com o mesmo id seria engolido pelo
+                # dict e as provas rodariam sobre um mapa corrompido.
+                raise ValueError(
+                    f"documento com stroke_id duplicado: {sid!r}")
             doc_ids[sid] = status
         erased_ids = [sid for sid, st in doc_ids.items() if st == "erased"]
         if expected_live is None:
@@ -635,8 +742,7 @@ class OcsClient:
             )
         saved = None
         if out_path is not None:
-            audit_report = self.audit()
-            dropped = (audit_report.get("target") or {}).get("dropped_on_save")
+            dropped = _audit_dropped(self.audit())
             if dropped:
                 raise OcsError(
                     f"audit recusou o save: dropped_on_save={dropped}",
@@ -727,6 +833,13 @@ class OcsClient:
             )
         results: list[dict] = []
         for index, step in enumerate(steps):
+            if not isinstance(step, dict) or not isinstance(
+                step.get("op"), str
+            ) or not step["op"]:
+                raise ValueError(
+                    f"passo {index} malformado (precisa de 'op' "
+                    f"string não vazia): {step!r}"
+                )
             try:
                 results.append(
                     self._envelope(
@@ -761,29 +874,98 @@ class OcsClient:
     ) -> dict:
         """DXF F0 → OCS → XDATA ``DRAW`` → ``audit`` → ``save_verified``.
 
-        ``stroke_ids`` deve estar na ordem das entidades
-        ``DRAW_STROKES``/``*Model_Space`` do DXF (a ordem do documento
-        ``draw.paper.v1``). Devolve um relatório com tempos medidos —
-        ``open_to_queryable_s`` é o proxy do gate G2.1 (≤ 2 s) — e com
-        ``dropped_on_save`` (gate G2.3) e o SHA-256 do arquivo verificado.
-        Nada é fingido: qualquer recusa levanta ``OcsError``.
+        ``stroke_ids`` deve estar na ordem das entidades de traço do
+        DXF (a ordem do documento ``draw.paper.v1``, que é a ordem em
+        que ``export_dxf`` escreve). A lista PODE ser vazia — um
+        documento com todos os traços ``erased``/``pending``/de 1
+        ponto exporta um DXF sem traços e o ``included_stroke_ids``
+        do beta-run é ``[]``: o sync passa só se o DXF e o CAD
+        também tiverem zero traços (a contagem continua conferida).
+        O pareamento handle ↔ stroke_id NÃO confia na ordem em que
+        o OCS devolve as entidades: primeiro, cada entidade cujo
+        XDATA importado já declara um ``stroke_id`` esperado E cuja
+        geometria confere com o traço daquele id fica reservada para
+        ele (o XDATA que a F0 grava no DXF é o desempate de formas
+        idênticas); o restante casa por VÉRTICES (lidos host-side
+        com ezdxf) exigindo correspondência INEQUÍVOCA — uma forma
+        que bate com mais de um traço ainda sem par é recusada,
+        nunca adivinhada. Um traço sem geometria correspondente no
+        DXF, um vértice divergente ou um XDATA importado que
+        discorde do id declarado falham fechados ANTES de qualquer
+        escrita — um ``stroke_id`` na entidade errada é corrupção
+        de proveniência, não um detalhe. Devolve um relatório com
+        tempos medidos — ``open_to_queryable_s`` é o proxy do gate
+        G2.1 (≤ 2 s) — e com ``dropped_on_save`` (gate G2.3) e o
+        SHA-256 do arquivo verificado. Nada é fingido: qualquer
+        recusa levanta ``OcsError``.
         """
+        if not isinstance(stroke_ids, (list, tuple)) or any(
+            not isinstance(sid, str) or not sid for sid in stroke_ids
+        ):
+            raise ValueError(
+                "sync_strokes: stroke_ids deve ser uma lista de "
+                "strings não vazias (vazia só vale quando o DXF "
+                "também não tem traços)")
+        if len(set(stroke_ids)) != len(stroke_ids):
+            raise ValueError("stroke_ids duplicados: cada id é único")
+        expected = _dxf_stroke_vertices(dxf_path)
+        if len(expected) != len(stroke_ids):
+            raise OcsError(
+                f"DXF tem {len(expected)} traços em {LAYER} mas foram "
+                f"passados {len(stroke_ids)} stroke_ids",
+                code="stroke_count_mismatch",
+            )
         timings: dict[str, float] = {}
         started = time.perf_counter()
         self.open_dxf(dxf_path)
         timings["open_s"] = round(time.perf_counter() - started, 3)
         query_started = time.perf_counter()
-        handles = self.stroke_handles()
+        entities = self._stroke_entities()
         timings["open_to_queryable_s"] = round(time.perf_counter() - started, 3)
         timings["query_s"] = round(time.perf_counter() - query_started, 3)
-        if len(handles) != len(stroke_ids):
+        if len(entities) != len(expected):
             raise OcsError(
-                f"DXF tem {len(handles)} traços em {LAYER} mas foram "
-                f"passados {len(stroke_ids)} stroke_ids",
+                f"CAD abriu {len(entities)} traços em {LAYER} mas o DXF "
+                f"tem {len(expected)}",
                 code="stroke_count_mismatch",
             )
+        # O XDATA que o DXF já carrega (a F0 grava o stroke_id por
+        # entidade e o OCS o importa) é lido ANTES do pareamento:
+        # traços com vértices idênticos são indistinguíveis por
+        # geometria e só o id que o arquivo já trazia os separa sem
+        # adivinhar.
+        imported: dict[str, str | None] = {}
+        for entity in entities:
+            handle = entity.get("handle")
+            if not isinstance(handle, str) or not handle:
+                raise OcsError(
+                    f"entidade de traço sem handle: {entity!r}",
+                    code="bad_response",
+                )
+            imported[handle] = self.get_stroke_id(handle)
+        # Pareamento, nunca pela ordem da resposta do OCS: reserva
+        # pelo XDATA importado, depois geometria INEQUÍVOCA no
+        # restante (o índice i leva stroke_ids[i], por contrato com
+        # o chamador).
+        handle_of_index = self._pair_entities(
+            entities, expected, stroke_ids, imported)
+        handles = [handle_of_index[i] for i in range(len(stroke_ids))]
+        # Antes de escrever: o XDATA importado tem de concordar com o
+        # pareamento — uma divergência significa stroke_ids declarados
+        # em ordem errada ou arquivo adulterado.
+        for index, stroke_id in enumerate(stroke_ids):
+            handle = handle_of_index[index]
+            existing = imported[handle]
+            if existing is not None and existing != stroke_id:
+                raise OcsError(
+                    f"entidade {handle} já traz XDATA {existing!r} do "
+                    f"DXF, mas foi declarada {stroke_id!r}: nada foi "
+                    "escrito",
+                    code="xdata_conflict",
+                )
         round_trip: dict[str, str | None] = {}
-        for handle, stroke_id in zip(handles, stroke_ids):
+        for index, stroke_id in enumerate(stroke_ids):
+            handle = handle_of_index[index]
             self.set_stroke_id(handle, stroke_id)
             round_trip[stroke_id] = self.get_stroke_id(handle)
         mismatched = {
@@ -794,9 +976,7 @@ class OcsClient:
                 f"xdata round-trip divergiu: {mismatched}",
                 code="xdata_mismatch",
             )
-        audit_report = self.audit()
-        target = (audit_report.get("target") or {})
-        dropped = target.get("dropped_on_save")
+        dropped = _audit_dropped(self.audit())
         if dropped:
             raise OcsError(
                 f"audit recusou o save: dropped_on_save={dropped}",
@@ -807,7 +987,7 @@ class OcsClient:
             "dxf_path": str(dxf_path),
             "out_path": str(out_path),
             "handles": handles,
-            "stroke_ids": stroke_ids,
+            "stroke_ids": list(stroke_ids),
             "xdata_round_trip": round_trip,
             "timings_s": timings,
             "gate_g2_1_open_to_queryable_s": timings["open_to_queryable_s"],
@@ -818,6 +998,204 @@ class OcsClient:
                 "dropped_on_save": saved.get("dropped_on_save"),
             },
         }
+
+    @staticmethod
+    def _pair_entities(
+        entities: list[dict],
+        expected: list[list[tuple[float, float]]],
+        stroke_ids: list[str],
+        imported: dict[str, str | None],
+    ) -> dict[int, str]:
+        """índice do traço do DXF -> handle OCS, em duas fases.
+
+        1. Reserva pelo XDATA importado: uma entidade cujo XDATA já
+           declara um ``stroke_id`` esperado E cuja geometria confere
+           com o traço daquele id fica reservada para ele. É o que
+           separa formas idênticas — o id veio do próprio DXF da F0,
+           não de um palpite.
+        2. Geometria no restante, exigindo correspondência
+           INEQUÍVOCA: uma entidade cujos vértices batem com mais de
+           um traço ainda sem par é recusada (``ambiguous_geometry``)
+           — parear seria adivinhar, e um ``stroke_id`` na entidade
+           errada é corrupção de proveniência.
+
+        Falha fechada em handle ausente/duplicado ou entidade sem par
+        geométrico no DXF (``geometry_mismatch``, como antes).
+        """
+        index_of_id = {sid: i for i, sid in enumerate(stroke_ids)}
+        seen: set[str] = set()
+        parsed: list[tuple[str, list[tuple[float, float]] | None]] = []
+        for entity in entities:
+            handle = entity.get("handle")
+            if not isinstance(handle, str) or not handle:
+                raise OcsError(
+                    f"entidade de traço sem handle: {entity!r}",
+                    code="bad_response",
+                )
+            if handle in seen:
+                raise OcsError(
+                    f"handle duplicado na resposta do OCS: {handle}",
+                    code="bad_response",
+                )
+            seen.add(handle)
+            parsed.append((handle, _ocs_entity_vertices(entity)))
+        # Fase 1 — reserva por XDATA importado.
+        handle_of_index: dict[int, str] = {}
+        reserved: set[str] = set()
+        for handle, vertices in parsed:
+            claimed = imported.get(handle)
+            index = index_of_id.get(claimed) if claimed else None
+            if (
+                index is not None
+                and index not in handle_of_index
+                and vertices is not None
+                and _same_vertices(vertices, expected[index])
+            ):
+                handle_of_index[index] = handle
+                reserved.add(handle)
+        # Fase 2 — geometria inequívoca no restante.
+        remaining = [
+            i for i in range(len(expected)) if i not in handle_of_index
+        ]
+        for handle, vertices in parsed:
+            if handle in reserved:
+                continue
+            matches = [
+                i
+                for i in remaining
+                if vertices is not None
+                and _same_vertices(vertices, expected[i])
+            ]
+            if not matches:
+                raise OcsError(
+                    f"entidade {handle} do CAD não corresponde por "
+                    "geometria a nenhum traço do DXF (importação "
+                    "alterou a forma ou o DXF diverge dos stroke_ids)",
+                    code="geometry_mismatch",
+                )
+            if len(matches) > 1:
+                raise OcsError(
+                    f"entidade {handle} do CAD tem a mesma geometria "
+                    f"de {len(matches)} traços do DXF ainda sem par "
+                    f"(índices {matches}) e nenhum XDATA que a "
+                    "identifique: parear seria adivinhar — nada foi "
+                    "escrito",
+                    code="ambiguous_geometry",
+                )
+            index = matches[0]
+            remaining.remove(index)
+            handle_of_index[index] = handle
+        return handle_of_index
+
+
+def _audit_dropped(audit_report: dict) -> Any:
+    """``target.dropped_on_save`` do audit — a evidência do gate G2.3.
+
+    Um ``target`` ausente ou malformado NÃO vale "sem perda": sem o
+    campo não há prova de que o save seria lossless — falha fechada.
+    """
+    target = audit_report.get("target")
+    if not isinstance(target, dict) or "dropped_on_save" not in target:
+        raise OcsError(
+            f"audit sem 'target.dropped_on_save' legível: {audit_report}",
+            code="bad_response",
+        )
+    return target["dropped_on_save"]
+
+
+def _open_ring(points: list[tuple[float, float]]) -> list[tuple[float, float]]:
+    """Vértices sem o ponto final repetido (anel fechado guarda o flag,
+    não o vértice duplicado — igual ao ``_ring`` do step_export)."""
+    if len(points) > 1 and points[0] == points[-1]:
+        return points[:-1]
+    return points
+
+
+def _dxf_entity_points(entity: Any) -> list[tuple[float, float]] | None:
+    """Vértices (x, y) de uma entidade DXF de traço, ou ``None``.
+
+    ``export_dxf`` escreve só LWPOLYLINE; LINE e POLYLINE legada são
+    aceitas para DXFs feitos à mão. Tipos sem vértices legíveis não
+    são traços pareáveis.
+    """
+    dxftype = entity.dxftype()
+    if dxftype == "LWPOLYLINE":
+        return [(float(p[0]), float(p[1])) for p in entity.get_points("xy")]
+    if dxftype == "LINE":
+        return [
+            (float(entity.dxf.start.x), float(entity.dxf.start.y)),
+            (float(entity.dxf.end.x), float(entity.dxf.end.y)),
+        ]
+    if dxftype == "POLYLINE":
+        return [
+            (float(v.dxf.location.x), float(v.dxf.location.y))
+            for v in entity.vertices
+        ]
+    return None
+
+
+def _dxf_stroke_vertices(dxf_path: str | Path) -> list[list[tuple[float, float]]]:
+    """Vértices dos traços ``DRAW_STROKES`` do DXF, NA ORDEM DO ARQUIVO.
+
+    O arquivo é a verdade do pareamento: a entidade i do arquivo leva
+    ``stroke_ids[i]`` por contrato com o chamador, e cada entidade do
+    CAD é casada a ela por geometria — nunca pela ordem da resposta
+    do OCS. Import e leitura são host-side (ezdxf já é dependência do
+    escritor DXF da F0; fica lazy para não pesar o import do cliente).
+    """
+    try:
+        import ezdxf
+    except ImportError as exc:
+        raise OcsError(
+            "pareamento por geometria precisa do ezdxf instalado",
+            code="dxf_unreadable",
+        ) from exc
+    try:
+        doc = ezdxf.readfile(str(dxf_path))
+    except Exception as exc:
+        raise OcsError(
+            f"DXF ilegível para o pareamento de traços: {dxf_path}: {exc}",
+            code="dxf_unreadable",
+        ) from exc
+    shapes: list[list[tuple[float, float]]] = []
+    for entity in doc.modelspace():
+        if entity.dxf.get("layer") != LAYER:
+            continue
+        points = _dxf_entity_points(entity)
+        if points is not None:
+            shapes.append(_open_ring(points))
+    return shapes
+
+
+def _ocs_entity_vertices(entity: dict) -> list[tuple[float, float]] | None:
+    """Vértices (x, y) de uma entidade OCS, ou ``None`` se ilegíveis."""
+    vertices = entity.get("vertices")
+    if not isinstance(vertices, list):
+        return None
+    points: list[tuple[float, float]] = []
+    for vertex in vertices:
+        if (
+            not isinstance(vertex, (list, tuple))
+            or len(vertex) < 2
+            or any(
+                isinstance(v, bool) or not isinstance(v, (int, float))
+                for v in vertex[:2]
+            )
+        ):
+            return None
+        points.append((float(vertex[0]), float(vertex[1])))
+    return _open_ring(points)
+
+
+def _same_vertices(
+    a: list[tuple[float, float]], b: list[tuple[float, float]]
+) -> bool:
+    """Mesma forma ponto a ponto, dentro de ``_GEOMETRY_TOLERANCE_MM``."""
+    return len(a) == len(b) and all(
+        abs(pa[0] - pb[0]) <= _GEOMETRY_TOLERANCE_MM
+        and abs(pa[1] - pb[1]) <= _GEOMETRY_TOLERANCE_MM
+        for pa, pb in zip(a, b)
+    )
 
 
 def _new_request_id() -> str:

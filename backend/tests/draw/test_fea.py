@@ -263,6 +263,44 @@ class TestParsersAndWriter(unittest.TestCase):
         with self.assertRaises(ValueError):
             parse_ccx_dat("nada aqui\n")
 
+    def test_parse_ccx_dat_secao_pedida_vazia_nao_sangra_a_proxima(self):
+        # Secao RF/FIXED sem linhas de dados: a proxima secao (U/LOADED)
+        # NAO pode virar "forca" — seria um Rx errado e silencioso em
+        # vez de falha fechada.
+        text = DAT_MINIMAL.replace(
+            "         1 -1.050000E+03  0.000000E+00  0.000000E+00\n"
+            "         2 -1.050000E+03  0.000000E+00  0.000000E+00\n", "")
+        with self.assertRaises(ValueError):
+            parse_ccx_dat(text)
+
+    def test_parse_gmsh_msh_eof_abrupto_eh_valueerror(self):
+        # EOF no meio de um bloco: o parser documenta ValueError, nunca
+        # IndexError cru (o caller fail-closed conta com isso).
+        msh = (
+            "$MeshFormat\n4.1 0 8\n$EndMeshFormat\n"
+            "$Nodes\n1 4 1 4\n2 1 0 4\n1\n2\n3\n4\n0 0 0\n"
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "truncado.msh"
+            path.write_text(msh, encoding="utf-8")
+            with self.assertRaises(ValueError):
+                parse_gmsh_msh(path)
+
+    def test_write_ccx_inp_sem_nos_nas_arestas_bc_falha_fechado(self):
+        # Face fixa sem nos nas arestas y=0 / z=0: o deck sairia
+        # sub-restringido (modos de corpo rigido livres). Caso
+        # incompleto -> erro antes do solver, nunca um .inp cego.
+        mesh = {
+            "nodes": {1: (0, 5, 5), 2: (0, 15, 5), 3: (0, 5, 15),
+                      4: (0, 15, 15), 5: (100, 5, 5), 6: (100, 15, 5),
+                      7: (100, 5, 15), 8: (100, 15, 15)},
+            "tets": [[1, 2, 3, 4], [5, 6, 7, 8]],
+            "face_nodes": {},
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            with self.assertRaises(ValueError):
+                write_ccx_inp(mesh, Path(tmp) / "job.inp")
+
     def test_parse_gmsh_msh_real_mesh(self):
         import tempfile
         with tempfile.TemporaryDirectory() as tmp:

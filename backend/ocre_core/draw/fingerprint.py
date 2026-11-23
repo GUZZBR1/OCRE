@@ -53,6 +53,7 @@ guarantees only that exactly the object passed is what gets hashed.
 from __future__ import annotations
 
 import hashlib
+import json
 import re
 import struct
 from copy import deepcopy
@@ -247,13 +248,49 @@ def compute_fingerprint(inputs: Mapping[str, Any]) -> DrawApprovalFingerprint:
     return DrawApprovalFingerprint(hashlib.sha256(encoded).hexdigest(), encoded)
 
 
+def _check_record_shape(field_id: int, kind: int, payload: bytes) -> None:
+    """The (field_id, kind, length) triples compute_fingerprint can emit.
+
+    An audit that accepts a shape the encoder never produces would let a
+    forged framing pass as a fingerprint record -- so the check mirrors
+    the encoder exactly: fields 1-2 are 0x01 with a 32-byte digest, field
+    10 alone may be 0x00 (the null field, always empty), and everything
+    else is 0x03 (JCS).
+    """
+    if field_id in (1, 2):
+        if kind != 0x01 or len(payload) != 32:
+            raise DrawFingerprintInputError(
+                f"field {field_id} must be a kind-0x01 record with a "
+                "32-byte digest")
+    elif field_id == 10 and kind == 0x00:
+        if payload:
+            raise DrawFingerprintInputError(
+                "the null record (field 10, kind 0x00) must be empty")
+    elif kind != 0x03:
+        raise DrawFingerprintInputError(
+            f"field {field_id} must be a kind-0x03 (JCS) record")
+    else:
+        # Espelho exato do encoder: decodificar e re-emitir via
+        # ``_json_payload`` deve devolver os mesmos bytes — cobre
+        # estrutura do campo, ordenação e canonicidade JCS de uma vez.
+        try:
+            value = json.loads(payload)
+        except ValueError as exc:
+            raise DrawFingerprintInputError(
+                f"field {field_id} payload is not valid JSON") from exc
+        if _json_payload(field_id, value) != payload:
+            raise DrawFingerprintInputError(
+                f"field {field_id} payload is not a record the encoder emits")
+
+
 def parse_encoded(encoded: bytes) -> list[tuple[int, int, bytes]]:
     """Audit helper: parse a DRAW-AF/1 framing back into its ten records.
 
     Returns ``[(field_id, kind, payload), ...]`` in order. Raises
     :class:`DrawFingerprintInputError` on a wrong domain, a truncated or
-    mis-framed record, a field out of order, or trailing bytes. This never
-    approves anything -- it only lets an auditor check what was hashed.
+    mis-framed record, a record kind the encoder never emits for that
+    field, a field out of order, or trailing bytes. This never approves
+    anything -- it only lets an auditor check what was hashed.
     """
     if not isinstance(encoded, bytes) or not encoded.startswith(DOMAIN):
         raise DrawFingerprintInputError(
@@ -267,7 +304,9 @@ def parse_encoded(encoded: bytes) -> list[tuple[int, int, bytes]]:
         offset += 11
         if offset + length > len(encoded):
             raise DrawFingerprintInputError("truncated fingerprint record payload")
-        records.append((field_id, kind, encoded[offset:offset + length]))
+        payload = encoded[offset:offset + length]
+        _check_record_shape(field_id, kind, payload)
+        records.append((field_id, kind, payload))
         offset += length
     if [record[0] for record in records] != list(range(1, 11)):
         raise DrawFingerprintInputError(

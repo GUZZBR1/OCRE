@@ -193,7 +193,9 @@ def gate_batch(
     unavailable = sum(1 for r in results if r["status"] == "unavailable")
     if unavailable:
         verdict = "unavailable"
-    elif failed:
+    elif failed or not results:
+        # Batch vazio não é "todos passaram": zero arquivos verificados
+        # não é evidência de aprovação — o gate não finge um pass.
         verdict = "fail"
     else:
         verdict = "pass"

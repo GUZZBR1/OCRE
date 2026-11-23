@@ -22,8 +22,6 @@ _EXTENSIONS = {"dxf": (".dxf",), "step": (".step", ".stp")}
 
 
 def _check_dxf(name: str, data: bytes) -> list[dict[str, str]]:
-    if len(data) > MAX_ARTIFACT_BYTES:
-        return []
     try:
         import ezdxf
         drawing = ezdxf.read(io.StringIO(data.decode("cp1252", errors="surrogateescape")))
@@ -38,8 +36,6 @@ def _check_dxf(name: str, data: bytes) -> list[dict[str, str]]:
 
 
 def _check_step(name: str, data: bytes) -> list[dict[str, str]]:
-    if len(data) > MAX_ARTIFACT_BYTES:
-        return []
     try:
         text = data.decode("ascii")
     except UnicodeDecodeError:

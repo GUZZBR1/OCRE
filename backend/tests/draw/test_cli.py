@@ -269,6 +269,17 @@ class CliExportTests(unittest.TestCase):
                     self.assertFalse(
                         (tmp_path / "out" / "document.json").exists())
 
+    def test_export_records_broken_ai_adapter_factory(self):
+        # Uma factory explicita que falha ao resolver era engolida
+        # silenciosamente; agora o erro fica no summary (e o observer
+        # independente ainda roda, com adapter ausente).
+        with tempfile.TemporaryDirectory() as tmp:
+            code, _out, summary = self._export(
+                Path(tmp), ["--ai-adapter-factory", "nao_existe_modulo:create"])
+            self.assertEqual(code, 0, _out)
+            self.assertIsNotNone(summary.get("ai_adapter_error"))
+            self.assertIn("nao_existe_modulo", summary["ai_adapter_error"])
+
     def test_export_fails_when_png_missing(self):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
@@ -370,7 +381,7 @@ class CliExportTests(unittest.TestCase):
             self.assertFalse((out_dir / "document.json").exists())
             self.assertFalse((out_dir / ".document.dxf.tmp").exists())
 
-    def test_export_requires_explicit_origin(self):
+    def test_export_refuses_missing_origin_flag(self):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             png = write_png(tmp_path / "canvas.png")

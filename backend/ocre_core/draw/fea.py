@@ -376,9 +376,20 @@ def parse_gmsh_msh(path: str | Path) -> dict[str, Any]:
     fisico). Retorna ``{"nodes", "tets", "face_nodes", "physical"}``;
     ``face_nodes`` mapeia o nome do Physical Surface (``fixed`` /
     ``loaded``) para o conjunto de nos dos triangulos daquela face.
-    Levanta ValueError se o arquivo nao for MSH 4.1 legivel.
+    Levanta ValueError se o arquivo nao for MSH 4.1 legivel --
+    inclusive um arquivo truncado (EOF abrupto no meio de um bloco),
+    que nunca escapa como IndexError cru.
     """
     text = Path(path).read_text(encoding="utf-8", errors="replace")
+    try:
+        return _parse_msh(text)
+    except IndexError as exc:
+        raise ValueError(f".msh truncado ou malformado {path}: {exc}") from exc
+
+
+def _parse_msh(text: str) -> dict[str, Any]:
+    """Corpo do parser .msh -- EOF abrupto sai como IndexError e
+    ``parse_gmsh_msh`` traduz em ValueError (contrato publico)."""
     sections = _split_sections(text)
     fmt = sections.get("$MeshFormat", [])
     if not fmt or not fmt[0].strip().startswith("4.1"):
@@ -500,6 +511,13 @@ def write_ccx_inp(mesh: dict[str, Any], path: str | Path, *,
     tol = 1e-6
     uy_nodes = sorted(nid for nid in fixed if abs(nodes[nid][1]) <= tol)
     uz_nodes = sorted(nid for nid in fixed if abs(nodes[nid][2]) <= tol)
+    if not uy_nodes or not uz_nodes:
+        # Sem os nos das arestas y=0 / z=0 da face fixa o deck fica
+        # sub-restringido (modos de corpo rigido livres): caso
+        # incompleto -- fail-closed antes de rodar o solver.
+        raise ValueError("vinculos minimos impossiveis: a face fixa nao "
+                         "tem nos nas arestas y=0 e z=0 (uyline/uzline "
+                         "vazios)")
     lines: list[str] = [
         "*HEADING",
         f"axial bar, E={young_modulus_mpa:g} MPa, nu={poisson_ratio:g}, "
@@ -573,8 +591,10 @@ def _dat_column(
 
     A secao abre quando ``header`` casa com a linha; dentro dela,
     linhas que passam em ``row`` contribuem ``parts[column]``; a
-    primeira linha nao-dados apos valores fecha a secao. Vazio
-    quando a secao esta ausente.
+    primeira linha nao-vazia que nao e dado fecha a secao (num .dat
+    real as unicas linhas nao-dados sao os cabecalhos das outras
+    secoes). Vazio quando a secao esta ausente — e uma secao PEDIDA
+    vazia devolve vazio, nunca as linhas da secao seguinte.
     """
     values: list[float] = []
     in_section = False
@@ -586,7 +606,7 @@ def _dat_column(
             parts = line.split()
             if row(parts):
                 values.append(float(parts[column]))
-            elif parts and not parts[0].isdigit() and values:
+            elif parts and not parts[0].isdigit():
                 in_section = False
     return values
 
@@ -759,7 +779,7 @@ def run_axial_case(step_path: str | Path, workdir: str | Path, *,
                               "was not written"])
     try:
         mesh = parse_gmsh_msh(msh_path)
-    except (ValueError, IndexError) as exc:
+    except ValueError as exc:
         return _fail(result, [f"could not parse bar.msh: {exc}"])
     if not mesh["tets"]:
         return _fail(result, ["mesh has no C3D4 volume elements"])

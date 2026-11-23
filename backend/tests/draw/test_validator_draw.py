@@ -104,6 +104,20 @@ class FailClosedTests(unittest.TestCase):
         doc["strokes"][0]["length_mm"] = 201.0
         self.assert_invalid_with(doc, "point_outside_sheet")
 
+    def test_naive_datetime_does_not_abort_semantic_checks(self):
+        # Regressão: created_at naive + updated_at aware explodia a
+        # comparação em TypeError, abortava o _semantic inteiro e
+        # escondia o erro do traço atrás de invalid_document_shape.
+        doc = make_valid_doc()
+        doc["created_at"] = "2026-01-01T00:00:00"  # naive (schema flagra)
+        doc["strokes"][0]["points_mm"] = [[10, 10], [211, 10]]
+        doc["strokes"][0]["length_mm"] = 1.0  # diverge dos pontos
+        report = validate_draw_document(doc)
+        self.assertFalse(report.valid)
+        self.assertIn("point_outside_sheet", codes(report))
+        self.assertIn("length_mismatch", codes(report))
+        self.assertNotIn("invalid_document_shape", codes(report))
+
     def test_duplicate_order(self):
         doc = make_valid_doc()
         doc["strokes"][1]["order"] = 0

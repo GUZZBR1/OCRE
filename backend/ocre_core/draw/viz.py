@@ -201,8 +201,12 @@ def _read_frd(frd_path: str | Path):
         raise VizError(f".frd não encontrado: {frd_path}")
 
     points: dict[int, tuple[float, float, float]] = {}
-    cells: list[list[int]] = []
-    cell_type: str | None = None
+    # tipo de célula -> conectividades: um .frd pode misturar tipos
+    # (ex.: C3D4 + C3D10 no mesmo caso) e cada bloco meshio precisa de
+    # um tipo único — misturar tudo sob o último tipo lido seria um
+    # erro silencioso de conectividade.
+    cells: dict[str, list[list[int]]] = {}
+    current_cell_type: str | None = None
     # nome do bloco -> {node_id: [valores...]}; componentes na ordem.
     blocks: dict[str, dict[int, list[float]]] = {}
     block_components: dict[str, list[str]] = {}
@@ -251,11 +255,16 @@ def _read_frd(frd_path: str | Path):
                             f".frd {frd_path}: tipo de elemento {etype} não "
                             f"suportado pelo parser {sorted(_FRD_ELEMENT_TYPES)}"
                         )
-                    cell_type, current_nnodes = _FRD_ELEMENT_TYPES[etype]
+                    current_cell_type, current_nnodes = _FRD_ELEMENT_TYPES[etype]
                     continue
                 if line.startswith(" -2"):
+                    if current_cell_type is None:
+                        raise VizError(
+                            f".frd {frd_path}: linha de conectividade sem "
+                            "elemento aberto"
+                        )
                     # ids em campos de 10 a partir da coluna 3.
-                    cells.append(
+                    cells.setdefault(current_cell_type, []).append(
                         [
                             int(line[3 + 10 * i : 13 + 10 * i])
                             for i in range(current_nnodes)
@@ -316,9 +325,16 @@ def _read_frd(frd_path: str | Path):
     index_of = {nid: i for i, nid in enumerate(node_ids)}
 
     pts = np.array([points[nid] for nid in node_ids], dtype=float)
-    conn = np.array(
-        [[index_of[nid] for nid in elem] for elem in cells], dtype=np.int64
-    )
+    mesh_cells = [
+        (
+            cell_type,
+            np.array(
+                [[index_of[nid] for nid in elem] for elem in conns],
+                dtype=np.int64,
+            ),
+        )
+        for cell_type, conns in cells.items()
+    ]
     point_data: dict[str, object] = {}
     for name, values in blocks.items():
         if set(values) != set(node_ids):
@@ -341,7 +357,7 @@ def _read_frd(frd_path: str | Path):
             point_data[name] = arr
     return meshio.Mesh(
         points=pts,
-        cells=[(cell_type or "tetra10", conn)],
+        cells=mesh_cells,
         point_data=point_data,
     )
 

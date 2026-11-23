@@ -121,6 +121,41 @@ class TestMeshioFrdSpike(unittest.TestCase):
                 with self.subTest(variant=i), self.assertRaises(VizError):
                     viz.read_frd(bad)
 
+    def test_read_frd_tipos_de_elemento_mistos_viram_dois_blocos(self):
+        # Um .frd pode misturar tipos (ex.: C3D4 + C3D10 no mesmo caso):
+        # antes, todas as células herdavam o tipo do ÚLTIMO bloco lido
+        # e o np.array rachado saía como "malformado" — arquivo válido
+        # rejeitado. Agora cada tipo vira seu próprio bloco meshio.
+        def nodeline(i, x, y, z):
+            return f" -1{i:>10d}{x:>12.5E}{y:>12.5E}{z:>12.5E}"
+
+        coords = [
+            (0, 0, 0), (1, 0, 0), (0, 1, 0), (0, 0, 1),          # tetra
+            (2, 0, 0), (3, 0, 0), (2, 1, 0), (2, 0, 1),           # tetra10
+            (2.5, 0, 0), (2.5, 0.5, 0), (2, 0.5, 0), (2.5, 0, 0.5),
+            (2, 0.5, 0.5), (2, 0, 0.5),
+        ]
+        nodes = "\n".join(
+            nodeline(i, *c) for i, c in enumerate(coords, start=1))
+        elems = "\n".join([
+            f" -1{1:>10d}    3    0    1",
+            " -2" + "".join(f"{n:>10d}" for n in (1, 2, 3, 4)),
+            f" -1{2:>10d}    6    0    1",
+            " -2" + "".join(f"{n:>10d}" for n in range(5, 15)),
+        ])
+        frd = (
+            f"    2C                          14                                     1\n"
+            f"{nodes}\n -3\n"
+            "    3C                           2                                     1\n"
+            f"{elems}\n -3\n"
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "mixed.frd"
+            path.write_text(frd)
+            mesh = viz.read_frd(path)
+        blocks = {c.type: c.data.shape for c in mesh.cells}
+        self.assertEqual(blocks, {"tetra": (1, 4), "tetra10": (1, 10)})
+
     def test_frd_to_vtu_preserva_malha_e_campos(self):
         with tempfile.TemporaryDirectory() as tmp:
             vtu = Path(tmp) / "axial.vtu"

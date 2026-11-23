@@ -132,6 +132,13 @@ class LibreCADGateTests(unittest.TestCase):
         self.assertEqual(summary["verdict"], "fail")
         self.assertEqual(summary["failed"], 1)
 
+    def test_gate_batch_empty_is_not_a_pass(self):
+        # Zero arquivos verificados não é evidência de aprovação.
+        stub = make_stub(self.tmp, "librecad", STUB_PASS)
+        summary = gate_batch([], binary=str(stub))
+        self.assertNotEqual(summary["verdict"], "pass")
+        self.assertEqual(summary["total"], 0)
+
 
 if __name__ == "__main__":
     unittest.main()

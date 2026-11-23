@@ -53,7 +53,7 @@ def match(label: str) -> str | None:
     if not isinstance(label, str):
         return None
     key = " ".join(label.casefold().split())
-    return next((name for name, aliases in CANDIDATES.items() if key in aliases or key == name), None)
+    return next((name for name, aliases in CANDIDATES.items() if key in aliases), None)
 
 
 def material_match(part: str, material: str) -> str | None:

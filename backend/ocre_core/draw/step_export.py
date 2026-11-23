@@ -238,7 +238,12 @@ def worker_versions(*, worker_python: str | Path | None = None) -> dict:
     result = _run_worker({"kind": "versions"}, timeout_s=120, worker_python=worker_python)
     if not result.get("ok"):
         raise StepWorkerError(f"worker versions falhou: {result.get('error')}")
-    return result["versions"]
+    versions = result.get("versions")
+    if not isinstance(versions, dict):
+        raise StepWorkerError(
+            f"worker versions devolveu resultado sem 'versions': {result!r}"
+        )
+    return versions
 
 
 def _paper_size(document: dict) -> tuple[float, float]:
@@ -986,6 +991,11 @@ def export_dxf_ac1015(
         raise StepWorkerError(
             f"spike DXF: worker não produziu DXF: {result.get('dxf_error', 'sem detalhe')}"
         )
+    for key in ("dxf_sha256", "dxf_bytes"):
+        if key not in result:
+            raise StepWorkerError(
+                f"spike DXF: worker devolveu resultado sem {key!r}: {result!r}"
+            )
     return {
         "dxf_version": "AC1015",
         "dxf_path": result["dxf_path"],

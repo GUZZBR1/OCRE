@@ -666,12 +666,15 @@ def _cmd_export(args: argparse.Namespace) -> int:
     except ValueError as exc:
         dxf_tmp.unlink(missing_ok=True)
         return _fail(f"DXF export failed: {exc}", 1)
+    adapter_error: str | None = None
     adapter = getattr(args, "ai_adapter", None)
     if adapter is None and getattr(args, "ai_adapter_factory", None):
         try:
             adapter = _resolve_ai_adapter(args.ai_adapter_factory)
-        except Exception:
-            adapter = None
+        except Exception as exc:
+            # Explicit factory that fails to resolve is recorded, never
+            # swallowed silently (beta-run records it the same way).
+            adapter_error = f"{type(exc).__name__}: {exc}"
     if adapter is not None or getattr(args, "observe_conversions", False) or getattr(args, "ai_adapter_factory", None):
         from .ai.observer import observe_conversion
         observation = observe_conversion(doc, adapter, stage="dxf",
@@ -778,6 +781,7 @@ def _cmd_export(args: argparse.Namespace) -> int:
         "dxf_report": dxf_report,
         "librecad_gate": librecad_status,
         "librecad": librecad,
+        "ai_adapter_error": adapter_error,
         "out_dir": str(out_dir),
     }
     print(json.dumps(summary, sort_keys=True, indent=2))
@@ -1119,6 +1123,8 @@ def _beta_step_step(ctx: dict[str, Any]) -> dict[str, Any]:
             timeout_s=args.timeout_s,
             open_strokes_policy=args.open_strokes_policy)
     except StepExportError as exc:
+        if temp_context is not None:
+            temp_context.cleanup()
         return _beta_step_done(
             "step", "blocked", started,
             {"thickness_mm": args.thickness_mm,
@@ -1127,6 +1133,8 @@ def _beta_step_step(ctx: dict[str, Any]) -> dict[str, Any]:
             error=f"STEP export refused (fail-closed): {exc}",
         )
     except StepWorkerError as exc:
+        if temp_context is not None:
+            temp_context.cleanup()
         return _beta_step_done(
             "step", "failed", started,
             {"thickness_mm": args.thickness_mm,
@@ -1147,6 +1155,8 @@ def _beta_step_step(ctx: dict[str, Any]) -> dict[str, Any]:
     try:
         brepcheck = validate_step(step_path, timeout_s=args.timeout_s)
     except StepWorkerError as exc:
+        if temp_context is not None:
+            temp_context.cleanup()
         return _beta_step_done(
             "step", "failed", started,
             {"step": report},
@@ -1165,6 +1175,8 @@ def _beta_step_step(ctx: dict[str, Any]) -> dict[str, Any]:
     try:
         oracle = oracle_step(step_path, timeout_s=args.timeout_s)
     except StepWorkerError as exc:
+        if temp_context is not None:
+            temp_context.cleanup()
         return _beta_step_done(
             "step", "failed", started,
             {"step": report, "brepcheck": brepcheck},
@@ -1242,28 +1254,66 @@ def _beta_step_fea(ctx: dict[str, Any]) -> dict[str, Any]:
     return _beta_step_done("fea", status, started, detail, error=error)
 
 
+def _run_physics_subprocess(report_path: Path, timeout_s: float) -> dict[str, Any]:
+    """Roda o caso de contato como SUBPROCESSO e devolve o relatório lido.
+
+    Fronteira: ``python -m ocre_core.draw.physics --out <json>`` com
+    timeout obrigatório — a regra do próprio módulo physics é "nunca
+    em processo" (pybullet/mujoco/pinocchio são C++; um segfault de
+    engine mata o subprocesso, nunca o beta-run). Devolve o JSON que
+    o subprocesso escreveu; qualquer falha vira RuntimeError.
+    """
+    backend_dir = str(Path(__file__).resolve().parents[2])
+    env = dict(os.environ)
+    env["PYTHONPATH"] = backend_dir + os.pathsep + env.get("PYTHONPATH", "")
+    try:
+        completed = subprocess.run(
+            [sys.executable, "-m", "ocre_core.draw.physics",
+             "--out", str(report_path)],
+            capture_output=True, text=True, timeout=timeout_s,
+            shell=False, check=False, env=env,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError(
+            f"physics subprocess excedeu o timeout de {timeout_s}s"
+        ) from exc
+    except OSError as exc:
+        raise RuntimeError(
+            f"could not start the physics subprocess: {exc}"
+        ) from exc
+    if completed.returncode != 0 or not report_path.is_file():
+        raise RuntimeError(
+            f"physics subprocess failed (returncode "
+            f"{completed.returncode}): "
+            f"{(completed.stderr or completed.stdout or '')[-2000:]}"
+        )
+    try:
+        return json.loads(report_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise RuntimeError(f"physics report unreadable: {exc}") from exc
+
+
 def _beta_step_physics(ctx: dict[str, Any]) -> dict[str, Any]:
     """Step 5 (report step): PyBullet envelope + MuJoCo cross-check.
 
-    The load profile is returned as an artifact; the FEA gate is NOT
-    rewired to use it (that wiring is future work -- the gate stays
-    the declared axial case).
+    The engines run in a subprocess (``_run_physics_subprocess``), per
+    the physics module's own rule — never in-process. The load profile
+    is returned as an artifact; the FEA gate is NOT rewired to use it
+    (that wiring is future work -- the gate stays the declared axial
+    case).
     """
-    from .physics import run_contact_case
-
     started = time.perf_counter()
     phys_dir = ctx["out_dir"] / "physics"
     phys_dir.mkdir(parents=True, exist_ok=True)
     try:
-        report = run_contact_case()
+        report = _run_physics_subprocess(
+            phys_dir / "physics.json", ctx["args"].timeout_s)
     except Exception as exc:  # noqa: BLE001 - engine/model failure is a step failure
         return _beta_step_done(
             "physics", "failed", started,
             {}, error=f"physics contact case failed: "
             f"{type(exc).__name__}: {exc}",
         )
-    (phys_dir / "physics.json").write_text(
-        json.dumps(report, sort_keys=True, indent=2), encoding="utf-8")
     profiles: list[str] = []
     for engine in ("pybullet", "mujoco"):
         profile = report.get(f"load_profile_{engine}")
@@ -1397,13 +1447,18 @@ def _beta_step_viz(ctx: dict[str, Any]) -> dict[str, Any]:
             "viz", "failed", started, {},
             error=f"PyVista render failed: {exc}",
         )
+    except Exception as exc:  # noqa: BLE001 - a step failure is recorded, never a lost report
+        return _beta_step_done(
+            "viz", "failed", started, {},
+            error=f"render failed: {type(exc).__name__}: {exc}",
+        )
     try:
         stl = _beta_gmsh_surface_stl(
             ctx["fea_input_step"], viz_dir / "bar-surface.stl",
             timeout_s=args.timeout_s)
         glb = to_glb(viz_dir / "bar-surface.stl", viz_dir / "model.glb",
                      units="mm")
-    except (RuntimeError, VizError, ImportError) as exc:
+    except Exception as exc:  # noqa: BLE001 - a step failure is recorded, never a lost report
         return _beta_step_done(
             "viz", "failed", started,
             {"render": render},
@@ -1426,7 +1481,7 @@ def _beta_step_viz(ctx: dict[str, Any]) -> dict[str, Any]:
     try:
         pdf = plot_pdf(dxf_path, viz_dir / "drawing.pdf",
                        timeout_s=args.timeout_s)
-    except VizError as exc:
+    except Exception as exc:  # noqa: BLE001 - a step failure is recorded, never a lost report
         return _beta_step_done(
             "viz", "failed", started,
             {"render": render, "glb": glb, "stl": stl},
@@ -1441,7 +1496,7 @@ def _beta_step_fmu(ctx: dict[str, Any]) -> dict[str, Any]:
     from .fmu_gate import validate_fmu
 
     started = time.perf_counter()
-    result = validate_fmu(ctx["args"].fmu, timeout_s=ctx["args"].timeout_s)
+    result = validate_fmu(ctx["args"].fmu)
     status = _FMU_STEP_STATUS.get(str(result.get("status")), "failed")
     error = None
     if status in ("failed", "blocked"):
@@ -1754,7 +1809,13 @@ def _cmd_beta_run(args: argparse.Namespace) -> int:
                 runners += [_beta_step_fea, _beta_step_physics,
                             _beta_step_viz, _beta_step_fmu]
             for runner in runners:
-                steps.append(runner(ctx))
+                started = time.perf_counter()
+                try:
+                    steps.append(runner(ctx))
+                except Exception as exc:  # noqa: BLE001 - a step failure is recorded, never a lost report
+                    steps.append(_beta_step_done(
+                        runner.__name__.removeprefix("_beta_step_"),
+                        "failed", started, error=str(exc)))
     ran = {step["id"] for step in steps}
     for missing in (step_id for step_id in _BETA_STEP_IDS if step_id not in ran):
         if args.cad_only and missing in _BETA_SIM_STEP_IDS:
