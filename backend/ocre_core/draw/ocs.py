@@ -876,24 +876,36 @@ class OcsClient:
 
         ``stroke_ids`` deve estar na ordem das entidades de traço do
         DXF (a ordem do documento ``draw.paper.v1``, que é a ordem em
-        que ``export_dxf`` escreve). O pareamento handle ↔ stroke_id
-        NÃO confia na ordem em que o OCS devolve as entidades: cada
-        entidade é casada com o traço do DXF pelos VÉRTICES (lidos
-        host-side com ezdxf). Um traço sem geometria correspondente no
-        DXF, um vértice divergente ou um XDATA importado que discorde
-        do id declarado falham fechados ANTES de qualquer escrita —
-        um ``stroke_id`` na entidade errada é corrupção de
-        proveniência, não um detalhe. Devolve um relatório com tempos
-        medidos — ``open_to_queryable_s`` é o proxy do gate G2.1
-        (≤ 2 s) — e com ``dropped_on_save`` (gate G2.3) e o SHA-256 do
-        arquivo verificado. Nada é fingido: qualquer recusa levanta
-        ``OcsError``.
+        que ``export_dxf`` escreve). A lista PODE ser vazia — um
+        documento com todos os traços ``erased``/``pending``/de 1
+        ponto exporta um DXF sem traços e o ``included_stroke_ids``
+        do beta-run é ``[]``: o sync passa só se o DXF e o CAD
+        também tiverem zero traços (a contagem continua conferida).
+        O pareamento handle ↔ stroke_id NÃO confia na ordem em que
+        o OCS devolve as entidades: primeiro, cada entidade cujo
+        XDATA importado já declara um ``stroke_id`` esperado E cuja
+        geometria confere com o traço daquele id fica reservada para
+        ele (o XDATA que a F0 grava no DXF é o desempate de formas
+        idênticas); o restante casa por VÉRTICES (lidos host-side
+        com ezdxf) exigindo correspondência INEQUÍVOCA — uma forma
+        que bate com mais de um traço ainda sem par é recusada,
+        nunca adivinhada. Um traço sem geometria correspondente no
+        DXF, um vértice divergente ou um XDATA importado que
+        discorde do id declarado falham fechados ANTES de qualquer
+        escrita — um ``stroke_id`` na entidade errada é corrupção
+        de proveniência, não um detalhe. Devolve um relatório com
+        tempos medidos — ``open_to_queryable_s`` é o proxy do gate
+        G2.1 (≤ 2 s) — e com ``dropped_on_save`` (gate G2.3) e o
+        SHA-256 do arquivo verificado. Nada é fingido: qualquer
+        recusa levanta ``OcsError``.
         """
-        if not stroke_ids or any(
+        if not isinstance(stroke_ids, (list, tuple)) or any(
             not isinstance(sid, str) or not sid for sid in stroke_ids
         ):
             raise ValueError(
-                "sync_strokes precisa de stroke_ids (strings não vazias)")
+                "sync_strokes: stroke_ids deve ser uma lista de "
+                "strings não vazias (vazia só vale quando o DXF "
+                "também não tem traços)")
         if len(set(stroke_ids)) != len(stroke_ids):
             raise ValueError("stroke_ids duplicados: cada id é único")
         expected = _dxf_stroke_vertices(dxf_path)
@@ -917,18 +929,33 @@ class OcsClient:
                 f"tem {len(expected)}",
                 code="stroke_count_mismatch",
             )
-        # Pareamento por GEOMETRIA, nunca pela ordem da resposta do
-        # OCS: cada entidade casa com UM traço do DXF (o índice i leva
-        # stroke_ids[i], por contrato com o chamador).
-        handle_of_index = self._pair_entities(entities, expected)
+        # O XDATA que o DXF já carrega (a F0 grava o stroke_id por
+        # entidade e o OCS o importa) é lido ANTES do pareamento:
+        # traços com vértices idênticos são indistinguíveis por
+        # geometria e só o id que o arquivo já trazia os separa sem
+        # adivinhar.
+        imported: dict[str, str | None] = {}
+        for entity in entities:
+            handle = entity.get("handle")
+            if not isinstance(handle, str) or not handle:
+                raise OcsError(
+                    f"entidade de traço sem handle: {entity!r}",
+                    code="bad_response",
+                )
+            imported[handle] = self.get_stroke_id(handle)
+        # Pareamento, nunca pela ordem da resposta do OCS: reserva
+        # pelo XDATA importado, depois geometria INEQUÍVOCA no
+        # restante (o índice i leva stroke_ids[i], por contrato com
+        # o chamador).
+        handle_of_index = self._pair_entities(
+            entities, expected, stroke_ids, imported)
         handles = [handle_of_index[i] for i in range(len(stroke_ids))]
-        # Antes de escrever: se o OCS importou o XDATA que o próprio
-        # DXF já carrega (F0 grava stroke_id por entidade), ele tem de
-        # concordar com o pareamento — uma divergência significa
-        # stroke_ids declarados em ordem errada ou arquivo adulterado.
+        # Antes de escrever: o XDATA importado tem de concordar com o
+        # pareamento — uma divergência significa stroke_ids declarados
+        # em ordem errada ou arquivo adulterado.
         for index, stroke_id in enumerate(stroke_ids):
             handle = handle_of_index[index]
-            existing = self.get_stroke_id(handle)
+            existing = imported[handle]
             if existing is not None and existing != stroke_id:
                 raise OcsError(
                     f"entidade {handle} já traz XDATA {existing!r} do "
@@ -974,18 +1001,30 @@ class OcsClient:
 
     @staticmethod
     def _pair_entities(
-        entities: list[dict], expected: list[list[tuple[float, float]]]
+        entities: list[dict],
+        expected: list[list[tuple[float, float]]],
+        stroke_ids: list[str],
+        imported: dict[str, str | None],
     ) -> dict[int, str]:
-        """índice do traço do DXF -> handle OCS, por vértices.
+        """índice do traço do DXF -> handle OCS, em duas fases.
 
-        Cada entidade OCS casa com exatamente um traço ainda não
-        consumido; formas idênticas são indistinguíveis por definição
-        e consomem os índices na ordem do arquivo. Falha fechada em
-        handle ausente/duplicado, entidade sem vértices legíveis ou
-        geometria sem par no DXF.
+        1. Reserva pelo XDATA importado: uma entidade cujo XDATA já
+           declara um ``stroke_id`` esperado E cuja geometria confere
+           com o traço daquele id fica reservada para ele. É o que
+           separa formas idênticas — o id veio do próprio DXF da F0,
+           não de um palpite.
+        2. Geometria no restante, exigindo correspondência
+           INEQUÍVOCA: uma entidade cujos vértices batem com mais de
+           um traço ainda sem par é recusada (``ambiguous_geometry``)
+           — parear seria adivinhar, e um ``stroke_id`` na entidade
+           errada é corrupção de proveniência.
+
+        Falha fechada em handle ausente/duplicado ou entidade sem par
+        geométrico no DXF (``geometry_mismatch``, como antes).
         """
-        remaining = list(range(len(expected)))
-        handle_of_index: dict[int, str] = {}
+        index_of_id = {sid: i for i, sid in enumerate(stroke_ids)}
+        seen: set[str] = set()
+        parsed: list[tuple[str, list[tuple[float, float]] | None]] = []
         for entity in entities:
             handle = entity.get("handle")
             if not isinstance(handle, str) or not handle:
@@ -993,27 +1032,57 @@ class OcsClient:
                     f"entidade de traço sem handle: {entity!r}",
                     code="bad_response",
                 )
-            if handle in handle_of_index.values():
+            if handle in seen:
                 raise OcsError(
                     f"handle duplicado na resposta do OCS: {handle}",
                     code="bad_response",
                 )
-            vertices = _ocs_entity_vertices(entity)
-            index = next(
-                (
-                    i for i in remaining
-                    if vertices is not None
-                    and _same_vertices(vertices, expected[i])
-                ),
-                None,
-            )
-            if index is None:
+            seen.add(handle)
+            parsed.append((handle, _ocs_entity_vertices(entity)))
+        # Fase 1 — reserva por XDATA importado.
+        handle_of_index: dict[int, str] = {}
+        reserved: set[str] = set()
+        for handle, vertices in parsed:
+            claimed = imported.get(handle)
+            index = index_of_id.get(claimed) if claimed else None
+            if (
+                index is not None
+                and index not in handle_of_index
+                and vertices is not None
+                and _same_vertices(vertices, expected[index])
+            ):
+                handle_of_index[index] = handle
+                reserved.add(handle)
+        # Fase 2 — geometria inequívoca no restante.
+        remaining = [
+            i for i in range(len(expected)) if i not in handle_of_index
+        ]
+        for handle, vertices in parsed:
+            if handle in reserved:
+                continue
+            matches = [
+                i
+                for i in remaining
+                if vertices is not None
+                and _same_vertices(vertices, expected[i])
+            ]
+            if not matches:
                 raise OcsError(
                     f"entidade {handle} do CAD não corresponde por "
                     "geometria a nenhum traço do DXF (importação "
                     "alterou a forma ou o DXF diverge dos stroke_ids)",
                     code="geometry_mismatch",
                 )
+            if len(matches) > 1:
+                raise OcsError(
+                    f"entidade {handle} do CAD tem a mesma geometria "
+                    f"de {len(matches)} traços do DXF ainda sem par "
+                    f"(índices {matches}) e nenhum XDATA que a "
+                    "identifique: parear seria adivinhar — nada foi "
+                    "escrito",
+                    code="ambiguous_geometry",
+                )
+            index = matches[0]
             remaining.remove(index)
             handle_of_index[index] = handle
         return handle_of_index

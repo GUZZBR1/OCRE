@@ -180,7 +180,7 @@ def _normalize_primitives_with_skipped_types(
             # (str, None, ...) são recusados ANTES do float() — float(True)
             # = 1.0 e float("1.5") = 1.5 aceitariam coordenada corrompida
             # em silêncio, e NaN/Inf atravessariam como ponto não finito.
-            if not all(
+            if not isinstance(points, (list, tuple)) or not all(
                 isinstance(point, (list, tuple))
                 and len(point) == 2
                 and all(

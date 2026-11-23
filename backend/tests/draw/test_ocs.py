@@ -67,6 +67,7 @@ class _FakeOcsHandler(BaseHTTPRequestHandler):
     reversed_entities = False  # devolve /entities fora da ordem do DXF
     bad_json = False  # responde 200 com corpo não-JSON
     audit_broken = False  # audit responde sem o bloco 'target'
+    entities: list | None = None  # quando definido, substitui ENTITIES
 
     def log_message(self, *args):  # silence the test server
         pass
@@ -117,7 +118,9 @@ class _FakeOcsHandler(BaseHTTPRequestHandler):
                 "save_verified": True, "entities_create": True}})
         elif parsed.path == "/api/v1/entities":
             query = parse_qs(parsed.query)
-            entities = [e for e in ENTITIES
+            source = (ENTITIES if type(self).entities is None
+                      else type(self).entities)
+            entities = [e for e in source
                         if e["handle"] not in type(self).deleted]
             if "layer" in query:
                 entities = [e for e in entities if e["layer"] == query["layer"][0]]
@@ -189,7 +192,9 @@ class _FakeOcsHandler(BaseHTTPRequestHandler):
             # All-or-nothing, like the spec (§6.3): a missing handle
             # aborts the whole delete and names the absent ones.
             handles = [str(h).upper() for h in body.get("handles", [])]
-            existing = {e["handle"] for e in ENTITIES
+            source = (ENTITIES if type(self).entities is None
+                      else type(self).entities)
+            existing = {e["handle"] for e in source
                         if e["handle"] not in type(self).deleted}
             missing = [h for h in handles if h not in existing]
             if missing:
@@ -246,6 +251,7 @@ class _FakeOcsServer:
         _FakeOcsHandler.reversed_entities = False
         _FakeOcsHandler.bad_json = False
         _FakeOcsHandler.audit_broken = False
+        _FakeOcsHandler.entities = None
         self.httpd = ThreadingHTTPServer(("127.0.0.1", 0), _FakeOcsHandler)
         self.port = self.httpd.server_address[1]
         self.thread = threading.Thread(target=self.httpd.serve_forever,
@@ -276,6 +282,7 @@ class OcsClientMockTests(unittest.TestCase):
         _FakeOcsHandler.reversed_entities = False
         _FakeOcsHandler.bad_json = False
         _FakeOcsHandler.audit_broken = False
+        _FakeOcsHandler.entities = None
         self.client = OcsClient(port=self.server.port, token=TOKEN)
 
     def _f0_dxf(self, directory: Path) -> Path:
@@ -504,6 +511,118 @@ class OcsClientMockTests(unittest.TestCase):
                     out_path=Path(tmp) / "verified.dxf")
         self.assertEqual(ctx.exception.code, "xdata_conflict")
         self.assertEqual(_FakeOcsHandler.xdata, {"8C": "s-0002"})
+
+    def test_sync_strokes_accepts_empty_ids_when_dxf_and_cad_are_empty(self):
+        """Regressão do beta-run: documento cujos traços são todos
+        erased/pending/1-ponto exporta um DXF sem traços e
+        ``included_stroke_ids`` chega ``[]`` — a lista vazia não pode
+        crashar o passo (o caller só pega OcsError). Ela só passa se o
+        DXF e o CAD também tiverem zero traços: a contagem continua
+        sendo conferida."""
+        from ocre_core.draw.dxf_export import export_dxf
+
+        document = {
+            "schema": "draw.paper.v1",
+            "paper": {"format": "A4", "width_mm": 210.0,
+                      "height_mm": 297.0, "effective_width_mm": 210.0,
+                      "effective_height_mm": 296.47},
+            "strokes": [
+                {"stroke_id": "s-0001", "status": "erased",
+                 "points_mm": [[10.0, 30.0], [100.0, 30.0]]},
+            ],
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            dxf = Path(tmp) / "document.dxf"
+            report = export_dxf(document, dxf)
+            self.assertEqual(report["included_stroke_ids"], [])
+            # CAD vazio (os 3 handles do fake "apagados") + DXF sem
+            # traços: o sync de zero traços passa e não grava nada.
+            _FakeOcsHandler.deleted = {"8C", "8D", "8E"}
+            sync = self.client.sync_strokes(
+                dxf, [], out_path=Path(tmp) / "verified.dxf")
+            self.assertEqual(sync["handles"], [])
+            self.assertEqual(sync["stroke_ids"], [])
+            self.assertEqual(sync["xdata_round_trip"], {})
+            self.assertTrue(sync["save_verified"]["verified"])
+            self.assertEqual(_FakeOcsHandler.xdata, {})
+            # Com traços no CAD, a mesma lista vazia é recusada — a
+            # divergência de contagem não pode passar em silêncio.
+            _FakeOcsHandler.deleted = set()
+            with self.assertRaises(OcsError) as ctx:
+                self.client.sync_strokes(
+                    dxf, [], out_path=Path(tmp) / "verified2.dxf")
+            self.assertEqual(ctx.exception.code, "stroke_count_mismatch")
+
+    COINCIDENT_ENTITIES = [
+        {"handle": "8C", "type": "Polyline", "layer": "DRAW_STROKES",
+         "space": "*Model_Space",
+         "vertices": [[10.0, 266.47], [100.0, 266.47]]},
+        {"handle": "8F", "type": "Polyline", "layer": "DRAW_STROKES",
+         "space": "*Model_Space",
+         "vertices": [[10.0, 266.47], [100.0, 266.47]]},
+    ]
+
+    def _coincident_dxf(self, directory: Path) -> Path:
+        """DXF da F0 com dois traços de VÉRTICES IDÊNTICOS e ids
+        distintos (papel y-down -> CAD y-up: y_cad = 296,47 - 30)."""
+        from ocre_core.draw.dxf_export import export_dxf
+
+        document = {
+            "schema": "draw.paper.v1",
+            "paper": {"format": "A4", "width_mm": 210.0,
+                      "height_mm": 297.0, "effective_width_mm": 210.0,
+                      "effective_height_mm": 296.47},
+            "strokes": [
+                {"stroke_id": "s-0001", "status": "stable",
+                 "closed": False,
+                 "points_mm": [[10.0, 30.0], [100.0, 30.0]]},
+                {"stroke_id": "s-0002", "status": "stable",
+                 "closed": False,
+                 "points_mm": [[10.0, 30.0], [100.0, 30.0]]},
+            ],
+        }
+        dxf = Path(directory) / "document.dxf"
+        export_dxf(document, dxf)
+        return dxf
+
+    def test_sync_strokes_coincident_strokes_use_imported_xdata(self):
+        """Regressão: dois traços com vértices idênticos e ids
+        distintos, OCS devolvendo em ordem inversa. O pareamento por
+        geometria não pode distingui-los — só o XDATA que o próprio
+        DXF trouxe desempata; sem ele o first-match atrelava a
+        entidade errada e o check acusava xdata_conflict num desenho
+        válido."""
+        _FakeOcsHandler.entities = self.COINCIDENT_ENTITIES
+        _FakeOcsHandler.reversed_entities = True
+        _FakeOcsHandler.xdata = {"8C": "s-0001", "8F": "s-0002"}
+        with tempfile.TemporaryDirectory() as tmp:
+            report = self.client.sync_strokes(
+                self._coincident_dxf(Path(tmp)),
+                ["s-0001", "s-0002"],
+                out_path=Path(tmp) / "verified.dxf",
+            )
+        # OCS devolveu [8F, 8C]; o XDATA importado reserva cada
+        # entidade para o id que ela já declarava — ordem irrelevante.
+        self.assertEqual(report["handles"], ["8C", "8F"])
+        self.assertEqual(report["xdata_round_trip"],
+                         {"s-0001": "s-0001", "s-0002": "s-0002"})
+        self.assertEqual(self.client.scan_stroke_ids(),
+                         {"s-0001": "8C", "s-0002": "8F"})
+
+    def test_sync_strokes_refuses_ambiguous_geometry_without_xdata(self):
+        """Formas idênticas SEM XDATA que as identifique: parear por
+        geometria seria adivinhar qual entidade leva qual id — falha
+        fechada e nada é escrito."""
+        _FakeOcsHandler.entities = self.COINCIDENT_ENTITIES
+        with tempfile.TemporaryDirectory() as tmp:
+            with self.assertRaises(OcsError) as ctx:
+                self.client.sync_strokes(
+                    self._coincident_dxf(Path(tmp)),
+                    ["s-0001", "s-0002"],
+                    out_path=Path(tmp) / "verified.dxf",
+                )
+        self.assertEqual(ctx.exception.code, "ambiguous_geometry")
+        self.assertEqual(_FakeOcsHandler.xdata, {})
 
     def test_stroke_entities_refuse_truncated_scan(self):
         """Resposta com exatamente `limit` itens não prova completude:

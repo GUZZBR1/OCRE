@@ -1809,7 +1809,13 @@ def _cmd_beta_run(args: argparse.Namespace) -> int:
                 runners += [_beta_step_fea, _beta_step_physics,
                             _beta_step_viz, _beta_step_fmu]
             for runner in runners:
-                steps.append(runner(ctx))
+                started = time.perf_counter()
+                try:
+                    steps.append(runner(ctx))
+                except Exception as exc:  # noqa: BLE001 - a step failure is recorded, never a lost report
+                    steps.append(_beta_step_done(
+                        runner.__name__.removeprefix("_beta_step_"),
+                        "failed", started, error=str(exc)))
     ran = {step["id"] for step in steps}
     for missing in (step_id for step_id in _BETA_STEP_IDS if step_id not in ran):
         if args.cad_only and missing in _BETA_SIM_STEP_IDS:

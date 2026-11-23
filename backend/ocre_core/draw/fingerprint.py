@@ -270,22 +270,17 @@ def _check_record_shape(field_id: int, kind: int, payload: bytes) -> None:
         raise DrawFingerprintInputError(
             f"field {field_id} must be a kind-0x03 (JCS) record")
     else:
-        # O payload de um registro 0x03 é JCS (RFC 8785): decodificar e
-        # re-canonizar deve devolver os mesmos bytes — JSON inválido ou
-        # não-canônico é um registro que o encoder nunca emitiria.
+        # Espelho exato do encoder: decodificar e re-emitir via
+        # ``_json_payload`` deve devolver os mesmos bytes — cobre
+        # estrutura do campo, ordenação e canonicidade JCS de uma vez.
         try:
             value = json.loads(payload)
         except ValueError as exc:
             raise DrawFingerprintInputError(
                 f"field {field_id} payload is not valid JSON") from exc
-        try:
-            canonical = jcs(value)
-        except _OcreFingerprintInputError as exc:
+        if _json_payload(field_id, value) != payload:
             raise DrawFingerprintInputError(
-                f"field {field_id} payload is not JCS-encodable") from exc
-        if canonical != payload:
-            raise DrawFingerprintInputError(
-                f"field {field_id} payload is not canonical JCS")
+                f"field {field_id} payload is not a record the encoder emits")
 
 
 def parse_encoded(encoded: bytes) -> list[tuple[int, int, bytes]]:
