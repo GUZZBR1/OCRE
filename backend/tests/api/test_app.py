@@ -100,7 +100,8 @@ def test_cancel_accepts_empty_body_and_job_submit_rejects_non_strict_json_before
     assert cancelled.json()["state"] == "cancel_requested"
 
     raw_prefix = b'{"design_revision_id":"rev1","case_ref":"case","adapter_id":"a","adapter_version":"1","bundle":{},"eir":'
-    for index, raw_eir in enumerate((b'{"x":1,"x":2}', b'{"x":1e999}', b'{"x":NaN}', b'{"x":1,}')):
+    for index, raw_eir in enumerate((b'{"x":1,"x":2}', b'{"x":1e999}', b'{"x":NaN}', b'{"x":1,}',
+                                    b'{"x":' + b"9" * 5000 + b'}', b'{"x":"\\ud800"}')):
         response = client.post(
             "/v1/projects/project-a/jobs",
             headers={"Idempotency-Key": f"invalid-{index}", "Content-Type": "application/json"},

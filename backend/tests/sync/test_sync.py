@@ -90,6 +90,26 @@ def test_required_batch_identity_fields_must_be_nonempty(changes):
         batch(**changes)
 
 
+@pytest.mark.parametrize(
+    "changes",
+    [
+        {"project_id": 7},
+        {"batch_id": 7},
+        {"actor_id": 7},
+    ],
+)
+def test_required_batch_identity_fields_must_be_strings(changes):
+    with pytest.raises(ValueError):
+        batch(**changes)
+
+
+def test_truthy_non_string_identity_values_are_rejected():
+    with pytest.raises(ValueError):
+        SyncOperation(5, b"opaque CAD bytes")
+    with pytest.raises(ValueError):
+        BatchReceipt(batch(), 9)
+
+
 def test_operation_payload_must_remain_opaque_bytes():
     with pytest.raises(TypeError):
         SyncOperation("op-1", {"cad": "not interpreted"})

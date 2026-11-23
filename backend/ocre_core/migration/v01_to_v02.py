@@ -241,7 +241,7 @@ def migrate_v01_to_v02(
     if isinstance(resolutions, Mapping):
         if any(not isinstance(item, Mapping) for item in resolutions.values()):
             raise MigrationInputError("each resolution must be an object")
-        resolution_entries = [{"json_pointer": pointer, **dict(item)} for pointer, item in resolutions.items()]
+        resolution_entries = [dict(item, json_pointer=pointer) for pointer, item in resolutions.items()]
     elif isinstance(resolutions, (list, tuple)):
         resolution_entries = list(resolutions)
     else:

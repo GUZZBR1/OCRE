@@ -90,6 +90,37 @@ class TestMeshioFrdSpike(unittest.TestCase):
         self.assertAlmostEqual(float(sxx.min()), 21.0, places=2)
         self.assertAlmostEqual(float(sxx.max()), 21.0, places=2)
 
+    def test_read_frd_malformado_levanta_vizerror(self):
+        # .frd quebrado (campo não numérico, elemento apontando para nó
+        # inexistente, cabeçalho curto) era ValueError/IndexError/
+        # KeyError cru — crash do beta-run. Agora é VizError.
+        ok = (
+            "    2C                           4                                     1\n"
+            " -1         1 0.00000E+00 0.00000E+00 0.00000E+00\n"
+            " -1         2 1.00000E+00 0.00000E+00 0.00000E+00\n"
+            " -1         3 0.00000E+00 1.00000E+00 0.00000E+00\n"
+            " -1         4 0.00000E+00 0.00000E+00 1.00000E+00\n"
+            " -3\n"
+            "    3C                           1                                     1\n"
+            " -1         1    3    0    1\n"
+            " -2         1         2         3         4\n"
+            " -3\n"
+        )
+        variants = (
+            ok.replace("1.00000E+00 0", "XXXXXXXXXXXX 0"),   # float() cru
+            ok.replace("         4\n -3", "        99\n -3"),  # index_of[nid]
+            ok.replace(" -1         1    3    0    1", " -1         1"),
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            good = Path(tmp) / "ok.frd"
+            good.write_text(ok, encoding="utf-8")
+            self.assertEqual(viz.read_frd(good).points.shape, (4, 3))
+            for i, text in enumerate(variants):
+                bad = Path(tmp) / f"bad{i}.frd"
+                bad.write_text(text, encoding="utf-8")
+                with self.subTest(variant=i), self.assertRaises(VizError):
+                    viz.read_frd(bad)
+
     def test_frd_to_vtu_preserva_malha_e_campos(self):
         with tempfile.TemporaryDirectory() as tmp:
             vtu = Path(tmp) / "axial.vtu"

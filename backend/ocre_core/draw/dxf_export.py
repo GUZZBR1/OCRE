@@ -84,7 +84,17 @@ def _validate_points(
         raise DxfExportError(f"traço {stroke_id}: points_mm vazio ou ausente")
     clean: list[tuple[float, float]] = []
     for point in points:
-        if not isinstance(point, (list, tuple)) or len(point) != 2:
+        # Mesma regra de document._check_points: bool e não-número
+        # (str, None, ...) são recusados ANTES do float() — bool não é
+        # número aqui e float() deixaria TypeError escapar cru.
+        if (
+            not isinstance(point, (list, tuple))
+            or len(point) != 2
+            or any(
+                isinstance(v, bool) or not isinstance(v, (int, float))
+                for v in point
+            )
+        ):
             raise DxfExportError(f"traço {stroke_id}: ponto inválido {point!r}")
         x, y = float(point[0]), float(point[1])
         if not (math.isfinite(x) and math.isfinite(y)):

@@ -266,7 +266,7 @@ class ProposalTests(unittest.TestCase):
             kind="semantic-classification",
             content={"stroke_id": "s-0001", "label": "parede"},
             document_revision=doc["revision"],
-            document_sha256="abc",
+            document_sha256=document_sha256(doc),
         )
         confirmed = confirm(proposal, by="humano-1")
         self.assertEqual(confirmed.state, "confirmed")
@@ -318,6 +318,24 @@ class ProposalTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             apply_proposal(confirmed, doc)
 
+    def test_apply_against_another_document_same_revision_is_refused(self):
+        # A proposta se liga ao documento por sha256 — a mesma revision
+        # em OUTRO documento não aplica (a revision sozinha não basta).
+        doc_a = make_document()
+        doc_b = make_document()
+        self.assertEqual(doc_a["revision"], doc_b["revision"])
+        self.assertNotEqual(document_sha256(doc_a), document_sha256(doc_b))
+        proposal = new_proposal(
+            kind="semantic-classification",
+            content={"stroke_id": "s-0001", "label": "parede"},
+            document_revision=doc_a["revision"],
+            document_sha256=document_sha256(doc_a),
+        )
+        confirmed = confirm(proposal, by="humano-1")
+        apply_proposal(confirmed, doc_a)  # documento certo aplica
+        with self.assertRaises(ValueError):
+            apply_proposal(confirmed, doc_b)
+
     def test_apply_does_not_mutate_the_document(self):
         doc = make_document()
         before = dict(doc)
@@ -325,7 +343,7 @@ class ProposalTests(unittest.TestCase):
             kind="semantic-classification",
             content={"stroke_id": "s-0001", "label": "parede"},
             document_revision=doc["revision"],
-            document_sha256="abc",
+            document_sha256=document_sha256(doc),
         )
         apply_proposal(confirm(proposal, by="humano-1"), doc)
         self.assertEqual(doc, before)

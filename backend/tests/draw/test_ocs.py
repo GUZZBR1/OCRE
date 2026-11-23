@@ -429,6 +429,22 @@ class OcsClientMockTests(unittest.TestCase):
         self.assertTrue(report["save_verified"]["verified"])
         self.assertEqual(report["save_verified"]["dropped_on_save"], 0)
 
+    def test_sync_document_does_not_require_pending_strokes_in_cad(self):
+        # Traço pending nunca vai para o DXF da F0 — exigi-lo no CAD era
+        # stroke_missing_in_cad garantido e espúrio. Presente (aqui,
+        # synced à mão), ele é mantido: o documento não o mandou apagar.
+        self._synced_three()
+        document = {"schema": "draw.paper.v1", "strokes": [
+            {"stroke_id": "s-0001", "status": "stable"},
+            {"stroke_id": "s-0002", "status": "erased"},
+            {"stroke_id": "s-0003", "status": "pending"},
+        ]}
+        report = self.client.sync_document(document)
+        self.assertEqual(report["erased"], ["s-0002"])
+        self.assertEqual(report["live"], ["s-0001"])
+        self.assertEqual(report["remaining"],
+                         {"s-0001": "8C", "s-0003": "8E"})
+
     def test_sync_document_erased_already_absent_is_not_an_error(self):
         self._synced_three()
         self.client.erase_strokes(["s-0002"])

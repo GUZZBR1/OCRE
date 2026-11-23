@@ -177,7 +177,22 @@ def read_frd(frd_path: str | Path):
     FEA do beta escreve) e tipo 6 (C3D10/tetra10); outro tipo levanta
     ``VizError``. Arquivo sem bloco de resultado ainda é lido (malha
     nua, sem campo); ``render_field`` é quem falha fechado nesse caso.
+
+    Arquivo malformado (campo não numérico, elemento apontando para nó
+    inexistente etc.) levanta ``VizError`` — nunca um ValueError/
+    IndexError/KeyError cru do parse, que derrubaria o beta-run.
     """
+    try:
+        return _read_frd(frd_path)
+    except VizError:
+        raise
+    except (ValueError, IndexError, KeyError) as exc:
+        raise VizError(f".frd malformado {frd_path}: {exc}") from exc
+
+
+def _read_frd(frd_path: str | Path):
+    """Corpo do parser ``.frd`` — erros de formato saem crus para
+    ``read_frd`` traduzir em ``VizError``."""
     import numpy as np
     import meshio
 

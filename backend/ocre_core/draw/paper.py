@@ -95,19 +95,33 @@ def get_paper_spec(format: str) -> PaperSpec:
         raise ValueError(f"unknown paper format: {format!r}") from exc
 
 
+def _paper_number(paper: dict, name: str, default: Any) -> float:
+    """One numeric paper field; bool and non-numbers refuse fail-closed."""
+    value = paper.get(name, default)
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError(
+            f"paper.{name} deve ser um número (recebido {value!r})"
+        )
+    return float(value)
+
+
 def paper_size_mm(document: dict) -> tuple[float, float]:
     """Effective (width_mm, effective_height_mm) of the document's paper block.
 
-    Strict: raises ``ValueError`` for non-finite or non-positive sizes;
-    falls back to ``DEFAULT_SPEC`` fields when the block is absent.
+    Strict: raises ``ValueError`` for non-finite, non-positive, boolean
+    or non-numeric sizes; falls back to ``DEFAULT_SPEC`` fields when the
+    block is absent or is not an object.
     """
-    paper = document.get("paper") or {}
-    width = float(paper.get("width_mm", DEFAULT_SPEC.width_mm))
-    height = float(
-        paper.get(
-            "effective_height_mm",
-            paper.get("height_mm", DEFAULT_SPEC.effective_height_mm),
-        )
+    paper = document.get("paper")
+    if not isinstance(paper, dict):
+        # Bloco ausente ou malformado: o tamanho efetivo cai no papel
+        # default (o validador marca o documento inválido por si).
+        paper = {}
+    width = _paper_number(paper, "width_mm", DEFAULT_SPEC.width_mm)
+    height = _paper_number(
+        paper,
+        "effective_height_mm",
+        paper.get("height_mm", DEFAULT_SPEC.effective_height_mm),
     )
     if not (math.isfinite(width) and math.isfinite(height)):
         raise ValueError("paper.width_mm/height_mm devem ser finitos")

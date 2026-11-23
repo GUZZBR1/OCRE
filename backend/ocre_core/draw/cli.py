@@ -308,6 +308,10 @@ def _cmd_export(args: argparse.Namespace) -> int:
         return _fail(
             "--draw-commit must be a full 40-hex git revision "
             f"(got {args.draw_commit!r}); the sidecar requires it", 2)
+    if not (math.isfinite(args.timeout_s) and args.timeout_s > 0):
+        return _fail(
+            f"--timeout-s must be positive and finite "
+            f"(got {args.timeout_s!r})", 2)
     png_path = Path(args.png)
     if not png_path.is_file():
         return _fail(f"PNG not found: {png_path}", 2)
@@ -770,8 +774,11 @@ def _beta_step_ocs(ctx: dict[str, Any]) -> dict[str, Any]:
             f"the OCS step: {exc}",
         )
     ctx["ocs_dxf"] = dxf_path
+    # O DXF da F0 só carrega traços stable (include_pending fica False
+    # aqui) — o conjunto esperado no CAD é stable-only; pending nunca
+    # foi escrito no DXF e não pode entrar na comparação.
     live_ids = [s["stroke_id"] for s in doc.get("strokes", [])
-                if s.get("status") != "erased"]
+                if s.get("status") == "stable"]
     erased_ids = [s["stroke_id"] for s in doc.get("strokes", [])
                   if s.get("status") == "erased"]
     try:
@@ -900,6 +907,16 @@ def _beta_step_step(ctx: dict[str, Any]) -> dict[str, Any]:
             "step", "failed", started,
             {"step": report},
             error=f"BRepCheck failed: {exc}",
+        )
+    if brepcheck.get("brepcheck_valid") is not True:
+        # O passo depende do BRepCheck do worker (docstring): um STEP
+        # que o próprio kernel recusa não passa — com ou sem oráculo.
+        if temp_context is not None:
+            temp_context.cleanup()
+        return _beta_step_done(
+            "step", "failed", started,
+            {"step": report, "brepcheck": brepcheck},
+            error="worker BRepCheck says the STEP is not valid",
         )
     try:
         oracle = oracle_step(step_path, timeout_s=args.timeout_s)
@@ -1268,7 +1285,6 @@ def _cmd_beta_run(args: argparse.Namespace) -> int:
             "fmu": args.fmu,
             "timeout_s": args.timeout_s,
             "cad_only": args.cad_only,
-            "open_strokes_policy": args.open_strokes_policy,
             "proposal_file": str(proposal_file),
         },
         "documents": {},
@@ -1325,6 +1341,10 @@ def _cmd_beta_run(args: argparse.Namespace) -> int:
         preflight_errors.append(
             "material is required and declared by a human "
             "(material is never invented)")
+    if not (math.isfinite(args.timeout_s) and args.timeout_s > 0):
+        preflight_errors.append(
+            f"--timeout-s must be positive and finite "
+            f"(got {args.timeout_s!r})")
     working_doc: dict[str, Any] | None = None
     if args.document:
         doc_path = Path(args.document)
