@@ -151,13 +151,14 @@ class BetaRunMockedTests(unittest.TestCase):
         # --paper é flag de operador repassada ao namespace do passo
         # export; a resolução no registry e a precedência do
         # --draw-config ficam no _cmd_export — aqui só o repasse importa.
+        REPO_TMP.mkdir(exist_ok=True)
         for extra, expected_paper, expected_cfg in (
             ([], None, None),
             (["--paper", "a5-paisagem"], "a5-paisagem", None),
             (["--paper", "a5", "--draw-config", "cfg.py"], "a5", "cfg.py"),
         ):
             with self.subTest(extra=extra), \
-                    tempfile.TemporaryDirectory() as tmp:
+                    tempfile.TemporaryDirectory(dir=REPO_TMP) as tmp:
                 captured = {}
 
                 def fake_export(namespace):
@@ -177,7 +178,8 @@ class BetaRunMockedTests(unittest.TestCase):
         # --paper fora do registry é recusado pelo _cmd_export real
         # (resolve_paper falha fechado antes do subprocesso vectorize);
         # o passo export falha e a cadeia para — demais steps not-run.
-        with tempfile.TemporaryDirectory() as tmp:
+        REPO_TMP.mkdir(exist_ok=True)
+        with tempfile.TemporaryDirectory(dir=REPO_TMP) as tmp:
             code, out = _run_cli(
                 _base_argv(Path(tmp), ["--paper", "not-a-paper"]))
             report = json.loads(out)
