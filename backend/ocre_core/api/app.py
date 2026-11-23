@@ -6,6 +6,7 @@ from typing import Any, Callable
 from fastapi import Depends, FastAPI, Header, Query, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from starlette.concurrency import run_in_threadpool
 
 from ocre_core.application.services import (
     ApplicationError,
@@ -69,9 +70,11 @@ def create_app(application: OCREApplication, *, principal_dependency: Callable[.
                 declared_length = -1
             if declared_length > max_body_bytes:
                 raise ApplicationError("request_too_large", 413, "Request body exceeds the configured limit")
-        raw = await request.body()
-        if len(raw) > max_body_bytes:
-            raise ApplicationError("request_too_large", 413, "Request body exceeds the configured limit")
+        raw = bytearray()
+        async for chunk in request.stream():
+            raw += chunk
+            if len(raw) > max_body_bytes:
+                raise ApplicationError("request_too_large", 413, "Request body exceeds the configured limit")
         # Deferred import: the validator module pulls in jsonschema.
         from ocre_core.validation.validator import StrictJSONError, parse_json_strict
 
@@ -80,13 +83,24 @@ def create_app(application: OCREApplication, *, principal_dependency: Callable[.
         except StrictJSONError as exc:
             raise ApplicationError("validation_failed", 422, "Request body is not strict JSON") from exc
 
-    @app.post("/v1/projects/{project_id}/sync-batches")
+    sync_request_schema = SyncBatchBody.model_json_schema(ref_template="#/components/schemas/{model}")
+    sync_request_defs = sync_request_schema.pop("$defs", {})
+
+    @app.post(
+        "/v1/projects/{project_id}/sync-batches",
+        openapi_extra={
+            "requestBody": {
+                "required": True,
+                "content": {"application/json": {"schema": sync_request_schema}},
+            }
+        },
+    )
     async def submit_sync(project_id: str, request: Request, principal: Principal = Depends(principal_dependency)):
         try:
             body = SyncBatchBody.model_validate(await _strict_body(request))
         except ValidationError as exc:
             raise ApplicationError("validation_failed", 422, "Invalid sync batch") from exc
-        result = application.submit_sync(principal, project_id, body.model_dump())
+        result = await run_in_threadpool(application.submit_sync, principal, project_id, body.model_dump())
         return JSONResponse(status_code=200 if result["replayed"] else 201, content=result)
 
     @app.get("/v1/projects/{project_id}/sync-batches/{batch_id}")
@@ -104,7 +118,8 @@ def create_app(application: OCREApplication, *, principal_dependency: Callable[.
             body = JobSubmitBody.model_validate(await _strict_body(request))
         except ValidationError as exc:
             raise ApplicationError("validation_failed", 422, "Invalid job submission") from exc
-        return application.submit_job(
+        return await run_in_threadpool(
+            application.submit_job,
             principal,
             project_id,
             JobSubmission(**body.model_dump()),
@@ -133,5 +148,18 @@ def create_app(application: OCREApplication, *, principal_dependency: Callable[.
         principal: Principal = Depends(principal_dependency),
     ):
         return application.replay_events(principal, project_id, job_id, after_cursor, limit)
+
+    default_openapi = app.openapi
+
+    def openapi() -> dict[str, Any]:
+        # ``openapi_extra`` cannot declare components; nested body model refs
+        # must resolve under ``#/components/schemas`` for /docs and codegen.
+        schema = default_openapi()
+        schemas = schema.setdefault("components", {}).setdefault("schemas", {})
+        for name, definition in sync_request_defs.items():
+            schemas.setdefault(name, definition)
+        return schema
+
+    app.openapi = openapi
 
     return app
