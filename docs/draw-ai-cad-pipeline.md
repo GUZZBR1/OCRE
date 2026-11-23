@@ -56,6 +56,10 @@ cai num interpretador que não foi pedido. O caminho resolvido entra em
 export OCRE_VECTORIZE_PYTHON=~/draw/draw-core/.venv/bin/python
 ```
 
+`--paper FORMATO` (registry do `paper.py` — `A4`, `A5-PAISAGEM`, `CARTA`,
+...) escolhe a folha do passo export no `beta-run` como no `export`;
+`--draw-config` continua com precedência sobre ele.
+
 ## Exemplo de uso
 
 O exemplo abaixo usa um adapter local `my_provider:create_adapter`. O SHA do

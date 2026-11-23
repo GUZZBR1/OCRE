@@ -147,6 +147,50 @@ class BetaRunMockedTests(unittest.TestCase):
                     _run_cli(_base_argv(Path(tmp), extra))
                 self.assertEqual(run.call_args.kwargs["clean"], clean)
 
+    def test_paper_flag_reaches_export_namespace(self):
+        # --paper é flag de operador repassada ao namespace do passo
+        # export; a resolução no registry e a precedência do
+        # --draw-config ficam no _cmd_export — aqui só o repasse importa.
+        for extra, expected_paper, expected_cfg in (
+            ([], None, None),
+            (["--paper", "a5-paisagem"], "a5-paisagem", None),
+            (["--paper", "a5", "--draw-config", "cfg.py"], "a5", "cfg.py"),
+        ):
+            with self.subTest(extra=extra), \
+                    tempfile.TemporaryDirectory() as tmp:
+                captured = {}
+
+                def fake_export(namespace):
+                    captured["paper"] = namespace.paper
+                    captured["draw_config"] = namespace.draw_config
+                    return 2  # falha o passo; só o namespace importa
+
+                with mock.patch.object(
+                        cli_mod, "_cmd_export",
+                        side_effect=fake_export) as export_mock:
+                    _run_cli(_base_argv(Path(tmp), extra))
+                self.assertEqual(export_mock.call_count, 1)
+                self.assertEqual(captured["paper"], expected_paper)
+                self.assertEqual(captured["draw_config"], expected_cfg)
+
+    def test_unknown_paper_fails_export_step_before_chain(self):
+        # --paper fora do registry é recusado pelo _cmd_export real
+        # (resolve_paper falha fechado antes do subprocesso vectorize);
+        # o passo export falha e a cadeia para — demais steps not-run.
+        with tempfile.TemporaryDirectory() as tmp:
+            code, out = _run_cli(
+                _base_argv(Path(tmp), ["--paper", "not-a-paper"]))
+            report = json.loads(out)
+        self.assertEqual(code, 1, out)
+        self.assertEqual(report["status"], "failed")
+        export_step = report["steps"][0]
+        self.assertEqual(export_step["id"], "export")
+        self.assertEqual(export_step["status"], "failed")
+        self.assertEqual(export_step["detail"]["returncode"], 2)
+        self.assertEqual(
+            [s["status"] for s in report["steps"][1:]],
+            ["not-run"] * (len(report["steps"]) - 1))
+
     def _patch_chain(self, calls: list[str], ocs_binary: str | None):
         """Patch every layer; each wrapper records its step id."""
         from ocre_core.draw.dxf_export import export_dxf
