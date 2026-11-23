@@ -25,6 +25,12 @@ Garantias (fail-closed):
 - O sha256 do script é conferido ANTES de rodar; divergência recusa a
   execução (o Draw é alvo móvel — B8 do plano — e o pin protege contra
   rodar uma versão diferente da registrada no documento/sidecar).
+- O interpretador do subprocesso NÃO é fixo em ``sys.executable``: as
+  deps do vectorize (cv2+numpy) vivem em outro venv que o da CLI
+  (ezdxf). ``find_vectorize_python`` resolve argumento explícito > env
+  ``OCRE_VECTORIZE_PYTHON`` > ``sys.executable`` (fallback =
+  comportamento original); caminho declarado inexistente/não
+  executável recusa em vez de cair num interpretador não pedido.
 - Timeout obrigatório (default 300 s, configurável); sem shell; cwd
   isolado (o diretório de saída); stdout/stderr capturados.
 - Exit != 0, JSON ausente ou JSON sem a lista ``primitives`` => erro,
@@ -44,6 +50,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import os
 import subprocess
 import sys
 import tempfile
@@ -54,6 +61,7 @@ __all__ = [
     "DEFAULT_TIMEOUT_S",
     "CIRCLE_SEGMENTS",
     "VectorizeError",
+    "find_vectorize_python",
     "sha256_file",
     "sha256_bytes",
     "run_vectorize",
@@ -238,6 +246,51 @@ def _normalize_primitives_with_skipped_types(
     return polylines, skipped_types
 
 
+def find_vectorize_python(explicit: str | Path | None = None) -> Path:
+    """Interpretador do subprocesso vectorize (costura de venvs).
+
+    Ordem: argumento explícito > env ``OCRE_VECTORIZE_PYTHON`` >
+    ``sys.executable`` (fallback = comportamento original, usado pela
+    suíte e por CLIs com deps combinadas). Um caminho declarado —
+    argumento ou env — que não existe ou não é executável é
+    ``VectorizeError``: nunca cai silenciosamente num interpretador não
+    pedido (as deps do vectorize, cv2+numpy, podem não estar no venv da
+    CLI). O caminho devolvido é absoluto mas NÃO ``.resolve()`` nem
+    ``os.path.abspath()``: ``bin/python`` de venv é symlink e
+    resolvê-lo rodaria o subprocesso fora do venv, e ``abspath``
+    colapsaria ``..`` textualmente sem seguir symlinks de diretório —
+    validando um caminho e executando outro. Os componentes são
+    preservados (o kernel resolve ``..`` como ``is_file``/``os.access``
+    já fizeram na validação). ``~`` é expandido.
+    """
+    if explicit is not None:
+        raw: str | Path = explicit
+        source = f"explícito {explicit!r}"
+        expand = True
+    else:
+        env = os.environ.get("OCRE_VECTORIZE_PYTHON")
+        if env:
+            raw = env
+            source = f"OCRE_VECTORIZE_PYTHON={env!r}"
+            expand = True
+        else:
+            raw = sys.executable
+            source = "sys.executable"
+            expand = False
+    try:
+        candidate = Path(raw).expanduser() if expand else Path(raw)
+    except RuntimeError as exc:
+        raise VectorizeError(
+            f"interpretador do vectorize inválido ({source}): {exc}"
+        ) from exc
+    if not candidate.is_file() or not os.access(candidate, os.X_OK):
+        raise VectorizeError(
+            f"interpretador do vectorize inválido ({source}): "
+            f"{candidate} não existe ou não é executável"
+        )
+    return candidate if candidate.is_absolute() else Path.cwd() / candidate
+
+
 def run_vectorize(
     png_path: str | Path,
     script_path: str | Path,
@@ -251,13 +304,18 @@ def run_vectorize(
     epsilon: float | None = None,
     thinning: str | None = None,
     paper_mm: tuple[float, float] | None = None,
+    vectorize_python: str | Path | None = None,
 ) -> dict:
     """Roda o vectorize do Draw sobre ``png_path`` e devolve o resultado.
 
     ``expected_sha256`` é o hash pinado do ``src/draw/exporters/vectorize.py``; o
-    script é conferido antes de qualquer execução. O JSON de saída é
-    escrito num diretório isolado (``output_dir`` ou um temporário, que
-    é removido ao fim quando criado aqui) e lido de volta.
+    script é conferido antes de qualquer execução. ``vectorize_python``
+    escolhe o interpretador do subprocesso (``find_vectorize_python``:
+    argumento > ``OCRE_VECTORIZE_PYTHON`` > ``sys.executable``); o
+    caminho resolvido sai em ``result["python_path"]`` para a
+    proveniência. O JSON de saída é escrito num diretório isolado
+    (``output_dir`` ou um temporário, que é removido ao fim quando
+    criado aqui) e lido de volta.
     """
     png_path = Path(png_path).resolve()
     script_path = Path(script_path).resolve()
@@ -274,6 +332,7 @@ def run_vectorize(
             f"(esperado {expected_sha256}, obtido {actual_sha256}); "
             "recusado — revalidar o pin antes de rodar (B8)"
         )
+    python = find_vectorize_python(vectorize_python)
 
     own_tmpdir: tempfile.TemporaryDirectory | None = None
     if output_dir is None:
@@ -286,7 +345,7 @@ def run_vectorize(
         json_path = out_dir / "vectorize.json"
         svg_path = out_dir / "vectorize.svg"
         command = [
-            sys.executable,
+            str(python),
             str(script_path),
             str(png_path),
             "--json",
@@ -351,6 +410,7 @@ def run_vectorize(
         return {
             "script_path": str(script_path),
             "script_sha256": actual_sha256,
+            "python_path": str(python),
             "png_path": str(png_path),
             "json_path": str(json_path),
             "svg_path": str(svg_path),

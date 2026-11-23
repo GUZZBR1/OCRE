@@ -267,6 +267,11 @@ def _build_parser() -> argparse.ArgumentParser:
                      help="path to santleme/draw-core src/draw/exporters/vectorize.py (never copied into OCRE)")
     exp.add_argument("--vectorize-sha256", required=True,
                      help="pinned SHA-256 of the vectorize script (verified before running)")
+    exp.add_argument("--vectorize-python", default=None,
+                     help="python interpreter for the vectorize subprocess "
+                          "(default: OCRE_VECTORIZE_PYTHON env, else the "
+                          "interpreter running this CLI); the resolved path is "
+                          "recorded in export_parameters")
     exp.add_argument("--out-dir", required=True, help="output directory for the derivatives")
     exp.add_argument("--origin", required=True, choices=list(_ORIGINS),
                      help="document source origin (explicit, never a default)")
@@ -339,6 +344,10 @@ def _build_parser() -> argparse.ArgumentParser:
     beta.add_argument("--vectorize-sha256", required=True,
                       help="pinned SHA-256 of the vectorize script "
                            "(verified before running)")
+    beta.add_argument("--vectorize-python", default=None,
+                      help="python interpreter for the vectorize subprocess "
+                           "(default: OCRE_VECTORIZE_PYTHON env, else the "
+                           "interpreter running this CLI)")
     beta.add_argument("--out-dir", required=True,
                       help="output directory (report + step subdirs)")
     beta.add_argument("--origin", required=True, choices=list(_ORIGINS),
@@ -488,6 +497,7 @@ def _cmd_export(args: argparse.Namespace) -> int:
             thinning=args.thinning,
             stamps_path=stamps_path,
             paper_mm=paper_mm,
+            vectorize_python=args.vectorize_python,
         )
     except VectorizeError as exc:
         return _fail(f"vectorize failed: {exc}", 1)
@@ -583,6 +593,7 @@ def _cmd_export(args: argparse.Namespace) -> int:
 
     vectorize_parameters: dict[str, Any] = {
         "script_sha256": vectorized["script_sha256"],
+        "python": vectorized["python_path"],
         "primitives_total": vectorized["primitives_total"],
         "polylines_total": vectorized["polylines_total"],
         "primitives_without_points": vectorized["primitives_without_points"],
@@ -924,6 +935,7 @@ def _beta_step_export(ctx: dict[str, Any]) -> dict[str, Any]:
         png=args.png,
         vectorize_script=args.vectorize_script,
         vectorize_sha256=args.vectorize_sha256,
+        vectorize_python=args.vectorize_python,
         out_dir=str(export_dir),
         origin=args.origin,
         draw_repo=args.draw_repo,
@@ -1572,6 +1584,7 @@ def _cmd_beta_run(args: argparse.Namespace) -> int:
             "png": args.png,
             "vectorize_script": args.vectorize_script,
             "vectorize_sha256": args.vectorize_sha256,
+            "vectorize_python": args.vectorize_python,
             "origin": args.origin,
             "draw_repo": args.draw_repo,
             "draw_commit": args.draw_commit,

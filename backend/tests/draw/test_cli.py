@@ -12,6 +12,8 @@ from __future__ import annotations
 import hashlib
 import io
 import json
+import os
+import sys
 import tempfile
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
@@ -380,6 +382,77 @@ class CliExportTests(unittest.TestCase):
             self.assertFalse((out_dir / "document.dxf").exists())
             self.assertFalse((out_dir / "document.json").exists())
             self.assertFalse((out_dir / ".document.dxf.tmp").exists())
+
+    def test_vectorize_python_flag_lands_in_export_parameters(self):
+        # O interpretador resolvido faz parte da proveniência: entra em
+        # export_parameters.vectorize.python (sidecar E fingerprint).
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            code, out, _summary = self._export(
+                tmp_path, ["--vectorize-python", sys.executable])
+            self.assertEqual(code, 0, out)
+            expected = os.path.abspath(sys.executable)
+            sidecar = json.loads(
+                (tmp_path / "out" / "sidecar.json").read_text(encoding="utf-8"))
+            self.assertEqual(validate_draw_sidecar(sidecar), [])
+            vec = sidecar["export_parameters"]["vectorize"]
+            self.assertEqual(vec["python"], expected)
+            fp = json.loads(
+                (tmp_path / "out" / "fingerprint.json").read_text(encoding="utf-8"))
+            self.assertEqual(
+                fp["inputs"]["export_parameters"]["vectorize"]["python"],
+                expected)
+
+    def test_vectorize_python_env_is_used_and_recorded(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            with mock.patch.dict(
+                    os.environ, {"OCRE_VECTORIZE_PYTHON": sys.executable}):
+                code, out, _summary = self._export(tmp_path)
+            self.assertEqual(code, 0, out)
+            sidecar = json.loads(
+                (tmp_path / "out" / "sidecar.json").read_text(encoding="utf-8"))
+            vec = sidecar["export_parameters"]["vectorize"]
+            self.assertEqual(vec["python"], os.path.abspath(sys.executable))
+
+    def test_vectorize_python_missing_fails_closed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            code, _out, _summary = self._export(
+                tmp_path, ["--vectorize-python", str(tmp_path / "ausente")])
+            self.assertEqual(code, 1)
+            self.assertFalse((tmp_path / "out" / "document.json").exists())
+
+    def test_beta_step_export_forwards_vectorize_python(self):
+        # beta-run repassa --vectorize-python ao passo export.
+        import argparse
+
+        import ocre_core.draw.cli as cli_mod
+
+        seen: dict = {}
+
+        def fake_export(namespace):
+            seen["vectorize_python"] = namespace.vectorize_python
+            return 1
+
+        args = argparse.Namespace(
+            png="canvas.png", vectorize_script="vectorize.py",
+            vectorize_sha256="a" * 64,
+            vectorize_python="/opt/venv/bin/python",
+            document=None, origin="upstream-canvas-png",
+            draw_repo="santleme/draw", draw_commit=COMMIT,
+            draw_config=None, timeout_s=300.0, clean=False, stamps=None,
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            ctx = {
+                "args": args, "out_dir": Path(tmp),
+                "observe_conversions": False, "ai_adapter": None,
+            }
+            with mock.patch.object(
+                    cli_mod, "_cmd_export", side_effect=fake_export):
+                step = cli_mod._beta_step_export(ctx)
+        self.assertEqual(step["status"], "failed")
+        self.assertEqual(seen["vectorize_python"], "/opt/venv/bin/python")
 
     def test_export_refuses_missing_origin_flag(self):
         with tempfile.TemporaryDirectory() as tmp:
