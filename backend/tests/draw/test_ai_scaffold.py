@@ -279,6 +279,23 @@ class ProposalTests(unittest.TestCase):
         self.assertEqual(result.proposal_id, confirmed.proposal_id)
         self.assertEqual(result.applied_to_revision, doc["revision"])
 
+    def test_records_own_their_content_caller_and_decided_edits_do_not_leak(self):
+        doc = make_document()
+        content = {"stroke_id": "s-0001", "labels": ["parede"]}
+        proposal = new_proposal(
+            kind="semantic-classification",
+            content=content,
+            document_revision=doc["revision"],
+            document_sha256="abc",
+        )
+        content["labels"].append("muro")
+        content["extra"] = 1
+        self.assertEqual(proposal.content, {"stroke_id": "s-0001", "labels": ["parede"]})
+        for decided in (confirm(proposal, by="humano-1"), reject(proposal, by="humano-2")):
+            decided.content["injected"] = True
+            decided.content["labels"].append("muro")
+        self.assertEqual(proposal.content, {"stroke_id": "s-0001", "labels": ["parede"]})
+
     def test_apply_without_confirmation_is_refused(self):
         doc = make_document()
         proposal = new_proposal(
