@@ -201,8 +201,9 @@ def test_duplicate_callback_and_publish_before_ack_do_not_duplicate_transitions(
     assert runtime.deliver(original) is True
     event_count = len(store.read_events(tenant_id="tenant-a", job_id=job_id, limit=50))
     restarted = restart_runtime(store, tmp_path, tenant_id="tenant-a", job_id=job_id, outcome=SyntheticOutcome.SUCCEEDED)
-    assert restarted.deliver(original) is False
+    assert restarted.deliver(original) is True
     drain(restarted)
+    assert store.pending_outbox() == ()
     assert len(store.read_events(tenant_id="tenant-a", job_id=job_id, limit=50)) == event_count
     assert_monotonic_single_terminal(store, "tenant-a", job_id, JobState.SUCCEEDED)
     assert len(runtime.reports) == 1

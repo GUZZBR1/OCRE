@@ -106,7 +106,8 @@ def test_outbox_retry_after_failure_and_consumer_dedup(tmp_path):
     assert FakeOutboxDispatcher(store,calls.append).dispatch()==0
     consumer=FakeMessageConsumer(tmp_path/"consumer.db",lambda m:calls.append(m))
     assert consumer.consume(calls[0]) is True
-    assert FakeMessageConsumer(tmp_path/"consumer.db",lambda m:calls.append(m)).consume(calls[0]) is False
+    assert FakeMessageConsumer(tmp_path/"consumer.db",lambda m:calls.append(m)).consume(calls[0]) is True
+    assert len(calls)==2
 
 
 def test_publish_before_ack_crash_redelivers_duplicate(tmp_path):

@@ -215,9 +215,18 @@ class FakeMessageConsumer:
             return db.execute("DELETE FROM consumed WHERE status='processing'").rowcount
 
     def consume(self, message):
+        """Return True once the message is durably processed and safe to ack.
+
+        An already-'processed' row is an idempotent success: the handler ran to
+        completion, so the dispatcher may mark the outbox row delivered. A
+        'processing' row is a contested or abandoned claim; redelivery only
+        resumes after recover_abandoned clears it.
+        """
         with sqlite3.connect(self.database) as db:
             try: db.execute("INSERT INTO consumed VALUES(?,'processing')",(message.message_id,))
-            except sqlite3.IntegrityError: return False
+            except sqlite3.IntegrityError:
+                row=db.execute("SELECT status FROM consumed WHERE message_id=?",(message.message_id,)).fetchone()
+                return row is not None and row[0]=='processed'
         try:
             self.handle(message)
         except Exception:
