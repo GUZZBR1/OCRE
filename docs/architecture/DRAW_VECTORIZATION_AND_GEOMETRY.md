@@ -2,6 +2,8 @@
 
 Este documento detalha o diagnóstico técnico e o plano de evolução para a fronteira de **vetorização** e **reconstrução geométrica 2D → 3D** entre o **OCRE** (`backend/ocre_core/draw/`) e o **`santleme/draw-core`** (`src/draw/`).
 
+> **Status (2026-11-23): implementado na `main`.** Fase 1 (itens 1.1–1.4) via PRs #8 e #9; Fase 2 (itens 2.1–2.3) via PRs #5, #6 e #9; hardening da fronteira do vectorize via PRs #11, #14 e #15. As seções "Estado atual e gap" abaixo descrevem o estado **anterior** à implementação e permanecem como registro do diagnóstico e do raciocínio.
+
 ---
 
 ## Contexto e Fronteira Atual
