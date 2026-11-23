@@ -135,8 +135,16 @@ class ProcessBatchHost:
         except subprocess.TimeoutExpired:
             timed_out = True
             self._terminate_process_group(process)
+        if timed_out:
+            drain_deadline = deadline
+        else:
+            # A child that exited inside its timeout can leave buffered pipe
+            # data the drains still need to read; that lag is not a timeout.
+            # Bound it by the same budget used below for stuck drains instead
+            # of the already-spent deadline.
+            drain_deadline = time.monotonic() + self.termination_grace_seconds + 1.0
         for drain in (stdout, stderr):
-            drain.join(timeout=max(0, deadline - time.monotonic()))
+            drain.join(timeout=max(0, drain_deadline - time.monotonic()))
         if stdout.is_alive() or stderr.is_alive():
             timed_out = True
             self._terminate_process_group(process)
