@@ -111,10 +111,15 @@ python -m ocre_core.draw.cli export \
   --draw-commit 0123456789abcdef0123456789abcdef01234567
 ```
 
-O SHA-256 pinado continua sendo verificado no arquivo de `--vectorize-script`
-antes de qualquer execução (fail-closed) — note que o pin cobre o arquivo
-`vectorize.py`; o comportamento no HEAD também depende de `export_vectors.py`
-(mesmo pacote, mesmo clone). `--vectorize-pythonpath` sem `--vectorize-module`
-é recusado. As duas flags entram em `export_parameters.vectorize` no sidecar e
-no fingerprint — o modo de invocação faz parte do registro do que rodou. As
-mesmas flags existem em `beta-run`.
+O SHA-256 pinado é verificado no arquivo de `--vectorize-script` e, no modo
+módulo, também no arquivo de entrada real resolvido pelo Python no mesmo
+ambiente/cwd do subprocesso (`importlib.util.find_spec`) antes de executar `-m`
+(fail-closed se divergir ou não tiver arquivo regular) — note que o pin cobre
+o arquivo `vectorize.py`; o comportamento no HEAD também depende de
+`export_vectors.py` (mesmo pacote, mesmo clone). `--vectorize-pythonpath` sem
+`--vectorize-module` é recusado, e entradas relativas no `PYTHONPATH` herdado
+são absolutizadas antes de trocar para o diretório isolado de saída. As flags
+de invocação e `module_origin` (caminho real executado) entram em
+`export_parameters.vectorize` no sidecar e no fingerprint — o modo de invocação
+e a origem resolvida fazem parte do registro do que rodou. As mesmas flags
+existem em `beta-run`.

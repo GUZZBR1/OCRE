@@ -415,6 +415,10 @@ class CliExportTests(unittest.TestCase):
             self.assertEqual(validate_draw_sidecar(sidecar), [])
             vec = sidecar["export_parameters"]["vectorize"]
             self.assertEqual(vec["module"], "fake_vectorize_mod")
+            self.assertEqual(
+                vec["module_origin"],
+                str((mod_dir / "fake_vectorize_mod.py").resolve()),
+            )
             self.assertEqual(vec["pythonpath"], str(mod_dir.resolve()))
             fp = json.loads(
                 (tmp_path / "out" / "fingerprint.json").read_text(encoding="utf-8"))

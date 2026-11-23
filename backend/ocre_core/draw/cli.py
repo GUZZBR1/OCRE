@@ -628,6 +628,8 @@ def _cmd_export(args: argparse.Namespace) -> int:
         # O modo de invocação faz parte do registro do que rodou; sem a
         # flag o modo arquivo não deixa rastro (status quo).
         vectorize_parameters["module"] = args.vectorize_module
+        if vectorized.get("module_origin") is not None:
+            vectorize_parameters["module_origin"] = vectorized["module_origin"]
         if args.vectorize_pythonpath is not None:
             vectorize_parameters["pythonpath"] = _resolve_pythonpath(
                 args.vectorize_pythonpath)

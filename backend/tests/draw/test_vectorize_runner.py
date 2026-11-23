@@ -303,6 +303,10 @@ class RunVectorizeModuleModeTests(unittest.TestCase):
             )
         self.assertEqual(result["returncode"], 0)
         self.assertEqual(result["polylines_total"], 5)
+        self.assertEqual(
+            result["module_origin"],
+            str((self.mod_dir / "fake_vectorize_mod.py").resolve()),
+        )
         command = run.call_args.args[0]
         self.assertEqual(
             command[:3],
@@ -370,11 +374,79 @@ class RunVectorizeModuleModeTests(unittest.TestCase):
 
     def test_file_mode_command_and_env_are_unchanged(self):
         with mock.patch("subprocess.run", wraps=subprocess.run) as run:
-            run_vectorize(self.png, FAKE, self.fake_sha, self.tmp / "out")
+            result = run_vectorize(self.png, FAKE, self.fake_sha, self.tmp / "out")
         command = run.call_args.args[0]
         self.assertEqual(command[:2], [sys.executable, str(FAKE.resolve())])
         self.assertNotIn("-m", command)
         self.assertIsNone(run.call_args.kwargs["env"])
+        self.assertIsNone(result["module_origin"])
+
+    def test_module_mode_refuses_when_resolved_module_differs_from_pin(self):
+        # Bug 1: script_path tem o SHA pinado, mas o módulo resolvido no
+        # sys.path do subprocesso foi adulterado/é outra versão -> recusa
+        # antes de executar `-m`.
+        tampered = self.mod_dir / "fake_vectorize_mod.py"
+        tampered.write_text(
+            tampered.read_text(encoding="utf-8") + "\n# tampered\n",
+            encoding="utf-8",
+        )
+        with mock.patch("subprocess.run", wraps=subprocess.run) as run:
+            with self.assertRaises(VectorizeError) as ctx:
+                run_vectorize(
+                    self.png, FAKE, self.fake_sha, self.tmp / "out",
+                    module="fake_vectorize_mod", pythonpath=self.mod_dir,
+                )
+        self.assertIn("fake_vectorize_mod", str(ctx.exception))
+        # Apenas a sonda de resolução rodou; `-m` nunca foi executado.
+        self.assertEqual(run.call_count, 1)
+        self.assertNotIn("-m", run.call_args.args[0])
+
+    def test_module_mode_refuses_non_file_or_missing_module(self):
+        with self.assertRaises(VectorizeError):
+            run_vectorize(
+                self.png, FAKE, self.fake_sha, self.tmp / "out",
+                module="builtins",
+            )
+        with self.assertRaises(VectorizeError):
+            run_vectorize(
+                self.png, FAKE, self.fake_sha, self.tmp / "out",
+                module="nonexistent_ocre_vectorize_module_xyz",
+            )
+
+    def test_module_mode_absolutizes_relative_inherited_pythonpath(self):
+        # Bug 2: sem --vectorize-pythonpath, entradas relativas no PYTHONPATH
+        # herdado devem ser resolvidas contra o cwd do chamador antes de
+        # trocar para out_dir.
+        rel_mod_dir = os.path.relpath(self.mod_dir, Path.cwd())
+        with mock.patch.dict(
+            os.environ, {"PYTHONPATH": rel_mod_dir}
+        ), mock.patch("subprocess.run", wraps=subprocess.run) as run:
+            result = run_vectorize(
+                self.png, FAKE, self.fake_sha, self.tmp / "out",
+                module="fake_vectorize_mod",
+            )
+        self.assertEqual(result["returncode"], 0)
+        self.assertEqual(result["script_sha256"], self.fake_sha)
+        env = run.call_args.kwargs["env"]
+        self.assertEqual(env["PYTHONPATH"], str(self.mod_dir.resolve()))
+
+    def test_module_mode_absolutizes_relative_inherited_with_explicit_pythonpath(self):
+        rel_mod_dir = os.path.relpath(self.mod_dir, Path.cwd())
+        extra_dir = self.tmp / "extra"
+        extra_dir.mkdir()
+        with mock.patch.dict(
+            os.environ, {"PYTHONPATH": rel_mod_dir}
+        ), mock.patch("subprocess.run", wraps=subprocess.run) as run:
+            result = run_vectorize(
+                self.png, FAKE, self.fake_sha, self.tmp / "out",
+                module="fake_vectorize_mod", pythonpath=extra_dir,
+            )
+        self.assertEqual(result["returncode"], 0)
+        env = run.call_args.kwargs["env"]
+        self.assertEqual(
+            env["PYTHONPATH"],
+            str(extra_dir.resolve()) + os.pathsep + str(self.mod_dir.resolve()),
+        )
 
 
 if __name__ == "__main__":
