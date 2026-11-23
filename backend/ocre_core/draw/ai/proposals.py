@@ -60,12 +60,6 @@ class Proposal:
     def is_pending(self) -> bool:
         return self.state == "pending"
 
-    def is_confirmed(self) -> bool:
-        return self.state == "confirmed"
-
-    def is_rejected(self) -> bool:
-        return self.state == "rejected"
-
 
 @dataclass(frozen=True)
 class ApplicationResult:
