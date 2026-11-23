@@ -102,6 +102,36 @@ class AddStrokeTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             add_stroke(doc, [[0, 0], [float("inf"), 1]])
 
+    def test_circle_params_stored_and_imply_circle_shape(self):
+        doc = make_doc()
+        stroke = add_stroke(
+            doc,
+            [[15, 10], [10, 15], [5, 10], [10, 5]],
+            closed=True,
+            circle={"cx_mm": 10, "cy_mm": 10, "r_mm": 5},
+        )
+        self.assertEqual(stroke["shape"], "circle")
+        self.assertEqual(
+            stroke["circle"], {"cx_mm": 10.0, "cy_mm": 10.0, "r_mm": 5.0}
+        )
+
+    def test_circle_rejects_bad_params(self):
+        doc = make_doc()
+        points = [[10, 10], [20, 10], [20, 20]]
+        with self.assertRaises(ValueError):  # chave faltando
+            add_stroke(doc, points, closed=True,
+                       circle={"cx_mm": 10, "cy_mm": 10})
+        with self.assertRaises(ValueError):  # raio não positivo
+            add_stroke(doc, points, closed=True,
+                       circle={"cx_mm": 10, "cy_mm": 10, "r_mm": 0})
+        with self.assertRaises(ValueError):  # fora da folha
+            add_stroke(doc, points, closed=True,
+                       circle={"cx_mm": 205, "cy_mm": 10, "r_mm": 10})
+        with self.assertRaises(ValueError):  # shape incompatível
+            add_stroke(doc, points, closed=True, shape="polygon",
+                       circle={"cx_mm": 10, "cy_mm": 10, "r_mm": 5})
+        self.assertEqual(doc["strokes"], [])
+
     def test_timestamps_require_temporal_stamps(self):
         doc = make_doc(order_kind="unknown")
         with self.assertRaises(ValueError):

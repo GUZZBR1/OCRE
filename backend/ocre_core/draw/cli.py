@@ -247,6 +247,12 @@ def _build_parser() -> argparse.ArgumentParser:
     beta.add_argument("--material", default=None,
                       help="DECLARED material name (required; missing "
                            "blocks the job, never estimated)")
+    beta.add_argument("--open-strokes-policy",
+                      choices=("fail", "skip-all"), default="fail",
+                      help="policy for stable OPEN strokes in the STEP export: "
+                           "'fail' (default) refuses the export; 'skip-all' "
+                           "records and skips them, still failing if no "
+                           "closed stable stroke remains")
     beta.add_argument("--ai-adapter-factory", default=None,
                       help="optional module:callable returning a ModelAdapter; injectable provider seam")
     beta.add_argument("--proposal-file", default=None,
@@ -837,7 +843,8 @@ def _beta_step_step(ctx: dict[str, Any]) -> dict[str, Any]:
     try:
         report = document_to_step(
             ctx["doc"], args.thickness_mm, args.material, step_path,
-            timeout_s=args.timeout_s)
+            timeout_s=args.timeout_s,
+            open_strokes_policy=args.open_strokes_policy)
     except StepExportError as exc:
         return _beta_step_report(
             "step", "blocked", time.perf_counter() - started,
@@ -1248,6 +1255,7 @@ def _cmd_beta_run(args: argparse.Namespace) -> int:
             "fmu": args.fmu,
             "timeout_s": args.timeout_s,
             "cad_only": args.cad_only,
+            "open_strokes_policy": args.open_strokes_policy,
             "proposal_file": str(proposal_file),
         },
         "documents": {},

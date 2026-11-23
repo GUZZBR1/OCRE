@@ -360,6 +360,32 @@ class BetaRunMockedTests(unittest.TestCase):
         self.assertEqual(report["documents"]["export"]["doc_id"],
                          "11111111-2222-4333-8444-555555555555")
 
+    def test_open_strokes_policy_flag_reaches_step_export(self):
+        calls: list[str] = []
+        self._patch_chain(calls, ocs_binary="/fake/OpenCADStudio")
+        with tempfile.TemporaryDirectory() as tmp:
+            out_dir = Path(tmp) / "out"
+            for flag, expected in (([], "fail"),
+                                   (["--open-strokes-policy", "skip-all"],
+                                    "skip-all")):
+                with self.subTest(flag=flag):
+                    with mock.patch(
+                        "ocre_core.draw.step_export.document_to_step",
+                        return_value={
+                            "output_path": "x.step", "output_sha256": "d" * 64,
+                            "output_bytes": 9, "file_schema": "AP242",
+                            "thickness_mm": 2.0, "material_declared": "steel",
+                            "stroke_ids": ["s-0001"], "skipped": [],
+                            "profiles": 1, "expected_volume_mm3": 6400.0,
+                            "volume_mm3": 6400.0,
+                            "bbox_mm": [[0, 0, 0], [1, 1, 2]],
+                            "worker_versions": {}},
+                    ) as step:
+                        code, _out = _run_cli(_base_argv(out_dir, flag))
+                    self.assertEqual(code, 0, _out)
+                    self.assertEqual(
+                        step.call_args.kwargs["open_strokes_policy"], expected)
+
     def test_missing_thickness_blocks_fail_closed_before_any_step(self):
         calls: list[str] = []
         self._patch_chain(calls, ocs_binary="/fake/OpenCADStudio")

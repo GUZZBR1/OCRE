@@ -16,7 +16,7 @@ contra conjunto real selado.
 
 | Arquivo | Papel |
 |---|---|
-| `backend/ocre_core/draw/step_export.py` | Host OCRE (só stdlib). Valida o documento, traduz traços em perfis, chama o worker, confere o volume. NUNCA importa build123d/OCP. |
+| `backend/ocre_core/draw/step_export.py` | Host OCRE (só stdlib). Valida o documento, traduz traços em regiões (contorno externo + furos, regra par-ímpar), chama o worker, confere o volume líquido. NUNCA importa build123d/OCP. |
 | `backend/ocre_core/draw/step_worker.py` | Worker: roda SÓ como script sob `.venv-beta/bin/python`. Importa build123d/OCP, faz perfil -> `extrude` -> STEP, BRepCheck, DXF AC1015. |
 | `backend/tests/draw/test_step_export.py` | Testes (documentos sintéticos; bateria real é passo posterior). |
 | `.venv-beta/` | Venv próprio do beta (não versionado). Só build123d + deps. |
@@ -69,12 +69,26 @@ Regras fail-closed (o host recusa antes de chamar o worker):
 
 - Espessura e material são DECLARADOS por humano — nunca inventados.
   `thickness_mm=None`/<=0 ou `material` vazio -> `StepExportError`.
-- Traço aberto `stable` -> recusa (nunca vira sólido).
+- Traço aberto `stable` -> recusa por padrão
+  (`open_strokes_policy="fail"`). Com `"skip-all"` (CLI
+  `--open-strokes-policy`) é pulado e registrado em `skipped`
+  (`reason="open_stroke"`); ainda assim falha se nenhum traço fechado
+  `stable` restar. Não existe papel "auxiliar" persistido no documento,
+  então não há `skip-aux`.
 - Documento sem traço fechado `stable` -> recusa.
 - `erased` nunca entra; `pending` é pulado e registrado no relatório.
 - Y do papel (y-down) vira Y CAD (y-up): `y_cad = altura_efetiva - y_papel`.
+- Contornos aninhados viram furos e ilhas (regra par-ímpar: profundidade
+  par = sólido/ilha, ímpar = furo). Contornos que se cruzam ou se tocam
+  (inclusive auto-interseção) recusam antes do worker — geometria
+  degenerada nunca chega ao kernel.
+- Traço `shape="circle"` com bloco `circle` válido (`cx_mm`/`cy_mm`/
+  `r_mm`, schema `draw-paper` 0.1.0) vira wire analítico exato no STEP
+  (`Circle` do build123d, sem facetas); sem o bloco, segue a polilinha
+  discretizada. DXF continua polilinha por compatibilidade.
 
-O host confere o volume do sólido contra área do perfil x espessura
+O host confere o volume do sólido contra a área líquida das regiões
+(externa - furos; `pi*r^2` para círculos analíticos) x espessura
 (tolerância relativa 0,1%); divergência maior -> erro, não relatório.
 
 ## Spikes do Senado (resultados em `docs/step-spikes-RESULTADO.md`)
@@ -135,5 +149,8 @@ independente; o gap fica registrado no relatório e no código.
   `stroke_id`/`order`/`status` — o documento `draw.paper.v1` continua
   sendo o mestre; o fingerprint é `DRAW:PAPER-APPROVAL:FINGERPRINT`
   (errata do Senado; nunca o rótulo antigo `DRAW-AF/1`).
-- Perfis que se auto-intersectam ou com área zero falham no worker
-  (`make_face`/`extrude`) e viram erro de job — fail-closed.
+- Perfis que se auto-intersectam, se cruzam ou se tocam são recusados
+  no host (`_check_no_crossings`) antes do worker; região com área
+  líquida nula/negativa (furos cobrem o contorno) também recusa —
+  fail-closed em duas camadas, antes do kernel e na verificação de
+  volume.

@@ -67,6 +67,16 @@ class ValidDocumentTests(unittest.TestCase):
         add_stroke(doc, [[0, 0], [1, 1]], t_start_ms=0, t_end_ms=5)
         self.assertTrue(validate_draw_document(doc).valid)
 
+    def test_circle_block_document_is_valid(self):
+        doc = make_valid_doc()
+        add_stroke(
+            doc,
+            [[15, 10], [10, 15], [5, 10], [10, 5]],
+            closed=True,
+            circle={"cx_mm": 10, "cy_mm": 10, "r_mm": 5},
+        )
+        self.assertTrue(validate_draw_document(doc).valid)
+
 
 class FailClosedTests(unittest.TestCase):
     def assert_invalid_with(self, doc, code, previous=None):
@@ -178,6 +188,25 @@ class FailClosedTests(unittest.TestCase):
             validate_draw_document_or_raise(doc)
         self.assertFalse(ctx.exception.report.valid)
 
+    def test_circle_without_circle_shape_is_invalid(self):
+        doc = make_valid_doc()
+        doc["strokes"][0]["circle"] = {"cx_mm": 15, "cy_mm": 15, "r_mm": 3}
+        self.assert_invalid_with(doc, "circle_without_circle_shape")
+
+    def test_circle_outside_sheet_is_invalid(self):
+        doc = make_valid_doc()
+        doc["strokes"][1]["shape"] = "circle"
+        doc["strokes"][1]["circle"] = {"cx_mm": 208, "cy_mm": 50, "r_mm": 10}
+        self.assert_invalid_with(doc, "circle_outside_sheet")
+
+    def test_circle_bad_params_are_invalid(self):
+        doc = make_valid_doc()
+        doc["strokes"][1]["shape"] = "circle"
+        doc["strokes"][1]["circle"] = {"cx_mm": 55, "cy_mm": 55, "r_mm": -1}
+        self.assert_invalid_with(doc, "schema_validation")
+        doc["strokes"][1]["circle"] = {"cx_mm": 55, "cy_mm": 55, "r_mm": 5, "x": 1}
+        self.assert_invalid_with(doc, "schema_validation")
+
 
 class PreviousRevisionTests(unittest.TestCase):
     def assert_invalid_with(self, doc, code, previous=None):
@@ -223,6 +252,20 @@ class PreviousRevisionTests(unittest.TestCase):
         prev = copy_document(doc)
         doc["strokes"][0]["points_mm"] = [[10, 10], [30, 10], [30, 30]]
         doc["strokes"][0]["length_mm"] = 40.0
+        doc["revision"] = prev["revision"] + 1
+        self.assert_invalid_with(doc, "stable_points_mutated", previous=prev)
+
+    def test_stable_circle_params_are_immutable(self):
+        doc = make_valid_doc()
+        add_stroke(
+            doc,
+            [[15, 10], [10, 15], [5, 10], [10, 5]],
+            closed=True,
+            circle={"cx_mm": 10, "cy_mm": 10, "r_mm": 5},
+        )
+        stabilize_stroke(doc, "s-0003")
+        prev = copy_document(doc)
+        doc["strokes"][2]["circle"]["r_mm"] = 9.0
         doc["revision"] = prev["revision"] + 1
         self.assert_invalid_with(doc, "stable_points_mutated", previous=prev)
 

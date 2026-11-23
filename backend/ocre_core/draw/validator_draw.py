@@ -400,6 +400,31 @@ def _semantic(
             _add(diagnostics, "semantic", f"{ptr}/t_end_ms", "invalid_time_range",
                  "t_end_ms must not be earlier than t_start_ms")
 
+        circle = stroke.get("circle")
+        if circle is not None:
+            if stroke.get("shape") != "circle":
+                _add(diagnostics, "semantic", f"{ptr}/circle",
+                     "circle_without_circle_shape",
+                     "circle parameters require shape 'circle'")
+            if (
+                not isinstance(circle, dict)
+                or sorted(circle) != ["cx_mm", "cy_mm", "r_mm"]
+                or not all(_is_number(circle.get(k)) for k in ("cx_mm", "cy_mm", "r_mm"))
+                or float(circle["r_mm"]) <= 0
+            ):
+                _add(diagnostics, "semantic", f"{ptr}/circle",
+                     "invalid_circle",
+                     "circle requires finite cx_mm, cy_mm and r_mm > 0")
+            elif not (
+                0.0 <= float(circle["cx_mm"]) - float(circle["r_mm"])
+                and float(circle["cx_mm"]) + float(circle["r_mm"]) <= paper_width
+                and 0.0 <= float(circle["cy_mm"]) - float(circle["r_mm"])
+                and float(circle["cy_mm"]) + float(circle["r_mm"]) <= paper_eff_height
+            ):
+                _add(diagnostics, "semantic", f"{ptr}/circle",
+                     "circle_outside_sheet",
+                     f"circle is outside the {paper_format} sheet ({paper_width} x {paper_eff_height} mm)")
+
         points = stroke.get("points_mm")
         closed = stroke.get("closed") is True
         if isinstance(points, list):
@@ -500,7 +525,7 @@ def _check_previous(
             _add(diagnostics, "semantic", f"{ptr}/status", "invalid_status_transition",
                  f"status transition {prev_status} -> {status} is not allowed")
         if prev_status in (STATUS_STABLE, STATUS_ERASED):
-            for field in ("points_mm", "closed", "length_mm", "shape"):
+            for field in ("points_mm", "closed", "length_mm", "shape", "circle"):
                 if stroke.get(field) != prev.get(field):
                     _add(diagnostics, "semantic", f"{ptr}/{field}",
                          "stable_points_mutated",

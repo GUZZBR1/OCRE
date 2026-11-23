@@ -15,9 +15,13 @@ linha) e sai com código 0 mesmo quando o job falha — falha de job é
 worker (ex.: build123d não importável).
 
 Job ``export`` (campos):
-- ``profiles``: lista de perfis; cada perfil é uma lista de [x, y] em
-  mm, já no sentido CAD (y-up), polilinha FECHADA (o último ponto NÃO
-  precisa repetir o primeiro; ponto final igual ao inicial é removido).
+- ``regions``: lista de regiões ``{"outer": wire, "holes": [wire, ...]}``;
+  cada wire é ``{"kind": "polygon", "points_mm": [[x, y], ...]}`` (lista
+  de pontos em mm, já no sentido CAD y-up, polilinha FECHADA — o último
+  ponto NÃO precisa repetir o primeiro; ponto final igual ao inicial é
+  removido) ou ``{"kind": "circle", "center_mm": [x, y], "radius_mm": r}``
+  (círculo analítico exato, sem facetas). Cada região vira uma face com
+  furos e um sólido; várias regiões viram um ``Compound`` no STEP.
 - ``thickness_mm``: espessura declarada (float > 0).
 - ``material``: designação declarada ou confirmada por uma pessoa, gravada
   no STEP via XCAF e no relatório. A densidade fica ausente.
@@ -101,27 +105,17 @@ def _export_step_with_material(shape, path: Path, material: str, timestamp: str 
     return writer.Write(str(path)) == IFSelect.IFSelect_ReturnStatus.IFSelect_RetDone
 
 
-def _job_export(job: dict) -> dict:
-    from build123d import Polyline, extrude, make_face
+def _wire(desc: dict, label: str):
+    """Wire fechado do descritor: ``polygon`` (Polyline) ou ``circle``
+    (analítico exato, sem facetas). Erros de validação viram ValueError
+    e sobem como erro de job no caller."""
+    from build123d import Circle, Polyline, Pos
 
-    profiles = job.get("profiles")
-    thickness = job.get("thickness_mm")
-    material = job.get("material")
-    out_path = Path(job["out_path"])
-    if not isinstance(profiles, list) or not profiles:
-        return _fail("job.export: 'profiles' vazio ou ausente")
-    if not isinstance(thickness, (int, float)) or isinstance(thickness, bool):
-        return _fail("job.export: 'thickness_mm' inválido")
-    if thickness <= 0 or not math.isfinite(float(thickness)):
-        return _fail("job.export: 'thickness_mm' deve ser positivo e finito")
-    if not isinstance(material, str) or not material.strip():
-        return _fail("job.export: 'material' declarado ausente")
-
-    solids = []
-    areas = []
-    for index, raw_points in enumerate(profiles):
+    kind = desc.get("kind")
+    if kind == "polygon":
+        raw_points = desc.get("points_mm")
         if not isinstance(raw_points, list) or len(raw_points) < 3:
-            return _fail(f"job.export: perfil {index} com menos de 3 pontos")
+            raise ValueError(f"{label}: menos de 3 pontos")
         points = []
         for point in raw_points:
             if (
@@ -130,26 +124,76 @@ def _job_export(job: dict) -> dict:
                 or any(isinstance(v, bool) or not isinstance(v, (int, float)) for v in point)
                 or any(not math.isfinite(float(v)) for v in point)
             ):
-                return _fail(f"job.export: perfil {index} tem ponto inválido {point!r}")
+                raise ValueError(f"{label}: ponto inválido {point!r}")
             points.append((float(point[0]), float(point[1])))
         # Ponto final igual ao inicial: polilinha fechada não precisa
         # dele e ele criaria aresta degenerada no make_face.
         if points[0] == points[-1]:
             points = points[:-1]
         if len(points) < 3:
-            return _fail(f"job.export: perfil {index} ficou com menos de 3 pontos")
+            raise ValueError(f"{label}: ficou com menos de 3 pontos")
+        return Polyline(*points, close=True)
+    if kind == "circle":
+        center = desc.get("center_mm")
+        radius = desc.get("radius_mm")
+        if (
+            not isinstance(center, (list, tuple))
+            or len(center) != 2
+            or any(isinstance(v, bool) or not isinstance(v, (int, float)) for v in center)
+            or any(not math.isfinite(float(v)) for v in center)
+            or isinstance(radius, bool)
+            or not isinstance(radius, (int, float))
+            or not math.isfinite(float(radius))
+            or float(radius) <= 0
+        ):
+            raise ValueError(
+                f"{label}: 'circle' exige center_mm [x, y] finito e radius_mm > 0"
+            )
+        return Pos(float(center[0]), float(center[1])) * Circle(float(radius))
+    raise ValueError(f"{label}: kind desconhecido {kind!r}")
+
+
+def _job_export(job: dict) -> dict:
+    from build123d import extrude, make_face
+
+    regions = job.get("regions")
+    thickness = job.get("thickness_mm")
+    material = job.get("material")
+    out_path = Path(job["out_path"])
+    if not isinstance(regions, list) or not regions:
+        return _fail("job.export: 'regions' vazio ou ausente")
+    if not isinstance(thickness, (int, float)) or isinstance(thickness, bool):
+        return _fail("job.export: 'thickness_mm' inválido")
+    if thickness <= 0 or not math.isfinite(float(thickness)):
+        return _fail("job.export: 'thickness_mm' deve ser positivo e finito")
+    if not isinstance(material, str) or not material.strip():
+        return _fail("job.export: 'material' declarado ausente")
+
+    solids = []
+    faces = []
+    for index, region in enumerate(regions):
+        if not isinstance(region, dict) or not isinstance(region.get("outer"), dict):
+            return _fail(f"job.export: região {index} sem 'outer' válido")
+        holes = region.get("holes", [])
+        if not isinstance(holes, list) or any(not isinstance(h, dict) for h in holes):
+            return _fail(f"job.export: região {index} tem 'holes' inválido")
         try:
-            wire = Polyline(*points, close=True)
-            face = make_face(wire)
+            # Face 2D já perfurada antes do extrude: subtração de faces
+            # planares não depende da orientação CW/CCW dos anéis.
+            face = make_face(_wire(region["outer"], f"região {index} externa"))
+            for h, hole in enumerate(holes):
+                face = face - make_face(_wire(hole, f"região {index} furo {h}"))
+            if face.area <= 0:
+                return _fail(f"job.export: região {index} ficou sem área")
             solid = extrude(face, amount=float(thickness))
         except Exception as exc:  # noqa: BLE001 - geometria inválida é erro de job
-            return _fail(f"job.export: perfil {index} não virou sólido: {exc}")
+            return _fail(f"job.export: região {index} não virou sólido: {exc}")
         if solid is None or solid.volume <= 0:
-            return _fail(f"job.export: perfil {index} gerou sólido sem volume")
+            return _fail(f"job.export: região {index} gerou sólido sem volume")
         solids.append(solid)
-        areas.append(face.area)
+        faces.append(face)
 
-    # Um sólido por perfil; vários perfis viram um Compound no STEP.
+    # Um sólido por região; várias regiões viram um Compound no STEP.
     if len(solids) == 1:
         to_export = solids[0]
     else:
@@ -176,7 +220,7 @@ def _job_export(job: dict) -> dict:
         "bytes": out_path.stat().st_size,
         "file_schema": _file_schema(out_path),
         "volume_mm3": float(to_export.volume),
-        "area_mm2": float(sum(areas)),
+        "area_mm2": float(sum(face.area for face in faces)),
         "thickness_mm": float(thickness),
         "material_declared": material,
         "solids": len(solids),
@@ -198,18 +242,9 @@ def _job_export(job: dict) -> dict:
 
             dxf_path = Path(dxf_path)
             dxf_path.parent.mkdir(parents=True, exist_ok=True)
-            face_or_faces = []
-            for prof in profiles:
-                pts = [(float(p[0]), float(p[1])) for p in prof]
-                if len(pts) > 1 and pts[0] == pts[-1]:
-                    pts = pts[:-1]
-                face_or_faces.append(make_face(Polyline(*pts, close=True)))
             exporter = ExportDXF(version="AC1015", unit=Unit.MM)
-            if len(face_or_faces) == 1:
-                exporter.add_shape(face_or_faces[0])
-            else:
-                for face in face_or_faces:
-                    exporter.add_shape(face)
+            for face in faces:
+                exporter.add_shape(face)
             exporter.write(str(dxf_path))
             result["dxf_path"] = str(dxf_path)
             result["dxf_sha256"] = _sha256(dxf_path)

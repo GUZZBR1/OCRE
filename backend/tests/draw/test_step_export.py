@@ -15,6 +15,7 @@ falhar ou de fingir aprovação.
 
 import hashlib
 import json
+import math
 import tempfile
 import unittest
 from pathlib import Path
@@ -62,6 +63,84 @@ def stroke(stroke_id, points, status="stable", closed=False, **extra):
 
 def worker_ready() -> bool:
     return step_export.find_step_worker_python() is not None
+
+
+class StepExportHostTests(unittest.TestCase):
+    """Regras do host (só stdlib): política de traços abertos, hierarquia
+    de contenção e validação do bloco ``circle`` — todas recusam antes
+    de chamar o worker, então não precisam do .venv-beta."""
+
+    def test_open_stroke_policy_default_is_fail(self):
+        doc = make_doc([stroke("s-0001", RECT, closed=True),
+                        stroke("s-0002", [[5.0, 5.0], [50.0, 5.0]])])
+        with self.assertRaises(StepExportError):
+            document_to_step(doc, THICKNESS_MM, "PLA", Path("x.step"))
+        with self.assertRaises(StepExportError):
+            document_to_step(doc, THICKNESS_MM, "PLA", Path("x.step"),
+                             open_strokes_policy="fail")
+
+    def test_unknown_open_strokes_policy_is_refused(self):
+        doc = make_doc([stroke("s-0001", RECT, closed=True)])
+        with self.assertRaises(StepExportError):
+            document_to_step(doc, THICKNESS_MM, "PLA", Path("x.step"),
+                             open_strokes_policy="skip-aux")
+
+    def test_skip_all_without_closed_stroke_is_refused(self):
+        doc = make_doc([stroke("s-0001", [[5.0, 5.0], [50.0, 5.0]])])
+        with self.assertRaises(StepExportError):
+            document_to_step(doc, THICKNESS_MM, "PLA", Path("x.step"),
+                             open_strokes_policy="skip-all")
+
+    def test_crossing_contours_are_refused(self):
+        doc = make_doc([
+            stroke("s-0001", RECT, closed=True),
+            stroke("s-0002", [[100.0, 10.0], [200.0, 10.0],
+                              [200.0, 50.0], [100.0, 50.0]], closed=True),
+        ])
+        with self.assertRaises(StepExportError):
+            document_to_step(doc, THICKNESS_MM, "PLA", Path("x.step"))
+
+    def test_touching_contours_are_refused(self):
+        # O furo está dentro da chapa mas sua aresta y=20 encosta na
+        # parede externa (aresta collinear compartilhada = geometria
+        # degenerada para o STEP).
+        doc = make_doc([
+            stroke("s-0001", RECT, closed=True),
+            stroke("s-0002", [[40.0, 20.0], [60.0, 20.0],
+                              [60.0, 28.0], [40.0, 28.0]], closed=True),
+        ])
+        with self.assertRaises(StepExportError):
+            document_to_step(doc, THICKNESS_MM, "PLA", Path("x.step"))
+
+    def test_self_intersecting_contour_is_refused(self):
+        doc = make_doc([stroke(
+            "s-0001",
+            [[10.0, 10.0], [50.0, 30.0], [50.0, 10.0], [10.0, 30.0]],
+            closed=True)])
+        with self.assertRaises(StepExportError):
+            document_to_step(doc, THICKNESS_MM, "PLA", Path("x.step"))
+
+    def test_degenerate_closed_ring_is_refused(self):
+        doc = make_doc([stroke(
+            "s-0001", [[10.0, 10.0], [20.0, 20.0], [10.0, 10.0]], closed=True)])
+        with self.assertRaises(StepExportError):
+            document_to_step(doc, THICKNESS_MM, "PLA", Path("x.step"))
+
+    def test_invalid_circle_params_are_refused(self):
+        cpts = [[55.0 + 5.0 * math.cos(2 * math.pi * i / 12),
+                 30.0 + 5.0 * math.sin(2 * math.pi * i / 12)]
+                for i in range(12)]
+        for bad in (
+            {"cx_mm": 55.0, "cy_mm": 30.0, "r_mm": 0.0},
+            {"cx_mm": 205.0, "cy_mm": 30.0, "r_mm": 10.0},
+            {"cx_mm": "x", "cy_mm": 30.0, "r_mm": 5.0},
+            "não-objeto",
+        ):
+            with self.subTest(bad=bad):
+                doc = make_doc([stroke("s-0001", cpts, closed=True,
+                                       shape="circle", circle=bad)])
+                with self.assertRaises(StepExportError):
+                    document_to_step(doc, THICKNESS_MM, "PLA", Path("x.step"))
 
 
 class StepExportTests(unittest.TestCase):
@@ -186,6 +265,138 @@ class StepExportTests(unittest.TestCase):
             report["volume_mm3"], EXPECTED_VOLUME_MM3,
             delta=EXPECTED_VOLUME_MM3 * VOLUME_REL_TOL,
         )
+
+    def test_plate_with_hole_extrudes_net_volume(self):
+        """Chapa 100x10 com furo quadrado 20x8 -> (1000-160) x 10 mm³."""
+        doc = make_doc([
+            stroke("s-0001", RECT, closed=True),
+            stroke("s-0002", [[40.0, 21.0], [60.0, 21.0],
+                              [60.0, 29.0], [40.0, 29.0]], closed=True),
+        ])
+        out = self.dir / "hole.step"
+        report = document_to_step(doc, THICKNESS_MM, "PLA", out)
+        expected = (100.0 * 10.0 - 20.0 * 8.0) * THICKNESS_MM
+        self.assertAlmostEqual(
+            report["volume_mm3"], expected, delta=expected * VOLUME_REL_TOL
+        )
+        check = validate_step(out)
+        self.assertTrue(check["brepcheck_valid"])
+        self.assertEqual(check["solids"], 1)
+        # O manifesto cobre os dois contornos (chapa + furo).
+        loaded = step_export.load_step_material_manifest(out, document=doc)
+        self.assertEqual(loaded["geometry"]["stroke_ids"], ["s-0001", "s-0002"])
+
+    def test_island_inside_hole_becomes_second_solid(self):
+        """Regra par-ímpar: contorno dentro do furo é ilha (sólido próprio)."""
+        doc = make_doc([
+            stroke("s-0001", RECT, closed=True),
+            stroke("s-0002", [[40.0, 21.0], [60.0, 21.0],
+                              [60.0, 29.0], [40.0, 29.0]], closed=True),
+            stroke("s-0003", [[48.0, 24.0], [52.0, 24.0],
+                              [52.0, 26.0], [48.0, 26.0]], closed=True),
+        ])
+        out = self.dir / "island.step"
+        report = document_to_step(doc, THICKNESS_MM, "PLA", out)
+        expected = (1000.0 - 160.0 + 8.0) * THICKNESS_MM
+        self.assertAlmostEqual(
+            report["volume_mm3"], expected, delta=expected * VOLUME_REL_TOL
+        )
+        check = validate_step(out)
+        self.assertTrue(check["brepcheck_valid"])
+        self.assertEqual(check["solids"], 2)
+
+    def test_analytic_circle_hole_is_exact_not_faceted(self):
+        """Furo ``circle`` com bloco analítico: volume πr² exato — uma
+        polilinha de 12 lados erraria ~4,5% e estouraria a trava."""
+        cpts = [[55.0 + 4.0 * math.cos(2 * math.pi * i / 12),
+                 25.0 + 4.0 * math.sin(2 * math.pi * i / 12)]
+                for i in range(12)]
+        doc = make_doc([
+            stroke("s-0001", RECT, closed=True),
+            stroke("s-0002", cpts, closed=True, shape="circle",
+                   circle={"cx_mm": 55.0, "cy_mm": 25.0, "r_mm": 4.0}),
+        ])
+        out = self.dir / "circle-hole.step"
+        report = document_to_step(doc, THICKNESS_MM, "PLA", out)
+        expected = (1000.0 - math.pi * 16.0) * THICKNESS_MM
+        self.assertAlmostEqual(
+            report["volume_mm3"], expected, delta=expected * VOLUME_REL_TOL
+        )
+        check = validate_step(out)
+        self.assertTrue(check["brepcheck_valid"])
+        self.assertEqual(check["solids"], 1)
+
+    def test_analytic_circle_extrudes_exact_cylinder(self):
+        cpts = [[55.0 + 5.0 * math.cos(2 * math.pi * i / 12),
+                 30.0 + 5.0 * math.sin(2 * math.pi * i / 12)]
+                for i in range(12)]
+        doc = make_doc([stroke("s-0001", cpts, closed=True, shape="circle",
+                               circle={"cx_mm": 55.0, "cy_mm": 30.0, "r_mm": 5.0})])
+        out = self.dir / "cylinder.step"
+        report = document_to_step(doc, THICKNESS_MM, "PLA", out)
+        expected = math.pi * 25.0 * THICKNESS_MM
+        self.assertAlmostEqual(
+            report["volume_mm3"], expected, delta=expected * VOLUME_REL_TOL
+        )
+        # Centro CAD: y_cad = 296.47 - 30; bbox do cilindro r=5.
+        bbox = report["bbox_mm"]
+        self.assertAlmostEqual(bbox["min"][0], 50.0, places=4)
+        self.assertAlmostEqual(bbox["max"][0], 60.0, places=4)
+        self.assertAlmostEqual(bbox["min"][1], HEIGHT - 35.0, places=4)
+        self.assertAlmostEqual(bbox["max"][1], HEIGHT - 25.0, places=4)
+        check = validate_step(out)
+        self.assertTrue(check["brepcheck_valid"])
+
+    def test_circle_shape_without_block_stays_a_polyline(self):
+        """shape='circle' sem parâmetros analíticos: compatível — segue a
+        polilinha discretizada (volume do prisma de 12 lados, não πr²)."""
+        cpts = [[55.0 + 5.0 * math.cos(2 * math.pi * i / 12),
+                 30.0 + 5.0 * math.sin(2 * math.pi * i / 12)]
+                for i in range(12)]
+        doc = make_doc([stroke("s-0001", cpts, closed=True, shape="circle")])
+        out = self.dir / "poly-circle.step"
+        report = document_to_step(doc, THICKNESS_MM, "PLA", out)
+        expected = 0.5 * 12 * 25.0 * math.sin(2 * math.pi / 12) * THICKNESS_MM
+        self.assertAlmostEqual(
+            report["volume_mm3"], expected, delta=expected * VOLUME_REL_TOL
+        )
+
+    def test_two_disjoint_profiles_export_compound(self):
+        doc = make_doc([
+            stroke("s-0001", RECT, closed=True),
+            stroke("s-0002", [[150.0, 20.0], [200.0, 20.0],
+                              [200.0, 30.0], [150.0, 30.0]], closed=True),
+        ])
+        out = self.dir / "two.step"
+        report = document_to_step(doc, THICKNESS_MM, "PLA", out)
+        expected = (1000.0 + 500.0) * THICKNESS_MM
+        self.assertAlmostEqual(
+            report["volume_mm3"], expected, delta=expected * VOLUME_REL_TOL
+        )
+        check = validate_step(out)
+        self.assertEqual(check["solids"], 2)
+
+    def test_skip_all_open_stroke_exports_and_reports(self):
+        """``open_strokes_policy="skip-all"``: o traço aberto é pulado e
+        registrado; o manifesto continua íntegro (só fechados estáveis)."""
+        doc = make_doc([
+            stroke("s-0001", RECT, closed=True),
+            stroke("s-0002", [[5.0, 5.0], [50.0, 5.0]]),
+        ])
+        out = self.dir / "skip.step"
+        report = document_to_step(doc, THICKNESS_MM, "PLA", out,
+                                  open_strokes_policy="skip-all")
+        self.assertEqual(report["stroke_ids"], ["s-0001"])
+        self.assertEqual(
+            report["skipped"],
+            [{"stroke_id": "s-0002", "reason": "open_stroke"}],
+        )
+        self.assertAlmostEqual(
+            report["volume_mm3"], EXPECTED_VOLUME_MM3,
+            delta=EXPECTED_VOLUME_MM3 * VOLUME_REL_TOL,
+        )
+        loaded = step_export.load_step_material_manifest(out, document=doc)
+        self.assertEqual(loaded["geometry"]["stroke_ids"], ["s-0001"])
 
     def test_deterministic_export_with_timestamp(self):
         """Spike (c): dois exports com o mesmo timestamp -> mesmo hash.
