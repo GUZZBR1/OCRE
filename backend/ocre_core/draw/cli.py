@@ -84,7 +84,7 @@ from .document import (
     stabilize_stroke,
 )
 from .fingerprint import compute_fingerprint
-from .paper import DEFAULT_SPEC, PaperSpec, load_draw_config, resolve_paper
+from .paper import PaperSpec, load_draw_config, resolve_paper
 from .sidecar import build_draw_sidecar
 from .validator_draw import (
     SCHEMA_NAME,
@@ -427,7 +427,7 @@ class _ExportInputs(NamedTuple):
     png_path: Path
     out_dir: Path
     spec: PaperSpec
-    paper_mm: tuple[float, float] | None
+    paper_mm: tuple[float, float]
     png_sha256: str
     stamps_path: Path | None
     stamps_sha256: str | None
@@ -532,15 +532,14 @@ def _export_resolve_and_probe(args: argparse.Namespace) -> _ExportInputs | int:
 
     png_sha256 = _sha256_file(png_path)
 
-    # The pinned vectorize hardcodes A4 retrato; other sheets need the
-    # --paper-w-mm/--paper-h-mm flags. Sent only for non-default specs
-    # so the A4 path keeps working against today's pinned script (the
-    # flags make older scripts fail loudly, never silently).
-    paper_mm = (
-        (spec.width_mm, spec.effective_height_mm)
-        if spec is not DEFAULT_SPEC
-        else None
-    )
+    # Sent for every spec, including A4: the vectorizer's own default
+    # maps 1200 px -> 297 mm on Y while the document declares the
+    # isotropic effective height (296.47 mm). With the flags the script
+    # measures on exactly the declared scale — without them, ink on the
+    # last raster rows lands outside the sheet and every other y_mm is
+    # silently stretched ~0.2%. A pinned script that lacks
+    # --paper-w-mm/--paper-h-mm fails loudly, never silently.
+    paper_mm = (spec.width_mm, spec.effective_height_mm)
     return _ExportInputs(
         png_path=png_path,
         out_dir=out_dir,
@@ -751,8 +750,7 @@ def _export_provenance(
         if args.vectorize_pythonpath is not None:
             vectorize_parameters["pythonpath"] = _resolve_pythonpath(
                 args.vectorize_pythonpath)
-    if paper_mm is not None:
-        vectorize_parameters["paper_mm"] = list(paper_mm)
+    vectorize_parameters["paper_mm"] = list(paper_mm)
     if max_p95_px is not None:
         vectorize_parameters["max_p95_px"] = max_p95_px
 
