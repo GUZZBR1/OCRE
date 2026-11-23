@@ -427,7 +427,7 @@ class _ExportInputs(NamedTuple):
     png_path: Path
     out_dir: Path
     spec: PaperSpec
-    paper_mm: tuple[float, float] | None
+    paper_mm: tuple[float, float]
     png_sha256: str
     stamps_path: Path | None
     stamps_sha256: str | None
@@ -750,8 +750,7 @@ def _export_provenance(
         if args.vectorize_pythonpath is not None:
             vectorize_parameters["pythonpath"] = _resolve_pythonpath(
                 args.vectorize_pythonpath)
-    if paper_mm is not None:
-        vectorize_parameters["paper_mm"] = list(paper_mm)
+    vectorize_parameters["paper_mm"] = list(paper_mm)
     if max_p95_px is not None:
         vectorize_parameters["max_p95_px"] = max_p95_px
 
