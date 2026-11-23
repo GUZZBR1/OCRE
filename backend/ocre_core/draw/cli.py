@@ -1268,6 +1268,7 @@ def _cmd_beta_run(args: argparse.Namespace) -> int:
             "fmu": args.fmu,
             "timeout_s": args.timeout_s,
             "cad_only": args.cad_only,
+            "open_strokes_policy": args.open_strokes_policy,
             "proposal_file": str(proposal_file),
         },
         "documents": {},

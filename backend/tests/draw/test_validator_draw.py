@@ -67,6 +67,16 @@ class ValidDocumentTests(unittest.TestCase):
         add_stroke(doc, [[0, 0], [1, 1]], t_start_ms=0, t_end_ms=5)
         self.assertTrue(validate_draw_document(doc).valid)
 
+    def test_circle_block_document_is_valid(self):
+        doc = make_valid_doc()
+        add_stroke(
+            doc,
+            [[15, 10], [10, 15], [5, 10], [10, 5]],
+            closed=True,
+            circle={"cx_mm": 10, "cy_mm": 10, "r_mm": 5},
+        )
+        self.assertTrue(validate_draw_document(doc).valid)
+
 
 class FailClosedTests(unittest.TestCase):
     def assert_invalid_with(self, doc, code, previous=None):
@@ -138,6 +148,15 @@ class FailClosedTests(unittest.TestCase):
         doc["schema_sha256"] = "0" * 64
         self.assert_invalid_with(doc, "unknown_schema_digest")
 
+    def test_legacy_schema_digest_still_validates(self):
+        # Documento gravado antes do bloco "circle" entrar no schema:
+        # o digest antigo segue aceito via legacy_sha256 do lock.
+        doc = make_valid_doc()
+        doc["schema_sha256"] = (
+            "1ea8e4fdb8a8058aa3fdea4c60b81a699e58a21154d72308333d71dc1df5bd80"
+        )
+        self.assertTrue(validate_draw_document(doc).valid)
+
     def test_timestamps_without_stamps(self):
         doc = make_valid_doc()
         doc["strokes"][0]["t_start_ms"] = 0
@@ -177,6 +196,25 @@ class FailClosedTests(unittest.TestCase):
         with self.assertRaises(DrawValidationError) as ctx:
             validate_draw_document_or_raise(doc)
         self.assertFalse(ctx.exception.report.valid)
+
+    def test_circle_without_circle_shape_is_invalid(self):
+        doc = make_valid_doc()
+        doc["strokes"][0]["circle"] = {"cx_mm": 15, "cy_mm": 15, "r_mm": 3}
+        self.assert_invalid_with(doc, "circle_without_circle_shape")
+
+    def test_circle_outside_sheet_is_invalid(self):
+        doc = make_valid_doc()
+        doc["strokes"][1]["shape"] = "circle"
+        doc["strokes"][1]["circle"] = {"cx_mm": 208, "cy_mm": 50, "r_mm": 10}
+        self.assert_invalid_with(doc, "circle_outside_sheet")
+
+    def test_circle_bad_params_are_invalid(self):
+        doc = make_valid_doc()
+        doc["strokes"][1]["shape"] = "circle"
+        doc["strokes"][1]["circle"] = {"cx_mm": 55, "cy_mm": 55, "r_mm": -1}
+        self.assert_invalid_with(doc, "schema_validation")
+        doc["strokes"][1]["circle"] = {"cx_mm": 55, "cy_mm": 55, "r_mm": 5, "x": 1}
+        self.assert_invalid_with(doc, "schema_validation")
 
 
 class PreviousRevisionTests(unittest.TestCase):
@@ -226,6 +264,20 @@ class PreviousRevisionTests(unittest.TestCase):
         doc["revision"] = prev["revision"] + 1
         self.assert_invalid_with(doc, "stable_points_mutated", previous=prev)
 
+    def test_stable_circle_params_are_immutable(self):
+        doc = make_valid_doc()
+        add_stroke(
+            doc,
+            [[15, 10], [10, 15], [5, 10], [10, 5]],
+            closed=True,
+            circle={"cx_mm": 10, "cy_mm": 10, "r_mm": 5},
+        )
+        stabilize_stroke(doc, "s-0003")
+        prev = copy_document(doc)
+        doc["strokes"][2]["circle"]["r_mm"] = 9.0
+        doc["revision"] = prev["revision"] + 1
+        self.assert_invalid_with(doc, "stable_points_mutated", previous=prev)
+
     def test_pending_points_may_still_change(self):
         doc = make_valid_doc()
         prev = copy_document(doc)
@@ -260,7 +312,7 @@ class CustomSchemaTests(unittest.TestCase):
     def test_supplied_schema_uses_canonical_digest(self):
         from ocre_core.draw.validator_draw import _canonical_bytes, load_bundled_schema
 
-        schema, _, _ = load_bundled_schema()
+        schema, _, _, _ = load_bundled_schema()
         doc = make_valid_doc()
         # Canonical digest of the same schema dict differs from the file-bytes
         # digest, so the declared file digest is unknown under a supplied schema.

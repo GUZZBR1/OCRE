@@ -145,13 +145,17 @@ def _canonical_bytes(value: Any) -> bytes:
     ).encode("utf-8")
 
 
-def load_bundled_schema() -> tuple[dict[str, Any], str, str]:
-    """Return (schema, version, sha256) for the bundled draw-paper schema.
+def load_bundled_schema() -> tuple[dict[str, Any], str, str, tuple[str, ...]]:
+    """Return (schema, version, sha256, legacy_digests) for the bundled
+    draw-paper schema.
 
     The digest is the SHA-256 of the schema file's bytes and must match
     ``schema-lock-0.1.0.json`` — the same schema-lock mechanism the EIR
     validator uses. A mismatch means the bundled schema was edited without
-    updating the lock, and validation refuses to run.
+    updating the lock, and validation refuses to run. ``legacy_digests``
+    lists previously locked digests (``legacy_sha256`` in the lock):
+    documents written against an older revision of the same schema keep
+    validating, while a digest never locked still refuses.
     """
     try:
         path = SCHEMA_DIR / SCHEMA_FILE
@@ -160,19 +164,28 @@ def load_bundled_schema() -> tuple[dict[str, Any], str, str]:
         Draft202012Validator.check_schema(schema)
         digest = hashlib.sha256(path.read_bytes()).hexdigest()
         lock = json.loads((SCHEMA_DIR / LOCK_FILE).read_text(encoding="utf-8"))
-        locked = next(
+        locked_entry = next(
             (
-                entry.get("sha256")
+                entry
                 for entry in lock.get("schemas", [])
                 if entry.get("path") == SCHEMA_FILE
             ),
             None,
         )
+        locked = locked_entry.get("sha256") if locked_entry else None
+        legacy = locked_entry.get("legacy_sha256", ()) if locked_entry else ()
+        if (
+            not isinstance(legacy, list)
+            or not all(isinstance(d, str) and SHA256_RE.fullmatch(d) for d in legacy)
+        ):
+            raise ValueError(
+                "schema-lock-0.1.0.json has a malformed legacy_sha256 list"
+            )
         if lock.get("lock_version") != SCHEMA_VERSION or locked != digest:
             raise ValueError(
                 "bundled schema digest does not match schema-lock-0.1.0.json"
             )
-        return schema, SCHEMA_VERSION, digest
+        return schema, SCHEMA_VERSION, digest, tuple(legacy)
     except RecursionError as exc:
         raise ValueError("bundled schema exceeds the supported nesting depth") from exc
 
@@ -399,6 +412,31 @@ def _semantic(
             _add(diagnostics, "semantic", f"{ptr}/t_end_ms", "invalid_time_range",
                  "t_end_ms must not be earlier than t_start_ms")
 
+        circle = stroke.get("circle")
+        if circle is not None:
+            if stroke.get("shape") != "circle":
+                _add(diagnostics, "semantic", f"{ptr}/circle",
+                     "circle_without_circle_shape",
+                     "circle parameters require shape 'circle'")
+            if (
+                not isinstance(circle, dict)
+                or sorted(circle) != ["cx_mm", "cy_mm", "r_mm"]
+                or not all(_is_number(circle.get(k)) for k in ("cx_mm", "cy_mm", "r_mm"))
+                or float(circle["r_mm"]) <= 0
+            ):
+                _add(diagnostics, "semantic", f"{ptr}/circle",
+                     "invalid_circle",
+                     "circle requires finite cx_mm, cy_mm and r_mm > 0")
+            elif not (
+                0.0 <= float(circle["cx_mm"]) - float(circle["r_mm"])
+                and float(circle["cx_mm"]) + float(circle["r_mm"]) <= paper_width
+                and 0.0 <= float(circle["cy_mm"]) - float(circle["r_mm"])
+                and float(circle["cy_mm"]) + float(circle["r_mm"]) <= paper_eff_height
+            ):
+                _add(diagnostics, "semantic", f"{ptr}/circle",
+                     "circle_outside_sheet",
+                     f"circle is outside the {paper_format} sheet ({paper_width} x {paper_eff_height} mm)")
+
         points = stroke.get("points_mm")
         closed = stroke.get("closed") is True
         if isinstance(points, list):
@@ -495,7 +533,7 @@ def _check_previous(
             _add(diagnostics, "semantic", f"{ptr}/status", "invalid_status_transition",
                  f"status transition {prev_status} -> {status} is not allowed")
         if prev_status in (STATUS_STABLE, STATUS_ERASED):
-            for field in ("points_mm", "closed", "length_mm", "shape"):
+            for field in ("points_mm", "closed", "length_mm", "shape", "circle"):
                 if stroke.get(field) != prev.get(field):
                     _add(diagnostics, "semantic", f"{ptr}/{field}",
                          "stable_points_mutated",
@@ -529,11 +567,13 @@ def validate_draw_document(
         parsed = None
 
     expected_digest: str | None = None
+    legacy_digests: tuple[str, ...] = ()
     schema_version = SCHEMA_VERSION
     schema_doc: dict[str, Any] | None = None
     if schema is None:
         try:
-            schema_doc, schema_version, expected_digest = load_bundled_schema()
+            (schema_doc, schema_version, expected_digest,
+             legacy_digests) = load_bundled_schema()
         except (OSError, ValueError, RecursionError) as exc:
             _add(diagnostics, "structural", "", "schema_unavailable", str(exc))
     else:
@@ -561,10 +601,10 @@ def validate_draw_document(
     if parsed is not None and expected_digest is not None:
         declared = parsed.get("schema_sha256")
         if isinstance(declared, str) and SHA256_RE.fullmatch(declared):
-            if declared != expected_digest:
+            if declared != expected_digest and declared not in legacy_digests:
                 _add(diagnostics, "schema-lock", "/schema_sha256",
                      "unknown_schema_digest",
-                     "schema_sha256 does not match the locked draw.paper.v1 schema")
+                     "schema_sha256 does not match a locked draw.paper.v1 schema digest")
 
     prev_parsed: dict[str, Any] | None = None
     if previous is not None:

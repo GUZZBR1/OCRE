@@ -19,9 +19,48 @@
               "erased_at_ms"
             ]
           }
+        },
+        {
+          "if": {
+            "required": [
+              "circle"
+            ]
+          },
+          "then": {
+            "properties": {
+              "shape": {
+                "const": "circle"
+              }
+            },
+            "required": [
+              "shape"
+            ]
+          }
         }
       ],
       "properties": {
+        "circle": {
+          "additionalProperties": false,
+          "description": "Optional analytic circle parameters (sheet_top_left_y_down, mm) preserved from the vectorizer circle fit; points_mm remains the compatible discretization.",
+          "properties": {
+            "cx_mm": {
+              "type": "number"
+            },
+            "cy_mm": {
+              "type": "number"
+            },
+            "r_mm": {
+              "exclusiveMinimum": 0,
+              "type": "number"
+            }
+          },
+          "required": [
+            "cx_mm",
+            "cy_mm",
+            "r_mm"
+          ],
+          "type": "object"
+        },
         "closed": {
           "type": "boolean"
         },

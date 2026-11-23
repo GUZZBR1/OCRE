@@ -172,6 +172,29 @@ def _check_points(points_mm: Any, closed: bool, doc: dict[str, Any]) -> list[lis
     return clean
 
 
+def _check_circle(circle: Any, doc: dict[str, Any]) -> dict[str, float]:
+    """Validated analytic circle dict (cx_mm, cy_mm, r_mm), on the sheet."""
+    fmt, width_mm, eff_height_mm = _paper_bounds(doc)
+    if not isinstance(circle, dict) or set(circle) != {"cx_mm", "cy_mm", "r_mm"}:
+        raise ValueError("circle must be a dict with cx_mm, cy_mm and r_mm")
+    for key, value in circle.items():
+        if (
+            not isinstance(value, (int, float))
+            or isinstance(value, bool)
+            or not math.isfinite(float(value))
+        ):
+            raise ValueError(f"invalid circle.{key} (finite number required): {value!r}")
+    cx, cy, r = float(circle["cx_mm"]), float(circle["cy_mm"]), float(circle["r_mm"])
+    if r <= 0:
+        raise ValueError(f"circle.r_mm must be positive: {r!r}")
+    if not (0.0 <= cx - r and cx + r <= width_mm and 0.0 <= cy - r and cy + r <= eff_height_mm):
+        raise ValueError(
+            f"circle (cx={cx}, cy={cy}, r={r}) is outside the {fmt} sheet "
+            f"({width_mm} x {eff_height_mm} mm)"
+        )
+    return {"cx_mm": cx, "cy_mm": cy, "r_mm": r}
+
+
 def _find_stroke(doc: dict[str, Any], stroke_id: str) -> dict[str, Any]:
     for stroke in doc["strokes"]:
         if stroke["stroke_id"] == stroke_id:
@@ -196,6 +219,7 @@ def add_stroke(
     closed: bool = False,
     status: str = "pending",
     shape: str | None = None,
+    circle: dict[str, float] | None = None,
     t_start_ms: int | None = None,
     t_end_ms: int | None = None,
     provenance: dict[str, Any] | None = None,
@@ -204,8 +228,10 @@ def add_stroke(
     """Append a stroke; assigns a stable id and the next contiguous order.
 
     Timestamps (``t_start_ms``/``t_end_ms``) are only accepted when the
-    document order is ``temporal-stamps``. Points are validated against
-    the sheet before anything is written.
+    document order is ``temporal-stamps``. ``circle`` carries the analytic
+    circle fit (``cx_mm``/``cy_mm``/``r_mm``, sheet coords) preserved next
+    to the ``points_mm`` discretization — it implies ``shape="circle"``.
+    Points are validated against the sheet before anything is written.
     """
     if status not in STATUSES:
         raise ValueError(f"unknown status: {status!r}")
@@ -213,6 +239,11 @@ def add_stroke(
         raise ValueError("a new stroke cannot be created erased; erase it after adding")
     if shape is not None and shape not in SHAPES:
         raise ValueError(f"unknown shape: {shape!r}")
+    if circle is not None:
+        if shape is not None and shape != "circle":
+            raise ValueError("circle parameters require shape 'circle'")
+        shape = "circle"
+        circle = _check_circle(circle, doc)
     if (t_start_ms is not None or t_end_ms is not None) and doc.get("order_kind") != "temporal-stamps":
         raise ValueError("t_start_ms/t_end_ms require order_kind temporal-stamps")
     if (
@@ -234,6 +265,8 @@ def add_stroke(
     }
     if shape is not None:
         stroke["shape"] = shape
+    if circle is not None:
+        stroke["circle"] = circle
     if t_start_ms is not None:
         stroke["t_start_ms"] = t_start_ms
     if t_end_ms is not None:
