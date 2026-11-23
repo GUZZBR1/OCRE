@@ -8,7 +8,7 @@ import uuid
 from dataclasses import dataclass, fields, is_dataclass
 from datetime import datetime, timezone
 from enum import Enum
-from typing import Any, Protocol
+from typing import Any, Mapping, Protocol
 
 from ocre_core.jobs import (
     TERMINAL_STATES,
@@ -62,17 +62,42 @@ class PreflightReport:
     status: str
     execution_readiness: str
     diagnostics: tuple[dict[str, str], ...] = ()
+    approval_fingerprint: str | None = None
 
     def as_dict(self) -> dict[str, Any]:
         return {
             "status": self.status,
             "execution_readiness": self.execution_readiness,
+            "approval_fingerprint": self.approval_fingerprint,
             "diagnostics": list(self.diagnostics),
         }
 
 
 class PreflightPort(Protocol):
     def evaluate(self, request: "JobSubmission") -> PreflightReport: ...
+
+
+@dataclass(frozen=True)
+class PreflightInputs:
+    """OCRE-AF/1 inputs the platform must supply for a real pre-flight.
+
+    ``bundle_root`` locates the staged immutable bundle for byte
+    verification, ``adapter_capabilities`` carries the trusted capability
+    declarations, and ``approval_context`` supplies the normative inputs
+    the validator cannot derive (validator identity, adapter records,
+    preparation policy). ``None`` anywhere means the input is unavailable
+    and the approval stays blocked.
+    """
+
+    bundle_root: str | None = None
+    adapter_capabilities: Mapping[str, Any] | None = None
+    approval_context: Mapping[str, Any] | None = None
+
+
+class PreflightInputsProvider(Protocol):
+    """Resolves the trusted pre-flight inputs for one submission."""
+
+    def resolve(self, request: "JobSubmission") -> PreflightInputs | None: ...
 
 
 @dataclass(frozen=True)
@@ -87,30 +112,49 @@ class JobSubmission:
 
 
 class ValidatorPreflight:
-    """Uses the current validator; no client-supplied capabilities are trusted."""
+    """Uses the current validator; no client-supplied capabilities are trusted.
+
+    With no ``PreflightInputsProvider`` this port cannot assemble the
+    OCRE-AF/1 inputs, so readiness stays blocked. Readiness is reported
+    ``ready`` only when the validator both passes every check and returns
+    a computed approval fingerprint.
+    """
+
+    def __init__(self, inputs_provider: PreflightInputsProvider | None = None):
+        self._inputs_provider = inputs_provider
 
     def evaluate(self, request: JobSubmission) -> PreflightReport:
         from ocre_core.validation.validator import validate
 
+        inputs = self._inputs_provider.resolve(request) if self._inputs_provider is not None else None
         report = validate(
             request.eir,
             request.bundle,
             request.group_manifest,
+            bundle_root=inputs.bundle_root if inputs else None,
             purpose="execution_preflight",
+            adapter_capabilities=inputs.adapter_capabilities if inputs else None,
+            approval_context=inputs.approval_context if inputs else None,
+            case_id=request.case_ref,
         )
         diagnostics = tuple(
             {"code": item.code, "pointer": item.pointer, "message": item.message}
             for item in report.diagnostics
         )
-        # OCRE-AF/1 approval fingerprints are not available in this slice.
-        # Even if a validator configuration reports otherwise, this real port
-        # cannot assert execution readiness. Tests may inject a fake port.
-        if not any(item["code"] == "approval_fingerprint_unavailable" for item in diagnostics):
+        # Fail closed: a report is only ready when it carries a computed
+        # OCRE-AF/1 fingerprint. Without supplied inputs the port cannot
+        # produce one, so the unavailable diagnostic is reported even if a
+        # future validator stops emitting it itself.
+        ready = report.execution_readiness == "ready" and report.approval_fingerprint is not None
+        if not ready and inputs is None and not any(
+            item["code"] == "approval_fingerprint_unavailable" for item in diagnostics
+        ):
             diagnostics += ({"code": "approval_fingerprint_unavailable", "pointer": "", "message": "OCRE-AF/1 approval fingerprint is unavailable"},)
         return PreflightReport(
             report.status,
-            "blocked",
+            "ready" if ready else "blocked",
             diagnostics,
+            report.approval_fingerprint,
         )
 
 

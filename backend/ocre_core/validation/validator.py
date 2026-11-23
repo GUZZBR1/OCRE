@@ -20,17 +20,29 @@ from urllib.parse import urlsplit
 from jsonschema import Draft202012Validator, FormatChecker
 from jsonschema.exceptions import SchemaError
 
-from ocre_core.validation.approval_fingerprint import jcs
+from ocre_core.validation.approval_fingerprint import (
+    FingerprintInputError,
+    calculate_approval_fingerprint,
+    jcs,
+)
 
 
 ROOT = Path(__file__).resolve().parents[3]
 SCHEMA_DIR = ROOT / "schemas" / "eir"
 PROFILE_DIR = SCHEMA_DIR / "profiles"
+PROFILE_FILE = "structural.axial_bar.v1.json"
+UNIT_PROFILE_FILE = "ucum.structural_axial.v1.json"
 SCHEMAS = {
     "eir": ("0.2.0", "0.2.0.schema.json"),
     "bundle": ("0.2.0", "input-bundle-0.2.0.schema.json"),
     "groups": ("0.2.0", "mesh-group-manifest-0.2.0.schema.json"),
 }
+_INCOMPLETE_CODES = frozenset({
+    "group_manifest_unavailable", "bundle_root_unavailable",
+    "adapter_capabilities_unavailable", "approval_fingerprint_unavailable",
+    "document_incomplete", "missing_artifact_hash",
+    "approval_case_unresolved", "approval_fingerprint_inputs_missing",
+})
 
 
 class StrictJSONError(ValueError):
@@ -181,6 +193,7 @@ class ValidationReport:
     schema_digests: tuple[tuple[str, str, str], ...]
     profile_id: str = "structural.axial_bar.v1"
     profile_version: str = "1"
+    approval_fingerprint: str | None = None
 
     @property
     def valid(self) -> bool:
@@ -195,6 +208,7 @@ class ValidationReport:
             "profile": {"id": self.profile_id, "version": self.profile_version},
             "schemas": [{"document_kind": k, "schema_version": v, "schema_sha256": digest}
                         for k, v, digest in self.schema_digests],
+            "approval_fingerprint": self.approval_fingerprint,
             "diagnostics": [d.as_dict() for d in self.diagnostics],
         }
 
@@ -279,7 +293,9 @@ def _read_confined(root: Path, uri: Any, max_bytes: int) -> bytes:
 def _semantic(eir: dict[str, Any], bundle: dict[str, Any], groups: dict[str, Any] | None,
               root: Path | None, purpose: str, capabilities: Mapping[str, Any] | None,
               diagnostics: list[Diagnostic], max_artifact_bytes: int, max_document_bytes: int,
-              profile: dict[str, Any], unit_profile: dict[str, Any]) -> None:
+              profile: dict[str, Any], unit_profile: dict[str, Any], *,
+              approval_context: Mapping[str, Any] | None = None,
+              approval_out: dict[str, Any] | None = None) -> None:
     project, revision = eir.get("project", {}), eir.get("revision", {})
     rev_id = revision.get("revision_id")
     if project.get("project_id") != revision.get("project_id"):
@@ -416,6 +432,15 @@ def _semantic(eir: dict[str, Any], bundle: dict[str, Any], groups: dict[str, Any
     migration = eir.get("migration")
     if isinstance(migration, dict) and migration.get("report_artifact_id"):
         consumed.add(migration["report_artifact_id"])
+    if approval_out is not None and purpose == "execution_preflight":
+        eir_artifact = artifacts.get(bundle.get("eir_artifact_id"))
+        if isinstance(eir_artifact, dict) and isinstance(eir_artifact.get("sha256"), str):
+            approval_out["eir_document_sha256"] = eir_artifact["sha256"]
+        approval_out["consumed_artifacts"] = [
+            {"artifact_id": aid, "sha256": artifacts[aid]["sha256"]}
+            for aid in sorted(consumed)
+            if aid in artifacts and isinstance(artifacts[aid].get("sha256"), str)
+        ]
     for artifact in bundle.get("artifacts", []):
         if not isinstance(artifact, dict): continue
         aid, usage = artifact.get("artifact_id"), artifact.get("usage")
@@ -478,7 +503,8 @@ def _semantic(eir: dict[str, Any], bundle: dict[str, Any], groups: dict[str, Any
                     allowed = supported.get(capability_name, [])
                     if not isinstance(allowed, (list, tuple)) or required_value not in allowed:
                         _add(diagnostics, "semantic", f"/simulation_cases/{i}/solver/adapter_id", "adapter_capability_mismatch", f"adapter does not declare support for {capability_name}")
-        _add(diagnostics, "semantic", "/", "approval_fingerprint_unavailable", "OCRE-AF/1 approval fingerprint inputs are not part of the supplied validation context")
+        if approval_context is None:
+            _add(diagnostics, "semantic", "/", "approval_fingerprint_unavailable", "OCRE-AF/1 approval fingerprint inputs are not part of the supplied validation context")
     if eir.get("document_state") != "complete":
         _add(diagnostics, "semantic", "/document_state", "document_incomplete", "draft EIR cannot pass validation as complete")
     if purpose == "authoring":
@@ -554,15 +580,138 @@ def _validate_groups(eir: dict[str, Any], groups: dict[str, Any], artifacts: dic
                 _add(diagnostics, "semantic", f"/groups/{i}/counts", "group_count_mismatch", "observed group count must equal expected count")
 
 
+def _approval_fingerprint(eir: dict[str, Any] | None, bundle: dict[str, Any] | None,
+                          bundle_raw: Any, case_id: str | None,
+                          context: Mapping[str, Any], capabilities: Mapping[str, Any] | None,
+                          approval_out: dict[str, Any], digests: list[tuple[str, str, str]],
+                          profile: dict[str, Any], unit_profile: dict[str, Any],
+                          diagnostics: list[Diagnostic]) -> str | None:
+    """Assemble the ten OCRE-AF/1 inputs and hash them.
+
+    Runs only after every deterministic check passed: an error or
+    incomplete-input diagnostic means the approval is already blocked and
+    no fingerprint is produced. ``capabilities_sha256`` is bound by hashing
+    the JCS form of the capabilities document the validator checked.
+    """
+    if any(d.severity == "error" or d.code in _INCOMPLETE_CODES for d in diagnostics):
+        return None
+    values = _approval_inputs(eir, bundle, bundle_raw, case_id, context,
+                              capabilities, approval_out, digests, profile,
+                              unit_profile, diagnostics)
+    if values is None:
+        return None
+    try:
+        return calculate_approval_fingerprint(values).digest
+    except FingerprintInputError as exc:
+        _add(diagnostics, "semantic", "/", "approval_fingerprint_invalid",
+             f"OCRE-AF/1 inputs cannot be encoded: {exc}")
+        return None
+
+
+def _approval_inputs(eir: dict[str, Any], bundle: dict[str, Any], bundle_raw: Any,
+                     case_id: str | None, context: Mapping[str, Any],
+                     capabilities: Mapping[str, Any], approval_out: dict[str, Any],
+                     digests: list[tuple[str, str, str]], profile: dict[str, Any],
+                     unit_profile: dict[str, Any], diagnostics: list[Diagnostic]) -> dict[str, Any] | None:
+    missing = [name for name in ("validator", "adapters") if context.get(name) is None]
+    if missing:
+        _add(diagnostics, "semantic", "/", "approval_fingerprint_inputs_missing",
+             f"approval context lacks required inputs: {', '.join(missing)}")
+        return None
+    if not isinstance(context["adapters"], list):
+        _add(diagnostics, "semantic", "/", "approval_fingerprint_inputs_missing",
+             "approval context 'adapters' must be a list")
+        return None
+    cases = [c for c in _seq(eir.get("simulation_cases")) if isinstance(c, dict)]
+    selected = [c for c in cases if c.get("case_id") == case_id] if case_id is not None else cases
+    if len(selected) != 1:
+        _add(diagnostics, "semantic", "/simulation_cases", "approval_case_unresolved",
+             "approval requires exactly one selected simulation case")
+        return None
+    case = selected[0]
+    eir_sha = approval_out.get("eir_document_sha256")
+    consumed = approval_out.get("consumed_artifacts")
+    if not isinstance(eir_sha, str) or not isinstance(consumed, list):
+        _add(diagnostics, "semantic", "/", "approval_fingerprint_inputs_missing",
+             "verified consumed artifact hashes are unavailable")
+        return None
+    solver = case.get("solver") if isinstance(case.get("solver"), dict) else {}
+    case_adapter = solver.get("adapter_id")
+    matching = [a for a in context["adapters"] if isinstance(a, dict) and a.get("adapter_id") == case_adapter]
+    declared = {a.get("adapter_id") for a in context["adapters"] if isinstance(a, dict)}
+    if declared != {case_adapter} or len(matching) != 1:
+        _add(diagnostics, "semantic", f"/simulation_cases/{case.get('case_id')}/solver/adapter_id",
+             "approval_adapter_mismatch",
+             "approval adapters must be exactly the adapter declared by the selected case solver")
+        return None
+    entry = matching[0]
+    target = solver.get("proposed_target_version")
+    if target is not None and entry.get("version") != target:
+        _add(diagnostics, "semantic", f"/simulation_cases/{case.get('case_id')}/solver/proposed_target_version",
+             "approval_adapter_mismatch", "adapter version does not match the case proposed target version")
+        return None
+    try:
+        capabilities_sha = hashlib.sha256(jcs(capabilities[case_adapter])).hexdigest()
+    except FingerprintInputError as exc:
+        _add(diagnostics, "semantic", f"/simulation_cases/{case.get('case_id')}/solver/adapter_id",
+             "approval_adapter_mismatch", f"adapter capabilities cannot be canonically encoded: {exc}")
+        return None
+    if entry.get("capabilities_sha256") != capabilities_sha:
+        _add(diagnostics, "semantic", f"/simulation_cases/{case.get('case_id')}/solver/adapter_id",
+             "approval_adapter_mismatch",
+             "adapter capabilities_sha256 does not match the checked capabilities document")
+        return None
+    try:
+        profile_bytes = (PROFILE_DIR / PROFILE_FILE).read_bytes()
+        unit_bytes = (PROFILE_DIR / UNIT_PROFILE_FILE).read_bytes()
+        lock = json.loads((SCHEMA_DIR / "schema-lock-0.2.0.json").read_text(encoding="utf-8"))
+        kind_by_path = {item["path"]: item["document_kind"] for item in lock["schemas"]}
+        schemas = [{"document_kind": kind_by_path[SCHEMAS[kind][1]],
+                    "schema_version": version, "schema_sha256": digest}
+                   for kind, version, digest in digests]
+    except (OSError, ValueError, KeyError, TypeError) as exc:
+        _add(diagnostics, "semantic", "/", "approval_fingerprint_inputs_missing",
+             f"cannot derive schema/policy inputs: {exc}")
+        return None
+    bundle_bytes = (bytes(bundle_raw) if isinstance(bundle_raw, (bytes, bytearray))
+                    else bundle_raw.encode("utf-8") if isinstance(bundle_raw, str)
+                    else jcs(bundle))
+    return {
+        "eir_document_sha256": bytes.fromhex(eir_sha),
+        "bundle_manifest_sha256": hashlib.sha256(bundle_bytes).digest(),
+        "profile": {"id": profile.get("profile_id"), "version": profile.get("version"),
+                    "sha256": hashlib.sha256(profile_bytes).hexdigest()},
+        "schemas": schemas,
+        "consumed_artifacts": consumed,
+        "execution_parameters": case,
+        "validator": context["validator"],
+        "adapters": context["adapters"],
+        "unit_policy": {"id": unit_profile.get("unit_profile_id"), "version": unit_profile.get("version"),
+                        "sha256": hashlib.sha256(unit_bytes).hexdigest()},
+        "preparation_policy": context.get("preparation_policy"),
+    }
+
+
 def validate(eir: Any, bundle: Any, group_manifest: Any | None = None, *,
              bundle_root: str | Path | None = None, purpose: str = "authoring",
              adapter_capabilities: Mapping[str, Any] | None = None,
+             case_id: str | None = None,
+             approval_context: Mapping[str, Any] | None = None,
              max_document_bytes: int = 16 * 1024 * 1024,
              max_artifact_bytes: int = 1024 * 1024 * 1024) -> ValidationReport:
     """Validate EIR and bundle; optionally verify group manifest/files for pre-flight.
 
     ``adapter_capabilities`` maps adapter ids to declarations including
     ``{"supported": true}``; absence always blocks execution readiness.
+
+    ``approval_context`` carries the OCRE-AF/1 inputs the validator cannot
+    derive itself: ``validator`` (id/version/implementation_sha256/
+    policy_version), ``adapters`` (stage_id/adapter_id/version/
+    binary_sha256/capabilities_sha256) and ``preparation_policy`` (or null).
+    ``case_id`` selects the simulation case bound into
+    ``execution_parameters``; with exactly one case it may be omitted.
+    Without a context the approval fingerprint stays unavailable and
+    readiness stays blocked.
     """
     if purpose not in ("authoring", "execution_preflight"):
         raise ValueError("purpose must be 'authoring' or 'execution_preflight'")
@@ -603,31 +752,37 @@ def validate(eir: Any, bundle: Any, group_manifest: Any | None = None, *,
     if "eir" in parsed:
         _null_complete_refs(parsed["eir"], diagnostics)
     try:
-        profile = json.loads((PROFILE_DIR / "structural.axial_bar.v1.json").read_text(encoding="utf-8"))
-        unit_profile = json.loads((PROFILE_DIR / "ucum.structural_axial.v1.json").read_text(encoding="utf-8"))
+        profile = json.loads((PROFILE_DIR / PROFILE_FILE).read_text(encoding="utf-8"))
+        unit_profile = json.loads((PROFILE_DIR / UNIT_PROFILE_FILE).read_text(encoding="utf-8"))
         if not isinstance(profile, dict) or not isinstance(unit_profile, dict):
             raise ValueError("bundled profile is not a JSON object")
     except (OSError, ValueError, RecursionError) as exc:
         profile = unit_profile = None
         schema_valid = False
         _add(diagnostics, "structural", "/profile", "schema_unavailable", str(exc))
+    approval_out: dict[str, Any] = {}
     if schema_valid and profile is not None and unit_profile is not None and "eir" in parsed and "bundle" in parsed:
         try:
             _semantic(parsed["eir"], parsed["bundle"], parsed.get("groups"),
                       Path(bundle_root) if bundle_root is not None else None,
                       purpose, adapter_capabilities, diagnostics, max_artifact_bytes, max_document_bytes,
-                      profile, unit_profile)
+                      profile, unit_profile,
+                      approval_context=approval_context, approval_out=approval_out)
         except (TypeError, KeyError, AttributeError) as exc:
             _add(diagnostics, "semantic", "", "invalid_document_shape", f"semantic evaluation could not proceed: {type(exc).__name__}")
+    approval_hex: str | None = None
+    if purpose == "execution_preflight" and approval_context is not None:
+        approval_hex = _approval_fingerprint(
+            parsed.get("eir"), parsed.get("bundle"), bundle, case_id,
+            approval_context, adapter_capabilities, approval_out, digests,
+            profile, unit_profile, diagnostics)
     diagnostics.sort(key=lambda d: (d.stage, d.pointer, d.code, d.message, d.severity))
-    incomplete_codes = {"group_manifest_unavailable", "bundle_root_unavailable", "adapter_capabilities_unavailable",
-                        "approval_fingerprint_unavailable", "document_incomplete", "missing_artifact_hash"}
-    invalid = any(d.severity == "error" and d.code not in incomplete_codes for d in diagnostics)
-    incomplete = any(d.code in incomplete_codes for d in diagnostics)
+    invalid = any(d.severity == "error" and d.code not in _INCOMPLETE_CODES for d in diagnostics)
+    incomplete = any(d.code in _INCOMPLETE_CODES for d in diagnostics)
     status = "invalid" if invalid else "incomplete" if incomplete else "valid"
     readiness = None
     if purpose == "execution_preflight":
-        readiness = "ready" if status == "valid" else "blocked"
+        readiness = "ready" if status == "valid" and approval_hex is not None else "blocked"
     return ValidationReport(status, purpose, readiness, tuple(diagnostics), tuple(sorted(digests)),
                             (profile or {}).get("profile_id", "structural.axial_bar.v1"),
-                            (profile or {}).get("version", "1"))
+                            (profile or {}).get("version", "1"), approval_hex)

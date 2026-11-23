@@ -3,14 +3,17 @@ from dataclasses import replace
 import pytest
 
 from tests.helpers import (
-    BLOCKED_APPROVAL, FIXED_CLOCK, NOW, READY, FixedPreflight,
-    RuleAuthorizer, application, submission,
+    BLOCKED_APPROVAL, EIR_EXAMPLE_CAPS, FIXED_CLOCK, NOW, READY,
+    FixedPreflight, RuleAuthorizer, application, eir_approval_context,
+    stage_eir_example_bundle, submission,
 )
 
 from ocre_core.application.services import (
     ApplicationError,
+    PreflightInputs,
     PreflightReport,
     Principal,
+    ValidatorPreflight,
 )
 from ocre_core.persistence.jobs import OutboxMessage
 from ocre_core.jobs import (
@@ -37,6 +40,44 @@ def test_blocked_approval_fingerprint_preflight_writes_no_job_event_or_outbox(tm
         assert db.execute("SELECT COUNT(*) FROM events").fetchone()[0] == 0
         assert db.execute("SELECT COUNT(*) FROM receipts").fetchone()[0] == 0
         assert db.execute("SELECT COUNT(*) FROM outbox").fetchone()[0] == 0
+
+
+class StaticPreflightInputs:
+    def __init__(self, inputs):
+        self._inputs = inputs
+
+    def resolve(self, _request):
+        return self._inputs
+
+
+def test_validator_preflight_without_provider_stays_blocked_and_writes_nothing(tmp_path):
+    app = application(tmp_path, authorizer=AUTH, preflight=ValidatorPreflight(), clock=FIXED_CLOCK)
+    with pytest.raises(ApplicationError) as error:
+        app.submit_job(Principal("t1", "u1"), "p1", submission(), "key")
+    assert error.value.code == "preparation_failed"
+    codes = {d["code"] for d in error.value.extra["report"]["diagnostics"]}
+    assert "approval_fingerprint_unavailable" in codes
+    store = app.job_store
+    with store._connect() as db:
+        assert db.execute("SELECT COUNT(*) FROM snapshots").fetchone()[0] == 0
+        assert db.execute("SELECT COUNT(*) FROM events").fetchone()[0] == 0
+        assert db.execute("SELECT COUNT(*) FROM outbox").fetchone()[0] == 0
+
+
+def test_validator_preflight_ready_only_with_computed_fingerprint(tmp_path):
+    root, eir, bundle, groups = stage_eir_example_bundle(tmp_path / "bundle")
+    inputs = PreflightInputs(str(root), EIR_EXAMPLE_CAPS, eir_approval_context())
+    preflight = ValidatorPreflight(StaticPreflightInputs(inputs))
+    request = submission(case_ref="axial_bar", adapter_id="calculix.batch",
+                         adapter_version="2.23", eir=eir, bundle=bundle,
+                         group_manifest=groups)
+    report = preflight.evaluate(request)
+    assert report.execution_readiness == "ready"
+    assert report.approval_fingerprint is not None
+
+    app = application(tmp_path, authorizer=AUTH, preflight=preflight, clock=FIXED_CLOCK)
+    result = app.submit_job(Principal("t1", "u1"), "p1", request, "key")
+    assert result["state"] == "queued"
 
 
 def test_empty_idempotency_keys_are_rejected_before_any_write(tmp_path):
