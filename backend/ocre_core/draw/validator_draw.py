@@ -263,6 +263,7 @@ def _semantic(
 
     seen_ids: set[str] = set()
     orders: list[int] = []
+    saw_stamps = False
     for i, stroke in enumerate(strokes):
         if not isinstance(stroke, dict):
             continue
@@ -301,6 +302,7 @@ def _semantic(
                  "order_kind_mismatch",
                  "per-stroke order_kind must equal the document order_kind")
         has_stamps = "t_start_ms" in stroke or "t_end_ms" in stroke
+        saw_stamps = saw_stamps or has_stamps
         if has_stamps and effective_order_kind != "temporal-stamps":
             _add(diagnostics, "semantic", ptr, "timestamps_without_stamps",
                  "t_start_ms/t_end_ms require order_kind temporal-stamps")
@@ -378,6 +380,11 @@ def _semantic(
         if set(orders) != set(range(len(strokes))):
             _add(diagnostics, "semantic", "/strokes", "order_gap",
                  "stroke order must be 0-based, unique and contiguous")
+
+    if doc_order_kind == "temporal-stamps" and not saw_stamps:
+        _add(diagnostics, "semantic", "/order_kind",
+             "temporal_stamps_without_stamps",
+             "order_kind temporal-stamps requires at least one stroke with t_start_ms/t_end_ms")
 
     if previous is not None:
         _check_previous(doc, previous, strokes, seen_ids, diagnostics)

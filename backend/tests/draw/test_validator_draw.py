@@ -184,6 +184,16 @@ class FailClosedTests(unittest.TestCase):
         doc["strokes"][0]["t_end_ms"] = 5
         self.assert_invalid_with(doc, "invalid_time_range")
 
+    def test_temporal_stamps_claim_without_any_stamps(self):
+        # order_kind temporal-stamps sem nenhum stroke carimbado é
+        # alegação falsa: o schema exige, faltava enforcement.
+        doc = make_valid_doc(order_kind="temporal-stamps")
+        self.assert_invalid_with(doc, "temporal_stamps_without_stamps")
+
+    def test_temporal_stamps_with_empty_strokes_is_refused(self):
+        doc = new_document(SOURCE, order_kind="temporal-stamps")
+        self.assert_invalid_with(doc, "temporal_stamps_without_stamps")
+
     def test_erased_without_erasure_event(self):
         doc = make_valid_doc()
         doc["strokes"][0]["status"] = "erased"
